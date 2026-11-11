@@ -75,6 +75,8 @@ The table below contrasts our neuro-symbolic decompiler against published fronti
 
 On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's *PercepLog* study (EMNLP 2026, Oct 25, 2026) achieved ~90% accuracy only when hand-crafted formal logic rules were pre-supplied by human experts. In contrast, `mudraforge-decompiler` achieved **30 / 30 (100.0%)** zero-shot by compiling directly from raw natural language statutory text without human-in-the-loop formalization.
 
+![Frontier LLM Benchmark Comparison](images/frontier_llm_benchmark_comparison.svg)
+
 ### 2.2 Key Benchmark Tracks Breakdown
 
 1. **Track 1A (Verbatim US IRC Clauses)**:

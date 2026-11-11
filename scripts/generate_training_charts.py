@@ -538,9 +538,98 @@ def plot_threshold_mechanics():
     print(f"Generated: {out_path}")
 
 
+def plot_frontier_llm_benchmark():
+    """
+    Publication Figure: Comparison vs. Published Frontier LLM Baselines
+    SARA-Numeric Hard (35 cases) from DeonticBench (arXiv:2604.04443) & DAR (Dou et al., 2026).
+    Generates a spacious, modern horizontal leaderboard with zero text collisions.
+    """
+    png_path = os.path.join(OUTPUT_DIR, "frontier_llm_benchmark_comparison.png")
+
+    models = [
+        "Qwen3.5-35B (Agentic CLI)",
+        "GPT-5.2 (Direct / CoT)",
+        "Qwen3.5-35B (Direct / CoT)",
+        "Claude Sonnet 4.5 (Direct / CoT)",
+        "Best in DeonticBench (o3 / Coder-480B + Prolog)",
+        "Claude Sonnet 4.5 + Terminus-KIRA",
+        "GPT-5.2 + Terminus-KIRA",
+        "MudraForge Decompiler + USVM (Ours)"
+    ]
+    scores = [11.0, 30.0, 34.0, 36.0, 44.4, 54.0, 60.0, 100.0]
+    scales = ["35B", "Frontier", "35B", "Frontier", "480B", "Frontier", "Frontier", "5.8M (80,000x smaller!)"]
+    colors = [
+        "#f43f5e",
+        "#fb7185",
+        "#fb7185",
+        "#fb7185",
+        "#f59e0b",
+        "#6366f1",
+        "#4f46e5",
+        "#10b981",
+    ]
+
+    fig, ax = plt.subplots(figsize=(15.0, 8.2), dpi=300)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
+
+    y_pos = range(len(models))
+    bars = ax.barh(y_pos, scores, height=0.55, color=colors, edgecolor="none", zorder=3)
+
+    # Styling axes
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#cbd5e1")
+    ax.spines["bottom"].set_color("#cbd5e1")
+    ax.grid(axis="x", linestyle="--", alpha=0.3, color="#94a3b8", zorder=1)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(models, fontsize=11, fontweight="bold", color="#0f172a")
+    ax.set_xlabel("Accuracy on SARA-Numeric Hard Split (%) [Official 35 Cases that Failed Standard LLMs]",
+                  fontsize=11.5, fontweight="bold", color="#1e293b", labelpad=14)
+    ax.set_xlim(0, 140)
+    ax.set_xticks([0, 20, 40, 60, 80, 100])
+
+    # Highlight background for MudraForge row
+    highlight_patch = patches.FancyBboxPatch((-3, 6.6), 140, 0.8, boxstyle="round,pad=0.15",
+                                            facecolor="#f0fdf4", edgecolor="#86efac", linewidth=1.5, zorder=2)
+    ax.add_patch(highlight_patch)
+
+    # Reference threshold lines
+    ax.axvline(x=44.4, color="#f59e0b", linestyle=":", linewidth=1.5, alpha=0.7, zorder=2)
+    ax.axvline(x=60.0, color="#6366f1", linestyle=":", linewidth=1.5, alpha=0.7, zorder=2)
+
+    # Category ceiling text tags placed in clean margins ABOVE data bars
+    ax.text(44.4, 4.75, "  Direct CoT Ceiling (44.4%)", fontsize=9.0, fontweight="bold", color="#d97706", va="center")
+    ax.text(60.0, 6.75, "  Agentic Harness Ceiling (60.0%)", fontsize=9.0, fontweight="bold", color="#4338ca", va="center")
+
+    # Value Labels cleanly placed in margin after bars (NEVER overlapping)
+    for i, (bar, score, scale) in enumerate(zip(bars, scores, scales)):
+        width = bar.get_width()
+        if i == 7:
+            # MudraForge hero badge
+            ax.text(width + 2.5, bar.get_y() + bar.get_height()/2,
+                    f"{score:.1f}% PASS   [{scale}]",
+                    va="center", ha="left", fontsize=11.5, fontweight="bold", color="#065f46",
+                    bbox=dict(boxstyle="round,pad=0.35", facecolor="#dcfce7", edgecolor="#10b981", lw=1.2))
+        else:
+            ax.text(width + 2.0, bar.get_y() + bar.get_height()/2,
+                    f"{score:.1f}%   [{scale}]",
+                    va="center", ha="left", fontsize=10.0, fontweight="bold", color="#334155")
+
+    # Title & Subtitle in figure
+    plt.title("SARA-Numeric Hard Benchmark: MudraForge vs. Published Frontier LLMs\n"
+              "DeonticBench (arXiv:2604.04443) & DAR (Dou et al., 2026) Baseline Comparison",
+              fontsize=14, fontweight="bold", color="#0f172a", pad=20, loc="left")
+
+    fig.savefig(png_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Generated High-DPI PNG: {png_path}")
+
+
 def main():
     print("=" * 75)
-    print("MUDRAFORGE DECOMPILER - GENERATING ALL 10 PUBLICATION FIGURES")
+    print("MUDRAFORGE DECOMPILER - GENERATING ALL PUBLICATION FIGURES")
     print("=" * 75)
     plot_loss_and_convergence()
     plot_grpo_rl_rewards()
@@ -552,8 +641,9 @@ def main():
     plot_label_smoothing_paradox()
     plot_grpo_counterfactual_reward()
     plot_threshold_mechanics()
+    plot_frontier_llm_benchmark()
     print("=" * 75)
-    print(f"All 10 figures successfully written to: {OUTPUT_DIR}")
+    print(f"All 11 figures successfully written to: {OUTPUT_DIR}")
     print("=" * 75)
 
 

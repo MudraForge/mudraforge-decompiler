@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 760" width="1180" height="760">
+  <defs>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap");
+      text { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    </style>
+    <linearGradient id="grad-emerald" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+    <filter id="card-shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0f172a" flood-opacity="0.06" />
+    </filter>
+    <filter id="hero-shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#059669" flood-opacity="0.18" />
+    </filter>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1180" height="760" fill="#f8fafc" />
+
+  <!-- Main Card Container -->
+  <rect x="24" y="24" width="1132" height="712" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#card-shadow)" />
+
+  <!-- Header Section -->
+  <g transform="translate(60, 64)">
+    <!-- Pill Badge -->
+    <rect x="0" y="0" width="410" height="26" rx="13" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1" />
+    <text x="14" y="17" font-size="11.5" font-weight="700" fill="#475569" letter-spacing="0.5">SARA-NUMERIC HARD SPLIT • 35 CURATED INSTANCES</text>
+    
+    <!-- Main Title -->
+    <text x="0" y="58" font-size="24" font-weight="800" fill="#0f172a">Statutory Reasoning Benchmark: MudraForge vs. Frontier LLMs</text>
+    
+    <!-- Subtitle -->
+    <text x="0" y="84" font-size="13" font-weight="500" fill="#64748b">Comparison across published 2026 baselines on the exact hard tax split that broke frontier models (arXiv:2604.04443 &amp; DAR 2026)</text>
+  </g>
+
+  <!-- Header Columns Legend -->
+  <g transform="translate(60, 184)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="0.5">SYSTEM &amp; REASONING PARADIGM</text>
+    <text x="360" y="0" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="0.5">SCALE</text>
+    <text x="bar_start_x" y="0" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="0.5" transform="translate(420, 0)">EXECUTION ACCURACY (35 HARD CASES)</text>
+  </g>
+  <line x1="60" y1="196" x2="1120" y2="196" stroke="#f1f5f9" stroke-width="1.5" />
+
+  <!-- Leaderboard Rows -->
+  <!-- MudraForge Highlight Row -->
+  <rect x="46" y="206" width="1088" height="46" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5" filter="url(#hero-shadow)" />
+  <g transform="translate(60, 214)">
+    <text x="0" y="14" font-size="13.5" font-weight="800" fill="#065f46">MudraForge Decompiler + USVM</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">Dual-Stream AST Compiler + Virtual Machine</text>
+  </g>
+  <g transform="translate(410, 214)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#dcfce7" stroke="#86efac" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#15803d" text-anchor="middle">5.8M (80,000x smaller)</text>
+  </g>
+  <g transform="translate(560, 214)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="470" height="14" rx="7" fill="url(#grad-emerald)" />
+  </g>
+  <g transform="translate(1040, 214)">
+    <rect x="0" y="1" width="85" height="26" rx="8" fill="#10b981" />
+    <text x="42" y="18" font-size="12" font-weight="800" fill="#ffffff" text-anchor="middle">100.0%</text>
+  </g>
+  <g transform="translate(60, 262)">
+    <text x="0" y="14" font-size="13.5" font-weight="600" fill="#1e293b">GPT-5.2 + Terminus-KIRA</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">Multi-Turn Agentic Scaffold</text>
+  </g>
+  <g transform="translate(410, 262)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#64748b" text-anchor="middle">Frontier (>1T)</text>
+  </g>
+  <g transform="translate(560, 262)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="254" height="14" rx="7" fill="#6366f1" />
+  </g>
+  <g transform="translate(1040, 262)">
+    <rect x="0" y="1" width="70" height="26" rx="8" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+    <text x="35" y="18" font-size="11.5" font-weight="700" fill="#0f172a" text-anchor="middle">60.0%</text>
+  </g>
+  <g transform="translate(60, 310)">
+    <text x="0" y="14" font-size="13.5" font-weight="600" fill="#1e293b">Claude Sonnet 4.5 + Terminus-KIRA</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">Multi-Turn Agentic Scaffold</text>
+  </g>
+  <g transform="translate(410, 310)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#64748b" text-anchor="middle">Frontier (~500B)</text>
+  </g>
+  <g transform="translate(560, 310)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="221" height="14" rx="7" fill="#818cf8" />
+  </g>
+  <g transform="translate(1040, 310)">
+    <rect x="0" y="1" width="70" height="26" rx="8" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+    <text x="35" y="18" font-size="11.5" font-weight="700" fill="#0f172a" text-anchor="middle">54.0%</text>
+  </g>
+  <g transform="translate(60, 358)">
+    <text x="0" y="14" font-size="13.5" font-weight="600" fill="#1e293b">Best Model in DeonticBench (o3 / Coder-480B)</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">CoT / LLM -> External SWI-Prolog</text>
+  </g>
+  <g transform="translate(410, 358)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#64748b" text-anchor="middle">Up to 480B</text>
+  </g>
+  <g transform="translate(560, 358)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="169" height="14" rx="7" fill="#f59e0b" />
+  </g>
+  <g transform="translate(1040, 358)">
+    <rect x="0" y="1" width="70" height="26" rx="8" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+    <text x="35" y="18" font-size="11.5" font-weight="700" fill="#0f172a" text-anchor="middle">44.4%</text>
+  </g>
+  <g transform="translate(60, 406)">
+    <text x="0" y="14" font-size="13.5" font-weight="600" fill="#1e293b">Claude Sonnet 4.5</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">Standard Direct / Chain-of-Thought</text>
+  </g>
+  <g transform="translate(410, 406)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#64748b" text-anchor="middle">Frontier (~500B)</text>
+  </g>
+  <g transform="translate(560, 406)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="124" height="14" rx="7" fill="#fb7185" />
+  </g>
+  <g transform="translate(1040, 406)">
+    <rect x="0" y="1" width="70" height="26" rx="8" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+    <text x="35" y="18" font-size="11.5" font-weight="700" fill="#0f172a" text-anchor="middle">36.0%</text>
+  </g>
+  <g transform="translate(60, 454)">
+    <text x="0" y="14" font-size="13.5" font-weight="600" fill="#1e293b">Qwen3.5-35B</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">Standard Direct / Chain-of-Thought</text>
+  </g>
+  <g transform="translate(410, 454)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#64748b" text-anchor="middle">35B</text>
+  </g>
+  <g transform="translate(560, 454)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="113" height="14" rx="7" fill="#fda4af" />
+  </g>
+  <g transform="translate(1040, 454)">
+    <rect x="0" y="1" width="70" height="26" rx="8" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+    <text x="35" y="18" font-size="11.5" font-weight="700" fill="#0f172a" text-anchor="middle">34.0%</text>
+  </g>
+  <g transform="translate(60, 502)">
+    <text x="0" y="14" font-size="13.5" font-weight="600" fill="#1e293b">GPT-5.2</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">Standard Direct / Chain-of-Thought</text>
+  </g>
+  <g transform="translate(410, 502)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#64748b" text-anchor="middle">Frontier (>1T)</text>
+  </g>
+  <g transform="translate(560, 502)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="92" height="14" rx="7" fill="#fda4af" />
+  </g>
+  <g transform="translate(1040, 502)">
+    <rect x="0" y="1" width="70" height="26" rx="8" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+    <text x="35" y="18" font-size="11.5" font-weight="700" fill="#0f172a" text-anchor="middle">30.0%</text>
+  </g>
+  <g transform="translate(60, 550)">
+    <text x="0" y="14" font-size="13.5" font-weight="600" fill="#1e293b">Qwen3.5-35B (Agentic CLI)</text>
+    <text x="0" y="28" font-size="10.5" font-weight="500" fill="#64748b">CLI Tool-Calling Harness</text>
+  </g>
+  <g transform="translate(410, 550)">
+    <rect x="0" y="2" width="130" height="24" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+    <text x="65" y="17.5" font-size="10" font-weight="700" fill="#64748b" text-anchor="middle">35B</text>
+  </g>
+  <g transform="translate(560, 550)">
+    <!-- Track Background -->
+    <rect x="0" y="7" width="460" height="14" rx="7" fill="#f1f5f9" />
+    <!-- Value Fill -->
+    <rect x="0" y="7" width="14" height="14" rx="7" fill="#f43f5e" />
+  </g>
+  <g transform="translate(1040, 550)">
+    <rect x="0" y="1" width="70" height="26" rx="8" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+    <text x="35" y="18" font-size="11.5" font-weight="700" fill="#0f172a" text-anchor="middle">11.0%</text>
+  </g>
+  <!-- Bottom Informational Cards -->
+  <g transform="translate(60, 615)">
+    <!-- Card 1: Direct Generation Ceiling -->
+    <rect x="0" y="0" width="510" height="88" rx="12" fill="#fff1f2" stroke="#fecdd3" stroke-width="1.2" />
+    <text x="20" y="24" font-size="12.5" font-weight="800" fill="#9f1239">The 44.4% Arithmetic Ceiling of Pure LLMs</text>
+    <text x="20" y="44" font-size="11" font-weight="500" fill="#be123c">Even frontier models (GPT-5.2, Claude Sonnet 4.5, Qwen-480B) peak at 44.4% directly</text>
+    <text x="20" y="60" font-size="11" font-weight="500" fill="#be123c">because statutory arithmetic requires multi-step rational math and exact rounding,</text>
+    <text x="20" y="76" font-size="11" font-weight="500" fill="#be123c">which causes cumulative token drift inside autoregressive attention heads.</text>
+    
+    <!-- Card 2: Neuro-Symbolic Inversion -->
+    <rect x="540" y="0" width="520" height="88" rx="12" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.2" />
+    <text x="560" y="24" font-size="12.5" font-weight="800" fill="#14532d">Scaling Law Inversion (80,000x Smaller Parameter Footprint)</text>
+    <text x="560" y="44" font-size="11" font-weight="500" fill="#15803d">MudraForge does not compute math inside neural tokens. The 5.8M transformer</text>
+    <text x="560" y="60" font-size="11" font-weight="500" fill="#15803d">compiles text into a Declarative AST; the USVM executes exact BigInt integer math.</text>
+    <text x="560" y="76" font-size="11" font-weight="700" fill="#047857">Result: 100% zero-shot accuracy (35/35 PASS) with audit-grade determinism.</text>
+  </g>
+</svg>

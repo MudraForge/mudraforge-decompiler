@@ -91,6 +91,8 @@ Below is the comparative performance across published literature on that exact *
 
 > **Performance on `SARA-Binary (Hard)` (30 cases)**: Bloomberg AI's *PercepLog* study (EMNLP 2026, Oct 25, 2026) achieved ~90% accuracy only when hand-crafted formal logic rules were pre-supplied by human experts. In contrast, `mudraforge-decompiler` achieved **30 / 30 (100.0%)** zero-shot by compiling directly from raw natural language statutory text without human-in-the-loop formalization.
 
+![Frontier LLM Benchmark Comparison](docs/images/frontier_llm_benchmark_comparison.svg)
+
 ### Cross-Domain Generalization (Non-Tax Corpora)
 
 | Corpus | Legal Domain | Modality | Result |
