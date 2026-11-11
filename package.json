@@ -24,6 +24,6 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@mudraforge/statutory": "file:../packages/statutory"
+    "@mudraforge/statutory": "^3.1.0"
   }
 }
