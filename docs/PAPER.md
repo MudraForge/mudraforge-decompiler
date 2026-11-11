@@ -130,7 +130,7 @@ To evaluate out-of-domain transfer, we tested the production neural compiler zer
 ### 4.3 USCIS Immigration Administration (Epistemic Safety Gate)
 - *Clause*: *"The petitioner must demonstrate that the foreign national's proposed endeavor has both substantial merit and national importance."* (*Matter of Dhanasar*)
 - *Compiler Output*: `status = UNRESOLVED_STATUTORY_AMBIGUITY`, `modality = MODALITY_ABSTAIN_UNRESOLVED`, `domainAbstainProb: 1.0`.
-- *Significance*: When evaluated on discretionary judicial standards lacking objective arithmetic thresholds, our domain sensor refused to guess. The model **failed closed** with `isAuthorizedToDisburse: false`, demonstrating controllership compliance under Rule 11.
+- *Significance*: When evaluated on discretionary judicial standards lacking objective arithmetic thresholds, our domain sensor refused to guess. The model **failed closed** with `isAuthorizedToDisburse: false`, demonstrating controllership compliance under statutory verification standards.
 
 ---
 

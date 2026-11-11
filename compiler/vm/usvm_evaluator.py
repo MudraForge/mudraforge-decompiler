@@ -255,6 +255,16 @@ class CanonicalUsvmEvaluator:
             except Exception:
                 pass
             try:
+                if proc.stdout and not proc.stdout.closed:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                if proc.stderr and not proc.stderr.closed:
+                    proc.stderr.close()
+            except Exception:
+                pass
+            try:
                 proc.wait(timeout=1.5)
             except Exception:
                 try:

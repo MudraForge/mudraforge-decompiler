@@ -24,7 +24,8 @@ import {
     evaluateStatutoryAst,
     validateStatutoryAst,
     StatutoryAstValidationError,
-    classifyOkfRuleLifecycle
+    classifyOkfRuleLifecycle,
+    getStatutoryAst
 } from '@mudraforge/statutory/usvm';
 
 const __filename = typeof import.meta?.url === 'string' && import.meta.url.startsWith('file:') ? fileURLToPath(import.meta.url) : '';
@@ -461,198 +462,16 @@ export function getUsvmRule(sectionKey) {
             return ast;
         }
     }
+
+    // Dynamic resolution via canonical @mudraforge/statutory package
+    const packageAst = getStatutoryAst(clean) || getStatutoryAst(stripped);
+    if (packageAst) {
+        AST_REGISTRY.set(clean, packageAst);
+        return packageAst;
+    }
+
     return null;
 }
-
-// Pre-load verified open corpus rules on module load
-registerRuleFromFile('194Q', 'rules/sec_194q_goods.json');
-registerRuleFromFile('393', 'rules/sec_393_goods.json');
-registerRuleFromFile('194C', 'rules/sec_194c_contractors.json');
-registerRuleFromFile('194J', 'rules/sec_194j_services.json');
-registerRuleFromFile('194H', 'rules/sec_194h_commission.json');
-registerRuleFromFile('194I', 'rules/sec_194i_rent.json');
-registerRuleFromFile('206C_1H', 'rules/sec_206c1h_tcs.json');
-registerRuleFromFile('206C(1H)', 'rules/sec_206c1h_tcs.json');
-registerRuleFromFile('194A', 'rules/sec_194a_interest.json');
-registerRuleFromFile('194O', 'rules/sec_194o_ecommerce.json');
-registerRuleFromFile('194IA', 'rules/sec_194ia_property.json');
-registerRuleFromFile('194-IA', 'rules/sec_194ia_property.json');
-registerRuleFromFile('194R', 'rules/sec_194r_perquisites.json');
-registerRuleFromFile('194IB', 'rules/sec_194ib_rent_ind.json');
-registerRuleFromFile('194-IB', 'rules/sec_194ib_rent_ind.json');
-registerRuleFromFile('194M', 'rules/sec_194m_contract_ind.json');
-
-// MSME Commercial rules
-registerRuleFromFile('MSMED15_16', 'rules/sec_msme_delayed_payments_15_16.json');
-registerRuleFromFile('MSMED_15_16', 'rules/sec_msme_delayed_payments_15_16.json');
-registerRuleFromFile('MSME_DELAYED_PAYMENTS', 'rules/sec_msme_delayed_payments_15_16.json');
-registerRuleFromFile('MSMED7', 'rules/sec_msme_classification_sec7.json');
-registerRuleFromFile('MSMED_SEC7', 'rules/sec_msme_classification_sec7.json');
-registerRuleFromFile('MSME_CLASSIFICATION', 'rules/sec_msme_classification_sec7.json');
-registerRuleFromFile('43BH', 'rules/sec_43bh_disallowance.json');
-registerRuleFromFile('43B(H)', 'rules/sec_43bh_disallowance.json');
-registerRuleFromFile('SEC_43BH', 'rules/sec_43bh_disallowance.json');
-
-// Indirect Tax GST rules
-registerRuleFromFile('RULE37', 'rules/sec_gst_itc_reversal_rule37_37a.json');
-registerRuleFromFile('RULE_37', 'rules/sec_gst_itc_reversal_rule37_37a.json');
-registerRuleFromFile('RULE37_37A', 'rules/sec_gst_itc_reversal_rule37_37a.json');
-registerRuleFromFile('RULE42', 'rules/sec_gst_rule42_43_apportionment.json');
-registerRuleFromFile('RULE_42', 'rules/sec_gst_rule42_43_apportionment.json');
-registerRuleFromFile('RULE42_43', 'rules/sec_gst_rule42_43_apportionment.json');
-
-// International Tax rules
-registerRuleFromFile('195', 'rules/sec_195_cross_border.json');
-registerRuleFromFile('SEC_195', 'rules/sec_195_cross_border.json');
-registerRuleFromFile('CROSS_BORDER_195', 'rules/sec_195_cross_border.json');
-registerRuleFromFile('92C', 'rules/sec_92c_transfer_pricing.json');
-registerRuleFromFile('SEC_92C', 'rules/sec_92c_transfer_pricing.json');
-registerRuleFromFile('TRANSFER_PRICING_92C', 'rules/sec_92c_transfer_pricing.json');
-
-// Corporate Restructuring rules
-registerRuleFromFile('79', 'rules/sec_79_loss_continuity.json');
-registerRuleFromFile('SEC_79', 'rules/sec_79_loss_continuity.json');
-registerRuleFromFile('LOSS_CONTINUITY_79', 'rules/sec_79_loss_continuity.json');
-registerRuleFromFile('281', 'rules/sec_281_tax_clearance.json');
-registerRuleFromFile('SEC_281', 'rules/sec_281_tax_clearance.json');
-registerRuleFromFile('TAX_CLEARANCE_281', 'rules/sec_281_tax_clearance.json');
-
-// Direct Tax Expansion rules
-registerRuleFromFile('115BAA', 'rules/sec_115baa_115jb_mat.json');
-registerRuleFromFile('115JB', 'rules/sec_115baa_115jb_mat.json');
-registerRuleFromFile('CORPORATE_TAX_MAT', 'rules/sec_115baa_115jb_mat.json');
-registerRuleFromFile('192', 'rules/sec_192_salary_tds.json');
-registerRuleFromFile('SEC_192', 'rules/sec_192_salary_tds.json');
-registerRuleFromFile('SALARY_TDS', 'rules/sec_192_salary_tds.json');
-registerRuleFromFile('206AB', 'rules/sec_206ab_non_filer.json');
-registerRuleFromFile('SEC_206AB', 'rules/sec_206ab_non_filer.json');
-registerRuleFromFile('INDAS12', 'rules/sec_indas12_deferred_tax.json');
-registerRuleFromFile('INDAS_12', 'rules/sec_indas12_deferred_tax.json');
-registerRuleFromFile('DEFERRED_TAX', 'rules/sec_indas12_deferred_tax.json');
-
-// GST Expansion rules
-registerRuleFromFile('17_5', 'rules/sec_gst_blocked_itc_17_5.json');
-registerRuleFromFile('SEC_17_5', 'rules/sec_gst_blocked_itc_17_5.json');
-registerRuleFromFile('BLOCKED_ITC', 'rules/sec_gst_blocked_itc_17_5.json');
-registerRuleFromFile('16_2', 'rules/sec_gst_itc_eligibility_16_2.json');
-registerRuleFromFile('SEC_16_2', 'rules/sec_gst_itc_eligibility_16_2.json');
-registerRuleFromFile('ITC_ELIGIBILITY', 'rules/sec_gst_itc_eligibility_16_2.json');
-registerRuleFromFile('9_3', 'rules/sec_gst_rcm_liability_9_3.json');
-registerRuleFromFile('SEC_9_3', 'rules/sec_gst_rcm_liability_9_3.json');
-registerRuleFromFile('RCM_LIABILITY', 'rules/sec_gst_rcm_liability_9_3.json');
-registerRuleFromFile('SEC8', 'rules/sec_gst_composite_mixed_8.json');
-registerRuleFromFile('SEC_8', 'rules/sec_gst_composite_mixed_8.json');
-registerRuleFromFile('COMPOSITE_MIXED', 'rules/sec_gst_composite_mixed_8.json');
-registerRuleFromFile('SEC10', 'rules/sec_gst_composition_levy_10.json');
-registerRuleFromFile('SEC_10', 'rules/sec_gst_composition_levy_10.json');
-registerRuleFromFile('COMPOSITION_LEVY', 'rules/sec_gst_composition_levy_10.json');
-registerRuleFromFile('SEC34', 'rules/sec_gst_credit_debit_notes_34.json');
-registerRuleFromFile('SEC_34', 'rules/sec_gst_credit_debit_notes_34.json');
-registerRuleFromFile('CREDIT_DEBIT_NOTES', 'rules/sec_gst_credit_debit_notes_34.json');
-registerRuleFromFile('LUT_EXPORT', 'rules/sec_gst_export_lut_16.json');
-registerRuleFromFile('EXPORT_SERVICES_LUT', 'rules/sec_gst_export_lut_16.json');
-registerRuleFromFile('RULE48_4', 'rules/sec_gst_einvoicing_rule48_4.json');
-registerRuleFromFile('RULE_48_4', 'rules/sec_gst_einvoicing_rule48_4.json');
-registerRuleFromFile('EINVOICING', 'rules/sec_gst_einvoicing_rule48_4.json');
-registerRuleFromFile('RULE138', 'rules/sec_gst_ewaybill_rule138.json');
-registerRuleFromFile('RULE_138', 'rules/sec_gst_ewaybill_rule138.json');
-registerRuleFromFile('EWAYBILL', 'rules/sec_gst_ewaybill_rule138.json');
-registerRuleFromFile('SEC51', 'rules/sec_gst_tds_sec51.json');
-registerRuleFromFile('SEC_51', 'rules/sec_gst_tds_sec51.json');
-registerRuleFromFile('GST_TDS', 'rules/sec_gst_tds_sec51.json');
-
-// MSME Expansion rules
-registerRuleFromFile('MSME_1', 'rules/sec_msme_mca_form_1.json');
-registerRuleFromFile('MCA_MSME_1', 'rules/sec_msme_mca_form_1.json');
-registerRuleFromFile('SEC22', 'rules/sec_msme_disclosures_sec22.json');
-registerRuleFromFile('SEC_22', 'rules/sec_msme_disclosures_sec22.json');
-registerRuleFromFile('MSME_DISCLOSURES', 'rules/sec_msme_disclosures_sec22.json');
-registerRuleFromFile('INDAS116', 'rules/sec_indas116_leases.json');
-registerRuleFromFile('INDAS_116', 'rules/sec_indas116_leases.json');
-registerRuleFromFile('INDAS115', 'rules/sec_indas115_revenue.json');
-registerRuleFromFile('INDAS_115', 'rules/sec_indas115_revenue.json');
-registerRuleFromFile('INDAS37', 'rules/sec_indas37_provisions.json');
-registerRuleFromFile('INDAS_37', 'rules/sec_indas37_provisions.json');
-
-// International Tax Expansion rules
-registerRuleFromFile('INDAS21', 'rules/sec_indas21_fx_reval.json');
-registerRuleFromFile('INDAS_21', 'rules/sec_indas21_fx_reval.json');
-registerRuleFromFile('FX_REVALUATION', 'rules/sec_indas21_fx_reval.json');
-registerRuleFromFile('INDAS109', 'rules/sec_indas109_ecl.json');
-registerRuleFromFile('INDAS_109', 'rules/sec_indas109_ecl.json');
-registerRuleFromFile('ECL_IMPAIRMENT', 'rules/sec_indas109_ecl.json');
-registerRuleFromFile('FTC_RELIEF', 'rules/sec_ftc_dtaa_relief.json');
-
-// Corporate M&A Expansion rules
-registerRuleFromFile('50B', 'rules/sec_50b_slump_sale.json');
-registerRuleFromFile('SEC_50B', 'rules/sec_50b_slump_sale.json');
-registerRuleFromFile('SLUMP_SALE', 'rules/sec_50b_slump_sale.json');
-registerRuleFromFile('INDAS103', 'rules/sec_indas103_mna.json');
-registerRuleFromFile('INDAS_103', 'rules/sec_indas103_mna.json');
-registerRuleFromFile('INDAS36', 'rules/sec_indas36_impairment.json');
-registerRuleFromFile('INDAS_36', 'rules/sec_indas36_impairment.json');
-registerRuleFromFile('INDAS102', 'rules/sec_indas102_esop.json');
-registerRuleFromFile('INDAS_102', 'rules/sec_indas102_esop.json');
-
-// Global Enterprise Accounting Ind AS additions
-registerRuleFromFile('INDAS7', 'rules/sec_indas7_cash_flows.json');
-registerRuleFromFile('INDAS_7', 'rules/sec_indas7_cash_flows.json');
-registerRuleFromFile('CASH_FLOWS', 'rules/sec_indas7_cash_flows.json');
-registerRuleFromFile('INDAS16', 'rules/sec_indas16_ppe.json');
-registerRuleFromFile('INDAS_16', 'rules/sec_indas16_ppe.json');
-registerRuleFromFile('PPE_DEPRECIATION', 'rules/sec_indas16_ppe.json');
-registerRuleFromFile('INDAS19', 'rules/sec_indas19_employee_benefits.json');
-registerRuleFromFile('INDAS_19', 'rules/sec_indas19_employee_benefits.json');
-registerRuleFromFile('EMPLOYEE_BENEFITS', 'rules/sec_indas19_employee_benefits.json');
-registerRuleFromFile('INDAS2', 'rules/sec_indas2_inventories.json');
-registerRuleFromFile('INDAS_2', 'rules/sec_indas2_inventories.json');
-registerRuleFromFile('INVENTORIES_VALUATION', 'rules/sec_indas2_inventories.json');
-registerRuleFromFile('INDAS28', 'rules/sec_indas28_associates.json');
-registerRuleFromFile('INDAS_28', 'rules/sec_indas28_associates.json');
-registerRuleFromFile('EQUITY_METHOD', 'rules/sec_indas28_associates.json');
-registerRuleFromFile('INDAS33', 'rules/sec_indas33_eps.json');
-registerRuleFromFile('INDAS_33', 'rules/sec_indas33_eps.json');
-registerRuleFromFile('EARNINGS_PER_SHARE', 'rules/sec_indas33_eps.json');
-registerRuleFromFile('INDAS38', 'rules/sec_indas38_intangibles.json');
-registerRuleFromFile('INDAS_38', 'rules/sec_indas38_intangibles.json');
-registerRuleFromFile('INTANGIBLES_CAPITALIZATION', 'rules/sec_indas38_intangibles.json');
-registerRuleFromFile('INDAS110', 'rules/sec_indas110_consolidation_nci.json');
-registerRuleFromFile('INDAS_110', 'rules/sec_indas110_consolidation_nci.json');
-registerRuleFromFile('CONSOLIDATION_NCI', 'rules/sec_indas110_consolidation_nci.json');
-registerRuleFromFile('INDAS113', 'rules/sec_indas113_fair_value.json');
-registerRuleFromFile('INDAS_113', 'rules/sec_indas113_fair_value.json');
-registerRuleFromFile('FAIR_VALUE_HIERARCHY', 'rules/sec_indas113_fair_value.json');
-
-// Direct Tax & GST High-Value Additions
-registerRuleFromFile('194S', 'rules/sec_194s_crypto_vda.json');
-registerRuleFromFile('SEC_194S', 'rules/sec_194s_crypto_vda.json');
-registerRuleFromFile('VDA_CRYPTO_194S', 'rules/sec_194s_crypto_vda.json');
-
-registerRuleFromFile('194BA', 'rules/sec_194ba_online_gaming.json');
-registerRuleFromFile('SEC_194BA', 'rules/sec_194ba_online_gaming.json');
-registerRuleFromFile('ONLINE_GAMING_194BA', 'rules/sec_194ba_online_gaming.json');
-
-registerRuleFromFile('194N', 'rules/sec_194n_cash_withdrawals.json');
-registerRuleFromFile('SEC_194N', 'rules/sec_194n_cash_withdrawals.json');
-registerRuleFromFile('CASH_WITHDRAWAL_194N', 'rules/sec_194n_cash_withdrawals.json');
-
-registerRuleFromFile('194DA', 'rules/sec_194da_life_insurance.json');
-registerRuleFromFile('SEC_194DA', 'rules/sec_194da_life_insurance.json');
-registerRuleFromFile('LIFE_INSURANCE_194DA', 'rules/sec_194da_life_insurance.json');
-
-registerRuleFromFile('194K', 'rules/sec_194k_mutual_funds.json');
-registerRuleFromFile('SEC_194K', 'rules/sec_194k_mutual_funds.json');
-registerRuleFromFile('MUTUAL_FUNDS_194K', 'rules/sec_194k_mutual_funds.json');
-
-registerRuleFromFile('206C1G', 'rules/sec_206c1g_lrs_remittance.json');
-registerRuleFromFile('206C(1G)', 'rules/sec_206c1g_lrs_remittance.json');
-registerRuleFromFile('SEC_206C1G', 'rules/sec_206c1g_lrs_remittance.json');
-registerRuleFromFile('LRS_REMITTANCE_206C1G', 'rules/sec_206c1g_lrs_remittance.json');
-
-registerRuleFromFile('SEC52', 'rules/sec_gst_tcs_ecommerce_sec52.json');
-registerRuleFromFile('SEC_52', 'rules/sec_gst_tcs_ecommerce_sec52.json');
-registerRuleFromFile('GST_SEC52', 'rules/sec_gst_tcs_ecommerce_sec52.json');
-registerRuleFromFile('ECOMMERCE_TCS_SEC52', 'rules/sec_gst_tcs_ecommerce_sec52.json');
 
 /**
  * Primary integration gateway for the statutory calculation pipeline.

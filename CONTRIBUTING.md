@@ -8,11 +8,11 @@ Our mission is to establish a mathematically verifiable, zero-shot neuro-symboli
 
 ## 1. Core Engineering Principles
 
-1. **Rule 18: Branch Isolation**:
+1. **Branch Isolation & Pull Request Protocol**:
    - Zero direct commits to `main`.
    - All functional work, bug fixes, and documentation must occur on short-lived branches (`feat/<name>`, `fix/<name>`, `refactor/<name>`, `docs/<name>`).
-2. **Rule 20: Strictly Zero Emojis**:
-   - Emojis are strictly forbidden in all codebase files, comments, docstrings, and commit messages.
+2. **Zero-Emoji Code Quality Policy**:
+   - Emojis are strictly forbidden in all codebase files, comments, docstrings, and commit messages to maintain institutional clarity.
    - Verified automatically via `python scripts/security_audit.py`.
 3. **Deterministic Verification Over Probabilistic Claims**:
    - Neural parser output must synthesize valid Declarative ASTs conforming to the Open Knowledge Format (OKF v0.2).
@@ -46,7 +46,7 @@ npm install
 Before opening a pull request, ensure all verification suites pass:
 
 ```bash
-# 1. Run static security & Rule 20 audit
+# 1. Run static security & zero-emoji audit
 python scripts/security_audit.py
 
 # 2. Run unit tests

@@ -203,12 +203,11 @@ mudraforge-decompiler/
 │   │   ├── tokenizer.py
 │   │   ├── inference.py
 │   │   └── dual_stream_inference.py
-│   ├── vm/                        # USVM Execution Adapter
-│   │   ├── index.js               # Runtime barrel re-exporting @mudraforge/statutory/usvm
-│   │   ├── usvm_pipeline_adapter.js # Pipeline adapter & shadow validation
-│   │   ├── usvm_worker_stdio.js   # Fast persistent IPC bridge
-│   │   └── usvm_evaluator.py      # Python client for USVM execution
-│   └── calculators/               # Deterministic statutory domain calculators
+│   └── vm/                        # USVM Execution Adapter (bridges to @mudraforge/statutory)
+│       ├── index.js               # Runtime barrel re-exporting @mudraforge/statutory/usvm
+│       ├── usvm_pipeline_adapter.js # Pipeline adapter & shadow validation
+│       ├── usvm_worker_stdio.js   # Fast persistent IPC bridge
+│       └── usvm_evaluator.py      # Python client for USVM execution
 ├── benchmarks/                    # Formal evaluation suites
 │   ├── test_sara_benchmark.py
 │   └── test_crossdomain_deonticbench.py

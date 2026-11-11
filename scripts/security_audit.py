@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 MudraForge Decompiler - Static Security & Supply-Chain Audit Gate
-Verifies Rule 20 zero-emoji compliance, license integrity, and secret leaks.
+Verifies zero-emoji code quality compliance, license integrity, and secret leaks.
 """
 
 import os
 import re
 import sys
 
-# Rule 20 strictly targets real emojis (excluding ASCII box-drawing, arrows, math symbols)
+# Zero-emoji policy strictly targets real emojis (excluding ASCII box-drawing, arrows, math symbols)
 EMOJI_PATTERN = re.compile(
     r"["
     r"\U0001F1E6-\U0001F1FF"  # flags
@@ -49,15 +49,15 @@ def main():
     print("MUDRAFORGE DECOMPILER - STATIC SECURITY & SUPPLY-CHAIN AUDIT GATE")
     print("=" * 75)
     
-    # 1. Rule 20 Zero-Emoji Compliance
-    print("\n[AUDIT 1/3] Scanning for Rule 20 zero-emoji violations...")
+    # 1. Zero-Emoji Code Quality Compliance
+    print("\n[AUDIT 1/3] Scanning for zero-emoji violations...")
     emoji_violations = audit_zero_emojis(repo_root)
     if emoji_violations:
-        print(f"[FAIL] Found {len(emoji_violations)} Rule 20 violations:")
+        print(f"[FAIL] Found {len(emoji_violations)} emoji policy violations:")
         for v in emoji_violations[:10]:
             print(f"  - {v}")
         sys.exit(1)
-    print("[PASS] 100% Rule 20 zero-emoji compliant across all source files.")
+    print("[PASS] 100% zero-emoji compliant across all source files.")
 
     # 2. License Check
     print("\n[AUDIT 2/3] Verifying LICENSE file...")

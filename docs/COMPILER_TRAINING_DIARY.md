@@ -331,7 +331,7 @@ This document maintains an append-only, chronologically indexed engineering diar
 ---
 
 ## Action Items for Upcoming Runs:
-1. **Tool Plumbing Integration:** Wire `decompile_statute` into `lib/skill_registry.js`, `lib/skills/modern_tool_adapter.js`, and `lib/core/capability_contracts.js` following the Rule 1 execution chain.
+1. **Tool Plumbing Integration:** Wire `decompile_statute` into `lib/skill_registry.js`, `lib/skills/modern_tool_adapter.js`, and `lib/core/capability_contracts.js` following the controllership tool execution chain.
 2. **Multi-Period Recurrence Schedules:** Extend USVM AST grammar for Ind AS 116 lease liability discounting (EIR) and Ind AS 109 expected credit loss staging.
 3. **Continuous Merkle Verification:** Re-verify OKF digests when compiler output is committed to the authoritative substrate.
 
@@ -462,8 +462,8 @@ This document maintains an append-only, chronologically indexed engineering diar
 
 ---
 
-## Diary Entry 17: Linear-Chain CRF Architectural Evaluation, 2-Line Confidence Calibration Refinement, Universal Statutory Composable Building Blocks, and Full Runtime Decompiler Wiring (Rule 1 Execution Chain)
-- **Objective:** Evaluate and formally decide on the Linear-Chain CRF proposal; implement the confidence calibration refinement to eliminate boundary stopword drag; formulate universal composable statutory building blocks capable of representing near infinite variations of human laws (computational or deterministic); generate concrete OKF v0.2 section packages across target domains; wire `decompile_statute` across the complete Rule 1 execution chain into the controllership runtime and Adesha Gateway Actor; and verify zero regressions across all test suites.
+## Diary Entry 17: Linear-Chain CRF Architectural Evaluation, 2-Line Confidence Calibration Refinement, Universal Statutory Composable Building Blocks, and Full Runtime Decompiler Wiring (Controllership Tool Execution Chain)
+- **Objective:** Evaluate and formally decide on the Linear-Chain CRF proposal; implement the confidence calibration refinement to eliminate boundary stopword drag; formulate universal composable statutory building blocks capable of representing near infinite variations of human laws (computational or deterministic); generate concrete OKF v0.2 section packages across target domains; wire `decompile_statute` across the complete tool execution chain into the controllership runtime and Adesha Gateway Actor; and verify zero regressions across all test suites.
 - **Architectural & Theoretical Implementations:**
   1. *Linear-Chain CRF Formal Evaluation (Option 2 Adopted)*:
      - Conducted an in-depth mathematical and systems evaluation of adding a 39-state Linear-Chain CRF on top of the contextual representations.
@@ -484,12 +484,12 @@ This document maintains an append-only, chronologically indexed engineering diar
        - `accountingDestination`: Direct ERP general ledger routing (`PROFIT_OR_LOSS`, `OTHER_COMPREHENSIVE_INCOME`, `ASSET_CAPITALIZATION`, `CONTINGENT_LIABILITY_FOOTNOTE`, `STATUTORY_TAX_PAYABLE`) with dual-entry voucher requirement flags.
        - `statutoryInvariants`: Immutable controllership invariants (`isAuthorizedToDisburse: false`, `requiresHumanApprovalForOutcomes: true`, `controllershipAttestationRequired: true`).
   4. *Authoritative OKF v0.2 Section Packages Generated*:
-     - Decompiled and generated full OKF v0.2 packages conforming strictly to Rule 12 and Rule 13:
+     - Decompiled and generated full OKF v0.2 packages conforming strictly to knowledge corpus and audit defensibility standards:
        - `enterprise_okf/msme_commercial/payment_of_gratuity_act_sec4`: Section 4 (continuous service, 15/26 wage fractional formula, death/disablement carveout).
        - `corporate_ma_restructuring/sebi_insider_trading_reg3`: Regulation 3 (UPSI communication bar, legitimate purpose safe harbors).
      - Verified computational expression building blocks on Ind AS 116 (Paragraph 5), Ind AS 37 (Paragraph 14), and Income-tax Act 2025 Section 393.
      - Each generated section contains `section.json` (all 12 required fields), `circulars/<instrument>.md` with authoritative frontmatter and deep URLs on whitelisted government domains, and `forms/statutory_compliance_checklist.json`.
-  5. *Complete Rule 1 Execution Chain Wiring (`decompile_statute`)*:
+  5. *Complete Tool Execution Chain Wiring (`decompile_statute`)*:
      - `lib/core/prompt_composer.js`: Documented tool semantics under Sovereign Statutory Shield.
      - `lib/registry/skill_schemas.js`: Registered tool schema in `FALLBACK_SCHEMAS`.
      - `skills/decompile_statute/index.js`: Implemented skill executor with neural CLI execution and deterministic fallback parser.
@@ -681,7 +681,7 @@ This document maintains an append-only, chronologically indexed engineering diar
   - *Node.js Unified & Targeted Test Suites*:
     - Targeted suites (`test_runtime_statutory_decompiler_wiring.js`, `test_game_rules_general_applicability.js`, `test_usvm_modes_deontic_and_staleness.js`, `test_usvm_universal_declarative_pipeline.js`, `test_bizarre_usvm_execution.js`): **38/38 tests PASSED (0 failed)**.
     - Unified Test Runner (`node tools/run_all_tests.js`): **134/134 test suites PASSED (0 failed)**.
-    - Zero-emoji scan (`Total emoji hits: 0`) and Rule 2 stale-reference scan clean.
+    - Zero-emoji scan (`Total emoji hits: 0`) and stale-reference scan clean.
 
 
 ---
@@ -714,7 +714,7 @@ This document maintains an append-only, chronologically indexed engineering diar
     * `tax_case_10`: USVM raw total tax is **\$68,844.74** (including FUTA tax $6 \times \$300.72 = \$1,804.32$). Standard IRS half-up rounding yields **\$68,845**. Benchmark label is **\$68,844** (the authors truncated / `floor()`).
     * `tax_case_29`: USVM raw total tax is **\$40,740.32** (FUTA tax \$271.50). Standard IRS rounding yields **\$40,740**. Benchmark label is **\$40,741** (the authors rounded up / `ceil()`).
     * `tax_case_47`: USVM raw total tax is **\$45,946.94**. Standard IRS rounding yields **\$45,947**. Benchmark label is **\$45,946** (the authors truncated / `floor()`).
-  - *Finding*: In the DeonticBench paper (*Dou et al.*), the authors explicitly noted that their ground truth was generated using mixed Prolog and Python scripts with internal rounding discrepancies across modules, which is why the paper officially establishes **$\pm \$1$ tolerance** as the evaluation metric. We maintain legally correct IRS half-up rounding with zero hardcoded truncation hacks under Rule 11.
+  - *Finding*: In the DeonticBench paper (*Dou et al.*), the authors explicitly noted that their ground truth was generated using mixed Prolog and Python scripts with internal rounding discrepancies across modules, which is why the paper officially establishes **$\pm \$1$ tolerance** as the evaluation metric. We maintain legally correct IRS half-up rounding with zero hardcoded truncation hacks under deterministic statutory correctness standards.
 - **Cross-Domain Regulatory Generalization (`test_deonticbench_crossdomain.py`)**:
   - Downloaded and evaluated the other DeonticBench domains:
     * *Airline Baggage Policies (80 hard cases)*: Compiled 3D dimensions (`cannot exceed 22 x 14 x 9 inches`) into `MODALITY_COMPUTATIONAL_CLIFF` and progressive overweight fees (`$100 for 50-70 lbs`) into `MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB` with valid ASTs zero-shot.
