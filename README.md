@@ -236,15 +236,15 @@ To maintain rigorous scientific and intellectual integrity, we explicitly deline
 ### Prior Art and Foundational Works (Credit to Prior Authors)
 
 1. **The SARA Benchmark and Tax Law Formalization**:
-   The Statutory Reasoning Assessment (SARA) dataset, taxpayer scenario narratives, ground-truth quantitative cases, and the initial manual Prolog formalizations are the original contributions of **Nils Holzenberger, Andrew Blair-Stanek, and Benjamin Van Durme** (Johns Hopkins University and University of Maryland, 2020, 2021). We do not claim authorship of the SARA dataset or its test cases.
+   The Statutory Reasoning Assessment (SARA) dataset, taxpayer scenario narratives, ground-truth quantitative cases, and the initial manual Prolog formalizations are the original contributions of **Nils Holzenberger, Andrew Blair-Stanek, and Benjamin Van Durme** (Johns Hopkins University and University of Maryland, [NLLP 2020](https://aclanthology.org/2020.nllp-1.1/), [ACL 2021](https://aclanthology.org/2021.findings-acl.239/)). We do not claim authorship of the SARA dataset or its test cases.
 2. **DeonticBench and Regulatory Splits**:
-   The cross-regulatory expansion into DeonticBench (including airline tariffs, state housing statutes, and immigration case law) and the curated `hard.json` evaluation split are the contributions of **Yilun Dou, Nils Holzenberger, et al.** (2026).
+   The cross-regulatory expansion into DeonticBench (including airline tariffs, state housing statutes, and immigration case law) and the curated `hard.json` evaluation split are the contributions of **Yilun Dou, Nils Holzenberger, et al.** ([arXiv:2604.04443, 2026](https://arxiv.org/abs/2604.04443), [GitHub Repository](https://github.com/guangyaodou/DeonticBench)).
 3. **Domain-Specific Languages for Law (Catala)**:
-   The foundational philosophy of compiling statutory law into executable declarative structures rather than interpreting law imperatively is pioneered by **Denis Merigoux, Nicolas Chataing, and Jonathan Protzenko** (*Catala: A Programming Language for the Law*, ICFP 2021).
+   The foundational philosophy of compiling statutory law into executable declarative structures rather than interpreting law imperatively is pioneered by **Denis Merigoux, Nicolas Chataing, and Jonathan Protzenko** (*[Catala: A Programming Language for the Law](https://catala-lang.org/)*, [ICFP 2021](https://doi.org/10.1145/3473582)).
 4. **Group Relative Policy Optimization (GRPO)**:
-   The mathematical formulation of GRPO without critic/value networks originates from **Zhihong Shao, Peiyi Wang, et al. (DeepSeek-AI, 2024)**.
+   The mathematical formulation of GRPO without critic/value networks originates from **Zhihong Shao, Peiyi Wang, et al.** ([DeepSeek-AI, arXiv:2402.03300, 2024](https://arxiv.org/abs/2402.03300)).
 5. **Constrained Viterbi Sequence Decoding**:
-   The foundational principles of sequence tagging via transition-constrained Viterbi decoding build on **Viterbi (1967)** and **Lafferty, McCallum, and Pereira (2001)**.
+   The foundational principles of sequence tagging via transition-constrained Viterbi decoding build on **Andrew Viterbi** ([IEEE Transactions on Information Theory, 1967](https://doi.org/10.1109/TIT.1967.1054010)) and **John Lafferty, Andrew McCallum, and Fernando Pereira** ([ICML 2001](https://repository.upenn.edu/cis_papers/159/)).
 
 ### Novel Contributions of MudraForge (`mudraforge-decompiler`)
 
@@ -260,15 +260,15 @@ We claim the following specific contributions:
 
 ## References
 
-1. **Holzenberger, N., Blair-Stanek, A., & Van Durme, B. (2020)**. *A Dataset for Statutory Reasoning in Tax Law and That Can Be Solved*. In Proceedings of the Natural Legal Language Processing Workshop (NLLP 2020), pages 1–10. Association for Computational Linguistics.
-2. **Holzenberger, N., & Van Durme, B. (2021)**. *Factoring Statutory Reasoning as Language Understanding and Formal Reasoning*. In Findings of the Association for Computational Linguistics: ACL-IJCNLP 2021, pages 2707–2717.
-3. **Blair-Stanek, A., Holzenberger, N., & Van Durme, B. (2021)**. *Can GPT-3 Perform Statutory Reasoning?*. Law, Technology and Humans, 3(2):64–81.
-4. **Dou, Y., Holzenberger, N., et al. (2026)**. *DeonticBench: Benchmarking Deontic Reasoning in Language Models Across Regulatory Domains*. arXiv preprint arXiv:2604.04443.
-5. **Merigoux, D., Chataing, N., & Protzenko, J. (2021)**. *Catala: A Programming Language for the Law*. Proceedings of the ACM on Programming Languages, 5(ICFP):1–29.
-6. **Wong, M. W., & Chun, A. (2021)**. *Rules as Code (RaC) and Domain Specific Languages for Computational Law*. Singapore Management University Centre for Computational Law Research Report.
-7. **Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Zhang, M., Li, Y. K., Wu, Y., & Guo, D. (2024)**. *DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models*. arXiv preprint arXiv:2402.03300.
-8. **Lafferty, J., McCallum, A., & Pereira, F. (2001)**. *Conditional Random Fields: Probabilistic Models for Segmenting and Labeling Sequence Data*. In Proceedings of the Eighteenth International Conference on Machine Learning (ICML 2001), pages 282–289.
-9. **MudraForge Research Team (2026)**. *The Open Knowledge Format (OKF v0.2): A Formal Intermediate Representation for Computational Jurisprudence*. MudraForge Technical Report RFC-009.
+1. **Holzenberger, N., Blair-Stanek, A., & Van Durme, B. (2020)**. [*A Dataset for Statutory Reasoning in Tax Law and That Can Be Solved*](https://aclanthology.org/2020.nllp-1.1/). In Proceedings of the Natural Legal Language Processing Workshop (NLLP 2020), pages 1–10. Association for Computational Linguistics.
+2. **Holzenberger, N., & Van Durme, B. (2021)**. [*Factoring Statutory Reasoning as Language Understanding and Formal Reasoning*](https://aclanthology.org/2021.findings-acl.239/). In Findings of the Association for Computational Linguistics: ACL-IJCNLP 2021, pages 2707–2717.
+3. **Blair-Stanek, A., Holzenberger, N., & Van Durme, B. (2021)**. [*Can GPT-3 Perform Statutory Reasoning?*](https://doi.org/10.5204/lth.1989). Law, Technology and Humans, 3(2):64–81.
+4. **Dou, Y., Holzenberger, N., et al. (2026)**. [*DeonticBench: Benchmarking Deontic Reasoning in Language Models Across Regulatory Domains*](https://arxiv.org/abs/2604.04443). arXiv preprint arXiv:2604.04443. [Dataset Repository](https://github.com/guangyaodou/DeonticBench).
+5. **Merigoux, D., Chataing, N., & Protzenko, J. (2021)**. [*Catala: A Programming Language for the Law*](https://doi.org/10.1145/3473582). Proceedings of the ACM on Programming Languages, 5(ICFP):1–29. [Project Website](https://catala-lang.org/).
+6. **Wong, M. W., & Chun, A. (2021)**. [*Rules as Code (RaC) and Domain Specific Languages for Computational Law*](https://cclaw.smu.edu.sg/). Singapore Management University Centre for Computational Law Research Report.
+7. **Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Zhang, M., Li, Y. K., Wu, Y., & Guo, D. (2024)**. [*DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models*](https://arxiv.org/abs/2402.03300). arXiv preprint arXiv:2402.03300.
+8. **Lafferty, J., McCallum, A., & Pereira, F. (2001)**. [*Conditional Random Fields: Probabilistic Models for Segmenting and Labeling Sequence Data*](https://repository.upenn.edu/cis_papers/159/). In Proceedings of the Eighteenth International Conference on Machine Learning (ICML 2001), pages 282–289.
+9. **MudraForge Research Team (2026)**. [*The Open Knowledge Format (OKF v0.2): A Formal Intermediate Representation for Computational Jurisprudence*](https://github.com/MudraForge/mudraforge-statutory/blob/main/docs/SPECIFICATION.md). MudraForge Technical Report RFC-009.
 
 ---
 
