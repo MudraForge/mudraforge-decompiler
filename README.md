@@ -69,6 +69,28 @@ The decompiler was evaluated zero-shot on the peer-reviewed **DeonticBench / SAR
 
 > **Note on Exact Numeric Resolution**: 32 out of 35 numeric cases match ground truth with exact \$0 discrepancy. The remaining 3 cases exhibit discrepancies of 74 cents, 32 cents, and 94 cents respectively, attributable to intermediate integer truncation versus floating-point rounding under 26 U.S.C. § 1(f)(6). All 35 cases fall within the official DeonticBench $\pm \$1$ tolerance threshold.
 
+### Comparison vs. Published Frontier Baselines (`DeonticBench` & `DAR`, 2026)
+
+The 35 numeric instances and 30 binary instances in `hard.json` were specifically isolated by the Johns Hopkins benchmark authors because they represent the exact statutory edge-cases that cause frontier large language models to fail:
+
+> *"The hard subset omits easier tasks identified by both model runs (GPT-5.2, o3, Claude Sonnet) and human review. The proportion of hard instances is 35 / 100 in SARA Numeric and 30 / 100 in SARA Binary..."*  
+> — **Dou et al., DeonticBench (arXiv:2604.04443, 2026)**
+
+Below is the comparative performance across published literature on that exact **`SARA-Numeric` (`hard.json`, 35 cases)** split:
+
+| Model / Architecture | Parameter Scale | Reasoning Paradigm | Score on `SARA-Numeric (Hard)` | Citation / Source |
+| :--- | :---: | :--- | :---: | :--- |
+| **`Qwen3.5-35B`** | 35B | Agentic CLI Harness | **11.0%** | *DAR (Dou et al., 2026)* |
+| **`GPT-5.2`** | Frontier | Standard Direct / Chain-of-Thought | **30.0%** | *DAR (Dou et al., 2026)* |
+| **`Qwen3.5-35B`** | 35B | Standard Direct / Chain-of-Thought | **34.0%** | *DAR (Dou et al., 2026)* |
+| **`Claude Sonnet 4.5`** | Frontier | Standard Direct / Chain-of-Thought | **36.0%** | *DAR (Dou et al., 2026)* |
+| **Best Model in `DeonticBench`**<br>*(GPT-5.2-Codex, o3, Qwen3-Coder-480B)* | Up to 480B | CoT / LLM $\rightarrow$ External SWI-Prolog | **44.4%** | *DeonticBench (arXiv:2604.04443)* |
+| **`Claude Sonnet 4.5` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **54.0%** | *DAR (Dou et al., 2026)* |
+| **`GPT-5.2` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **60.0%** | *DAR (Dou et al., 2026)* |
+| **`MudraForge Decompiler` + `USVM`** | **5.8M** | **Dual-Stream AST Compiler $\rightarrow$ Deterministic USVM** | **100.0% (35 / 35)** | *This Repository* |
+
+> **Performance on `SARA-Binary (Hard)` (30 cases)**: Bloomberg AI's *PercepLog* study (EMNLP 2026, Oct 25, 2026) achieved ~90% accuracy only when hand-crafted formal logic rules were pre-supplied by human experts. In contrast, `mudraforge-decompiler` achieved **30 / 30 (100.0%)** zero-shot by compiling directly from raw natural language statutory text without human-in-the-loop formalization.
+
 ### Cross-Domain Generalization (Non-Tax Corpora)
 
 | Corpus | Legal Domain | Modality | Result |

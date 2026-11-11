@@ -53,7 +53,29 @@ The table below contrasts our results with the published baselines from the SARA
 
 ![Multi-Domain Benchmark Radar](images/multidomain_benchmark_radar.png)
 
-### Key Benchmark Tracks Breakdown
+### 2.1 Comparative Breakdown vs. Published Frontier LLM Baselines (`DeonticBench` & `DAR`, 2026)
+
+In the DeonticBench study (*Dou et al., arXiv:2604.04443, 2026*) and the follow-up *DAR* (*Deontic Reasoning with Agentic Harnesses*) evaluation, the authors specifically isolated the `hard.json` subset by omitting easier statutory tasks that standard models could solve:
+
+> *"The hard subset omits easier tasks identified by both model runs (GPT-5.2, o3, Claude Sonnet) and human review. The proportion of hard instances is 35 / 100 in SARA Numeric..."*  
+> — **Dou et al., Section 4**
+
+The table below contrasts our neuro-symbolic decompiler against published frontier models evaluated on that exact **`SARA-Numeric` (`hard.json`, 35 cases)** split:
+
+| Model / System | Parameter Scale | Reasoning Paradigm | Score on `SARA-Numeric (Hard)` | Citation / Source |
+| :--- | :---: | :--- | :---: | :--- |
+| **`Qwen3.5-35B`** | 35B | Agentic CLI Harness | **11.0%** | *DAR (Dou et al., 2026)* |
+| **`GPT-5.2`** | Frontier | Standard Direct / Chain-of-Thought | **30.0%** | *DAR (Dou et al., 2026)* |
+| **`Qwen3.5-35B`** | 35B | Standard Direct / Chain-of-Thought | **34.0%** | *DAR (Dou et al., 2026)* |
+| **`Claude Sonnet 4.5`** | Frontier | Standard Direct / Chain-of-Thought | **36.0%** | *DAR (Dou et al., 2026)* |
+| **Best Model in `DeonticBench`**<br>*(GPT-5.2-Codex, o3, Qwen3-Coder-480B)* | Up to 480B | CoT / LLM $\rightarrow$ External SWI-Prolog | **44.4%** | *DeonticBench (arXiv:2604.04443)* |
+| **`Claude Sonnet 4.5` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **54.0%** | *DAR (Dou et al., 2026)* |
+| **`GPT-5.2` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **60.0%** | *DAR (Dou et al., 2026)* |
+| **`MudraForge Decompiler` + `USVM`** | **5.8M** | **Dual-Stream AST Compiler $\rightarrow$ Deterministic USVM** | **100.0% (35 / 35)** | *This Report* |
+
+On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's *PercepLog* study (EMNLP 2026, Oct 25, 2026) achieved ~90% accuracy only when hand-crafted formal logic rules were pre-supplied by human experts. In contrast, `mudraforge-decompiler` achieved **30 / 30 (100.0%)** zero-shot by compiling directly from raw natural language statutory text without human-in-the-loop formalization.
+
+### 2.2 Key Benchmark Tracks Breakdown
 
 1. **Track 1A (Verbatim US IRC Clauses)**:
    - 10/10 (100.0%) successfully compiled into valid Declarative ASTs.
@@ -72,7 +94,7 @@ The table below contrasts our results with the published baselines from the SARA
    - **35/35 (100.0%) PASS** under the official DeonticBench $\pm \$1$ tolerance standard.
    - **32/35 (91.4%) PASS** on exact dollar-for-dollar match.
 
-### 2.1 The Generalization Paradox: Single-Stream Monolithic vs. Dual-Stream Disentangled
+### 2.3 The Generalization Paradox: Single-Stream Monolithic vs. Dual-Stream Disentangled
 
 ![Generalization Breakdown](images/generalization_gap_benchmark.png)
 
@@ -82,7 +104,7 @@ A critical empirical discovery emerged during our training curriculum:
 - **The Disentangled Solution**: In the Dual-Stream architecture, Model B (`DomainSensor`, 2.76M params) isolates raw lexical vocabulary and preamble chatter, passing only detached 9-dimensional probability distributions to Model A (`LogicReasoner`, 2.99M params). Model A operates strictly on a closed 48-token logic vocabulary and morphological suffix projections.
 - **The Generalization Payoff**: Although in-distribution synthetic exact match dropped slightly (75.49% vs 78.26%) due to the removal of lexical memorization shortcuts, out-of-distribution generalization surged to **100.0% zero-shot across SARA and DeonticBench**.
 
-### 2.2 Empirical Discoveries & Training Run Insights
+### 2.4 Empirical Discoveries & Training Run Insights
 
 Beyond aggregate metrics, our progressive training iterations (across 22 empirical curricula documented in the Training Diary) yielded four fundamental scientific discoveries regarding how neural networks represent and compile statutory logic:
 
