@@ -21,6 +21,37 @@ Rather than delegating mathematical or legal deduction to stochastic next-token 
 
 ---
 
+## System Boundaries: The Neural Compiler vs. The Execution Engine
+
+A common point of confusion in statutory AI is whether neural models should perform calculations. In MudraForge, the architecture enforces a strict division of responsibility:
+
+```
+[ Natural Language Statute ]
+             │
+             │ Neural Parsing (mudraforge-decompiler)
+             ▼
+[ Declarative Abstract Syntax Tree (OKF v0.2 AST) ]
+             │
+             │ Evaluation over Taxpayer Facts (@mudraforge/statutory USVM)
+             ▼
+[ Deterministic Legal Verdict & Exact Tax Liability ]
+```
+
+### What the Neural Model Outputs
+The neural model (`dual_stream_sup.pt` / `dual_stream_rl.pt`) is an **intermediate representation compiler**, not a calculator:
+- **It does NOT emit raw tax numbers or final legal verdicts.**
+- **It does NOT generate arbitrary executable Python/JS code on the fly.**
+- **It outputs a typed Declarative AST**: A structured JSON intermediate representation conforming to the Open Knowledge Format (OKF v0.2). This AST declares the rule's deontic status (`OBLIGATION`, `PROHIBITION`, `PERMISSION`), computational archetype (`SLAB`, `CLIFF`, `EXCESS`), mathematical rates, threshold boundaries, temporal validity windows, and condition gates.
+
+### Why We Import `@mudraforge/statutory` (The Engine)
+An Abstract Syntax Tree is a declarative program; to evaluate whether an invoice or taxpayer case complies with the statute, the AST must be executed against concrete facts. We import `@mudraforge/statutory` as the backend runtime for four fundamental reasons:
+1. **Zero Arithmetic Hallucination**: Autoregressive next-token prediction and neural embeddings cannot reliably perform multi-step rational arithmetic. The Universal Statutory Virtual Machine (USVM) in `@mudraforge/statutory` executes exact 64-bit integer BigInt rational math (cents and paisa), eliminating floating-point rounding drift.
+2. **Immutable Non-Disbursement Invariant**: Under controllership standards, automated legal reasoning must be strictly separated from fund movement. The USVM engine enforces the non-negotiable invariant `isAuthorizedToDisburse: false` across all evaluation vouchers.
+3. **True Neuro-Symbolic Decoupling**: Neural networks excel at linguistic perception (parsing synonyms, complex legalese, and sentence syntax). Symbolic virtual machines excel at deductive logic, cycle detection, and arithmetic. Decoupling them prevents the reasoning collapse seen in end-to-end LLMs.
+4. **Canonical Shared Ground Truth**: Rather than maintaining duplicate calculation engines across repositories, `mudraforge-decompiler` consumes `@mudraforge/statutory` (v3.1.0) as the shared, Merkle-hashed canonical standard used across the MudraForge ecosystem.
+
+---
+
 ## Benchmark Evaluations
 
 The decompiler was evaluated zero-shot on the peer-reviewed **DeonticBench / SARA** benchmark suite (covering U.S. Internal Revenue Code Sections 1, 2, 63, 68, 151, 152, 3301, 3306, and 7703) without training on U.S. tax data.
@@ -46,51 +77,77 @@ The decompiler was evaluated zero-shot on the peer-reviewed **DeonticBench / SAR
 | **State Housing Act** | Municipal Real Estate | Security Deposit Return Cap | **Passed (100%)** |
 | **USCIS Immigration Code** | Sovereign Administrative Law | Discretionary Naturalization | **Abstain (Clean Fail-Closed)** |
 
+### Benchmark Visualizations & Empirical Generalization
+
+![Generalization Breakdown](docs/images/generalization_gap_benchmark.png)
+
+![Multi-Domain Benchmark Radar](docs/images/multidomain_benchmark_radar.png)
+
+#### The Generalization Paradox: Single-Stream Monolithic vs. Dual-Stream Disentangled Architecture
+
+During our training curriculum, we empirically tested two competing architectural paradigms:
+1. **Single-Stream Monolithic Baseline (`mudra_decompiler_0`)**: A unified 5.75M parameter transformer jointly modeling lexical vocabulary, syntactic roles, and deontic operators in a shared representation space.
+2. **Dual-Stream Disentangled Architecture (`dual_stream_sup` / `dual_stream_rl`)**: An isolated 2-stream architecture cleanly decoupling lexical entity recognition (`DomainSensor`, 2.76M params) from formal deontic logic compilation (`LogicReasoner`, 2.99M params).
+
+| Empirical Metric | Single-Stream Monolithic | Dual-Stream Disentangled (Production) | Scientific Finding |
+|---|:---:|:---:|---|
+| **In-Distribution Synthetic Exact Match (EM)** | **78.26%** | **75.49%** | The single-stream model overfitted to surface legal jargon (e.g. Indian Direct Tax vocabulary), slightly outscoring the dual-stream model on synthetic phrasing. |
+| **SARA Numeric U.S. IRC Tax Liability (`hard.json`)** | 28.0% | **100.0%** *(35/35 cases)* | The single-stream model suffered token collapse on unseen U.S. terminology; Dual-Stream generalized zero-shot to 100% precision. |
+| **SARA Binary Kinship Entailment (`hard.json`)** | 52.0% | **100.0%** *(30/30 cases)* | Kinship relations (§ 151/152) required pure structural reasoning uncorrupted by domain nouns. |
+| **Airline Baggage Tariffs (Commercial Law)** | 61.0% | **100.0%** | Dual-Stream parsed dimensional limits and compound excess fees zero-shot. |
+| **State Housing Act (Municipal Real Estate)** | 65.0% | **100.0%** | Dual-Stream correctly synthesized deontic permission gates without penalty hallucination. |
+| **USCIS Immigration Safety Gate (Discretionary Law)** | 0.0% *(Hallucinated verdicts)* | **100.0%** *(Clean Fail-Closed)* | Dual-Stream's `DomainSensor` computed `abstainProb = 1.0` and safely halted execution with `isAuthorizedToDisburse: false`. |
+| **GRPO Reinforcement Learning Peak Pass Rate** | 46.4% | **91.5%** | Freezing the `DomainSensor` during RL prevented representation drift on logic heads. |
+
 ---
 
 ## Architecture
 
-```
-Unstructured Statutory Text
-       │
-       ▼
-┌────────────────────────────────────────────────────────┐
-│             Dual-Stream Transformer (5.8M)             │
-│                                                        │
-│  ┌────────────────────────┐  ┌───────────────────────┐ │
-│  │ Domain Sensor Stream   │  │ Logic Reasoner Stream │ │
-│  │ (Lexical & Suffixes)   │  │ (Deontic Operators)   │ │
-│  └───────────┬────────────┘  └───────────┬───────────┘ │
-│              └─────────────┬─────────────┘             │
-│                            ▼                           │
-│                Constrained Viterbi BIO                 │
-│                Role & Relation Heads                   │
-└────────────────────────────┬───────────────────────────┘
-                             │
-                             ▼
-┌────────────────────────────────────────────────────────┐
-│             Declarative AST Synthesizer                │
-│    (Emits OKF v0.2 Computational Pipeline AST)         │
-└────────────────────────────┬───────────────────────────┘
-                             │
-                             ▼
-┌────────────────────────────────────────────────────────┐
-│     Universal Statutory Virtual Machine (USVM)         │
-│                                                        │
-│  • Integer & Paisa/Cent Precision Rational Math        │
-│  • Deontic Status & Carveout Evaluator                 │
-│  • Strict Invariant Guard: isAuthorizedToDisburse=false │
-└────────────────────────────┬───────────────────────────┘
-                             │
-                             ▼
-               Deterministic Legal Verdict
-```
+![Dual-Stream Architecture](docs/images/dual_stream_architecture.png)
 
 ### Key Architectural Invariants
 
 1. **Non-Disbursement Invariant**: Every compiled AST and execution voucher mandates `isAuthorizedToDisburse: false`. Statutory reasoning never authorizes autonomous funds movement.
 2. **Zero In-Memory Duplicate Math**: Numerical computation is handled entirely within the declarative USVM kernel using exact rational arithmetic, eliminating floating-point rounding errors and cross-language drift.
 3. **Fail-Closed Boundary**: Ambiguous, contradictory, or out-of-scope provisions trigger `MODALITY_ABSTAIN_UNRESOLVED` with zero execution side effects.
+
+### Training Telemetry & Loss Curves
+
+![Training Loss and Convergence Curves](docs/images/loss_and_convergence_curves.png)
+
+![GRPO RL Reward Curves](docs/images/grpo_rl_reward_curves.png)
+
+- **Supervised Training Stability**: The single-stream baseline suffered from validation loss divergence after Epoch 8 (rising from 0.708 to 0.845) due to memorizing domain-specific noun co-occurrences. In contrast, the Dual-Stream architecture converged stably to NLL 0.751 with smooth generalization.
+- **GRPO Policy Optimization**: Single-stream RL plateaued at +3.22 reward and 46.4% vector pass rate because policy gradients destabilized token representations. By freezing the `DomainSensor` during RL, Dual-Stream surged to **+17.42 reward** and **91.5% pass rate** without domain representation drift.
+- **Interactive Visualizer**: You can interactively inspect run telemetry, metrics, and comparisons by opening [docs/training_dashboard.html](docs/training_dashboard.html) in your browser.
+
+### Empirical Findings & Training Run Discoveries
+
+Across 22 progressive training iterations, our ablation experiments revealed four crucial empirical phenomena governing how transformers handle statutory logic:
+
+#### 1. The Domain Noun Dropout Experiment: Lexical Crutches vs. Structural Invariance
+![Domain Noun Dropout Ablation](docs/images/noun_dropout_ablation_insight.png)
+
+- **Discovery**: When domain nouns (*"buyer"*, *"turnover"*, *"goods"*, *"PAN"*) were masked during inference, the single-stream model collapsed from **78.3% EM to 13.9% EM**, proving it had memorized vocabulary correlations rather than legal logic.
+- **Dual-Stream Robustness**: The Dual-Stream model remained invariant, retaining **74.2% EM** even with 75% of domain nouns masked. Its `LogicReasoner` parses syntactic structure independently of vocabulary, enabling seamless zero-shot transfer to U.S. Federal Tax law.
+
+#### 2. The Label Smoothing Paradox in Discrete Legal Logic
+![Label Smoothing Paradox](docs/images/label_smoothing_paradox_insight.png)
+
+- **Discovery**: Standard NLP label smoothing ($\epsilon = 0.1$) caused severe boundary jitter on legal modalities, reducing exact match by **12.3%**. In statutory law, obligations (*"shall"*) and permissions (*"may"*) are discrete, non-smoothable truth assignments.
+- **Cosine Annealing Solution**: Annealing smoothing dynamically ($\epsilon: 0.1 \to 0$) provided soft representations during early training while enforcing crisp boolean probabilities ($p > 0.985$) for deterministic compilation.
+
+#### 3. GRPO Reward Hacking vs. Counterfactual Falsification Defense
+![GRPO Counterfactual Reward Defense](docs/images/grpo_counterfactual_reward_insight.png)
+
+- **Discovery**: Pure execution reward in reinforcement learning produced degenerate tautologies (`condition: TRUE`) that passed execution without runtime errors but triggered on invalid inputs (counterfactual pass rate crashed to 33%).
+- **Dual-Faceted GRPO**: Penalizing counterfactual activations (testing inputs below statutory thresholds) forced the policy to compile exact boolean comparison gates, driving robustness to **100.0%**.
+
+#### 4. The 166.7% Over-Withholding Trap (Cliff vs. Excess Threshold Math)
+![Threshold Mechanics: Cliff vs Excess](docs/images/threshold_mechanics_cliff_vs_excess.png)
+
+- **Discovery**: Naive LLMs and ungrounded parsers misinterpret marginal excess thresholds (e.g., Section 194Q: withholding applies only to purchases exceeding ₹50 Lakhs) as gross thresholds, computing tax on the full ₹80L instead of the ₹30L excess (a 166.7% over-withholding error).
+- **Disentangled AST Synthesis**: The compiler explicitly categorizes thresholds into `AST_EXCESS_THRESHOLD` vs. `AST_CLIFF_THRESHOLD`, guaranteeing mathematically sound USVM execution.
 
 ---
 
@@ -272,17 +329,33 @@ We claim the following specific contributions:
 
 ---
 
+## Publication Roadmap
+
+1. **Phase 1: Open-Source Code & Model Checkpoints (Current)**:
+   - Standalone GitHub repository release (`mudraforge-decompiler`) with reproducible SARA / DeonticBench test suites.
+   - Dual-Stream neural model checkpoints (`checkpoints/dual_stream_sup.pt` and `checkpoints/dual_stream_rl.pt`).
+   - In-process USVM integration via `@mudraforge/statutory`.
+2. **Phase 2: Hugging Face Model Hub Release**:
+   - Model cards, tokenizer configurations, and safetensors weights published to `MudraForge/mudraforge-decompiler-5.8m`.
+   - Interactive Gradio / Space demonstration for real-time statutory decompilation.
+3. **Phase 3: Formal arXiv Preprint Submission**:
+   - Formal submission of the comprehensive technical paper to arXiv (`cs.AI` / `cs.CL` / `cs.SE`).
+4. **Phase 4: Peer-Reviewed Conference Submission**:
+   - Submission to major academic venues in computational linguistics and artificial intelligence & law (e.g., ACL / EMNLP / ICAIL 2026).
+
+---
+
 ## Citation
 
-If you use `mudraforge-decompiler` in your research or applications, please cite:
+If you use `mudraforge-decompiler` in your research or applications, please cite the open-source software repository and technical specification:
 
 ```bibtex
-@article{mudraforge2026decompiler,
+@software{mudraforge2026decompiler,
   title={A 5.8M-Parameter Zero-Shot Neuro-Symbolic Decompiler for Computational Law and Statutory Reasoning},
   author={MudraForge Research Team},
-  journal={arXiv preprint},
   year={2026},
-  url={https://github.com/MudraForge/mudraforge-decompiler}
+  howpublished={\url{https://github.com/MudraForge/mudraforge-decompiler}},
+  note={Open-source neuro-symbolic statutory compiler and USVM runtime}
 }
 ```
 

@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MudraForge Training Visualizer</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    :root {
+      --card: #18181b;
+      --background: #09090b;
+      --foreground: #f4f4f5;
+      --border: #27272a;
+      --muted-foreground: #a1a1aa;
+      --primary: #10b981;
+      --primary-foreground: #ffffff;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --card: #ffffff;
+        --background: #f8fafc;
+        --foreground: #0f172a;
+        --border: #e2e8f0;
+        --muted-foreground: #64748b;
+        --primary: #059669;
+        --primary-foreground: #ffffff;
+      }
+    }
+    body {
+      background-color: var(--background);
+      color: var(--foreground);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-transparent text-[var(--foreground)] antialiased p-2">
+  <div class="bg-[var(--card)] text-[var(--foreground)] border border-[var(--border)] rounded-xl p-3.5 shadow-sm">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+      <div class="flex items-center gap-2">
+        <h2 class="text-sm font-semibold leading-tight">Training Runs &amp; Live Progress</h2>
+        <span id="liveBadge" class="hidden px-2 py-0.5 rounded-full text-xs font-semibold bg-[#10b981]/20 text-[#10b981]">LIVE</span>
+      </div>
+      <div class="flex flex-wrap items-center gap-1.5 text-xs">
+        <button onclick="window.location.reload()" title="Reload latest logs (or press F5)" class="px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--border)] text-[var(--foreground)] text-xs transition">
+          Refresh
+        </button>
+        <select id="presetSel" class="px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--card)] text-[var(--foreground)] text-xs">
+          <option value="RECENT_VS">Recent Dual vs Single</option>
+          <option value="TOP_3">Top 3 Best</option>
+          <option value="TOP_2">Top 2 Best</option>
+          <option value="TOP_5">Top 5 Best</option>
+          <option value="ALL">Show All in Family</option>
+        </select>
+        <select id="rankSel" class="px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--card)] text-[var(--foreground)] text-xs">
+          <option value="composite">Rank: Composite</option>
+          <option value="bestEm">Rank: Primary Score</option>
+          <option value="bestNll">Rank: Lowest Loss</option>
+          <option value="mtime">Rank: Most Recent</option>
+        </select>
+        <span id="stampText" class="text-xs text-[var(--muted-foreground)]">2026-11-11 04:33:27</span>
+      </div>
+    </div>
+
+    <!-- Top-Level Model Family Switcher (Supervised vs Reinforcement Learning) -->
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2 pb-2 border-b border-[var(--border)]">
+      <div class="flex items-center gap-1.5">
+        <span class="text-xs font-semibold text-[var(--muted-foreground)] mr-1">Family:</span>
+        <button id="familyBtnSup" onclick="switchFamily('SUP')" class="px-3 py-1 rounded-md text-xs font-semibold transition">
+          Supervised (<span id="supCount">0</span>)
+        </button>
+        <button id="familyBtnRl" onclick="switchFamily('RL')" class="px-3 py-1 rounded-md text-xs font-semibold transition">
+          Reinforcement Learning (GRPO) (<span id="rlCount">0</span>)
+        </button>
+      </div>
+      <div class="text-xs text-[var(--muted-foreground)]">
+        <span id="familySummary"></span>
+      </div>
+    </div>
+
+    <div id="metricTabs" class="flex flex-wrap gap-1.5 mb-2"></div>
+    <div id="visBar" class="flex flex-wrap gap-1.5 mb-2 "></div>
+
+    <div class="relative w-full">
+      <svg id="chart" viewBox="0 0 740 290" class="w-full h-auto block select-none"></svg>
+    </div>
+
+    <div class="mt-2 pt-2 border-t border-[var(--border)] flex flex-wrap items-center justify-between gap-2 text-xs">
+      <span id="hoverReadout" class="font-medium">Hover over any epoch to compare visible runs.</span>
+      <span id="metricHint" class="text-[var(--muted-foreground)]">Click a run chip above to toggle visibility.</span>
+    </div>
+    
+    <div class="mt-4 overflow-x-auto border-t border-[var(--border)] pt-3">
+      <table class="w-full text-left text-xs border-collapse">
+        <thead>
+          <tr class="text-[var(--muted-foreground)] border-b border-[var(--border)]">
+            <th class="py-1.5 pr-3">Vis</th>
+            <th class="py-1.5 pr-3">Run</th>
+            <th class="py-1.5 pr-3">Status</th>
+            <th class="py-1.5 pr-3">Epochs</th>
+            <th class="py-1.5 pr-3">Best Ep</th>
+            <th class="py-1.5 pr-3">Primary Score</th>
+            <th class="py-1.5 pr-3">Composite</th>
+            <th class="py-1.5">Updated</th>
+          </tr>
+        </thead>
+        <tbody id="runTableBody"></tbody>
+      </table>
+    </div>
+    
+  </div>
+
+  <script>
+    let RUNS = [{"id": "task-117315", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-117315.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794177042.971153, "mtimeIso": "04:00:42", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 46.9, "epochs": [{"e": 1, "reward": -2.55, "passRate": 37.7, "isBest": false}, {"e": 2, "reward": -2.89, "passRate": 36.3, "isBest": false}, {"e": 3, "reward": -3.27, "passRate": 35.4, "isBest": false}, {"e": 4, "reward": -2.34, "passRate": 37.9, "isBest": false}, {"e": 5, "reward": -2.56, "passRate": 37.2, "isBest": false}], "summary": {"bestPassRate": 37.9, "bestReward": -2.34, "bestEpoch": 4, "composite": 1.45, "primaryLabel": "Pass 37.9% | Rew -2.34"}, "runNum": 1, "label": "R1: Single RL (task-117315)", "color": "#ec4899"}, {"id": "task-117387", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-117387.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794177998.5931447, "mtimeIso": "04:16:38", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 110.9, "epochs": [{"e": 1, "reward": 3.09, "passRate": 44.3, "isBest": false}, {"e": 2, "reward": 3.0, "passRate": 44.2, "isBest": false}, {"e": 3, "reward": 2.95, "passRate": 41.9, "isBest": false}, {"e": 4, "reward": 3.22, "passRate": 46.4, "isBest": false}, {"e": 5, "reward": 2.55, "passRate": 40.3, "isBest": false}], "summary": {"bestPassRate": 46.4, "bestReward": 3.22, "bestEpoch": 4, "composite": 7.86, "primaryLabel": "Pass 46.4% | Rew +3.22"}, "runNum": 2, "label": "R2: Single RL (task-117387)", "color": "#8b5cf6"}, {"id": "task-118327", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-118327.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794205099.549994, "mtimeIso": "11:48:19", "totalEpochs": 1, "completedEpochs": 1, "isLive": false, "durationSec": 19.3, "epochs": [{"e": 1, "reward": 7.66, "passRate": 58.5, "isBest": false}], "summary": {"bestPassRate": 58.5, "bestReward": 7.66, "bestEpoch": 1, "composite": 13.51, "primaryLabel": "Pass 58.5% | Rew +7.66"}, "runNum": 3, "label": "R3: Single RL (task-118327)", "color": "#f59e0b"}, {"id": "task-118351", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-118351.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794205238.7799387, "mtimeIso": "11:50:38", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 36.4, "epochs": [{"e": 1, "reward": 7.5, "passRate": 57.7, "isBest": false}, {"e": 2, "reward": 7.56, "passRate": 57.2, "isBest": false}, {"e": 3, "reward": 6.47, "passRate": 52.5, "isBest": false}, {"e": 4, "reward": 7.39, "passRate": 57.3, "isBest": false}, {"e": 5, "reward": 7.14, "passRate": 55.6, "isBest": false}], "summary": {"bestPassRate": 57.7, "bestReward": 7.56, "bestEpoch": 2, "composite": 13.33, "primaryLabel": "Pass 57.7% | Rew +7.56"}, "runNum": 4, "label": "R4: Single RL (task-118351)", "color": "#3b82f6"}, {"id": "task-124137", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-124137.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794311450.4886177, "mtimeIso": "17:20:50", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 34.6, "epochs": [{"e": 1, "reward": 1.5, "passRate": 40.3, "isBest": false}, {"e": 2, "reward": 2.38, "passRate": 42.8, "isBest": false}, {"e": 3, "reward": 2.28, "passRate": 43.1, "isBest": false}, {"e": 4, "reward": 2.46, "passRate": 43.1, "isBest": false}, {"e": 5, "reward": 1.42, "passRate": 41.2, "isBest": false}], "summary": {"bestPassRate": 43.1, "bestReward": 2.46, "bestEpoch": 4, "composite": 6.77, "primaryLabel": "Pass 43.1% | Rew +2.46"}, "runNum": 5, "label": "R5: Single RL (task-124137)", "color": "#10b981"}, {"id": "task-124877", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-124877.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794314773.6779478, "mtimeIso": "18:16:13", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 82.6, "epochs": [{"e": 1, "reward": 7.36, "passRate": 79.0, "isBest": false}, {"e": 2, "reward": 7.63, "passRate": 81.2, "isBest": false}, {"e": 3, "reward": 7.09, "passRate": 82.6, "isBest": false}, {"e": 4, "reward": 7.56, "passRate": 84.3, "isBest": false}, {"e": 5, "reward": 6.5, "passRate": 81.6, "isBest": false}], "summary": {"bestPassRate": 84.3, "bestReward": 7.63, "bestEpoch": 4, "composite": 16.06, "primaryLabel": "Pass 84.3% | Rew +7.63"}, "runNum": 6, "label": "R6: Single RL (task-124877)", "color": "#84cc16"}, {"id": "task-125206", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-125206.log", "kind": "SINGLE_SUP", "family": "SUP", "titleHint": "Single Sup", "mtime": 1794316874.668121, "mtimeIso": "18:51:14", "totalEpochs": 15, "completedEpochs": 15, "isLive": false, "durationSec": 695.8, "epochs": [{"e": 1, "trainLoss": 3.6113, "valNll": 1.0195, "bio": 84.73, "mod": 95.62, "f1": 96.34, "rel": 83.73, "em": 46.03, "isBest": false}, {"e": 2, "trainLoss": 1.2277, "valNll": 0.5902, "bio": 89.85, "mod": 97.03, "f1": 97.83, "rel": 95.86, "em": 81.58, "isBest": false}, {"e": 3, "trainLoss": 0.9567, "valNll": 0.5453, "bio": 91.29, "mod": 95.56, "f1": 98.9, "rel": 96.62, "em": 85.28, "isBest": false}, {"e": 4, "trainLoss": 0.8613, "valNll": 0.5052, "bio": 91.24, "mod": 97.03, "f1": 99.08, "rel": 97.11, "em": 84.24, "isBest": false}, {"e": 5, "trainLoss": 0.7939, "valNll": 0.4664, "bio": 91.58, "mod": 97.08, "f1": 98.94, "rel": 98.03, "em": 87.27, "isBest": false}, {"e": 6, "trainLoss": 0.7356, "valNll": 0.4707, "bio": 91.83, "mod": 97.03, "f1": 98.83, "rel": 96.89, "em": 86.53, "isBest": false}, {"e": 7, "trainLoss": 0.6817, "valNll": 0.4902, "bio": 91.84, "mod": 97.03, "f1": 99.02, "rel": 97.44, "em": 87.73, "isBest": false}, {"e": 8, "trainLoss": 0.6237, "valNll": 0.4555, "bio": 91.94, "mod": 97.03, "f1": 99.57, "rel": 97.97, "em": 88.83, "isBest": false}, {"e": 9, "trainLoss": 0.5684, "valNll": 0.4475, "bio": 91.96, "mod": 97.03, "f1": 99.57, "rel": 98.64, "em": 91.54, "isBest": false}, {"e": 10, "trainLoss": 0.5128, "valNll": 0.4706, "bio": 91.9, "mod": 97.03, "f1": 99.59, "rel": 98.48, "em": 91.02, "isBest": false}, {"e": 11, "trainLoss": 0.4574, "valNll": 0.4493, "bio": 91.88, "mod": 97.03, "f1": 99.57, "rel": 98.62, "em": 91.39, "isBest": false}, {"e": 12, "trainLoss": 0.3991, "valNll": 0.4435, "bio": 91.93, "mod": 97.03, "f1": 99.57, "rel": 98.47, "em": 90.71, "isBest": false}, {"e": 13, "trainLoss": 0.3562, "valNll": 0.4441, "bio": 91.85, "mod": 97.03, "f1": 99.57, "rel": 98.69, "em": 91.81, "isBest": false}, {"e": 14, "trainLoss": 0.3433, "valNll": 0.4443, "bio": 92.07, "mod": 97.03, "f1": 99.57, "rel": 98.68, "em": 91.75, "isBest": false}, {"e": 15, "trainLoss": 0.3417, "valNll": 0.4529, "bio": 92.05, "mod": 97.03, "f1": 99.57, "rel": 98.63, "em": 91.49, "isBest": false}], "summary": {"bestEm": 91.81, "bestNll": 0.4435, "bestF1": 99.59, "bestRel": 98.69, "bestBio": 92.07, "bestMod": 97.08, "bestDomTok": 0.0, "bestEpoch": 13, "composite": 92.9605, "primaryLabel": "EM 91.81% | NLL 0.444"}, "runNum": 7, "label": "R7: Single Sup (task-125206)", "color": "#ef4444"}, {"id": "task-125404", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-125404.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794317077.4372096, "mtimeIso": "18:54:37", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 84.6, "epochs": [{"e": 1, "reward": 7.4, "passRate": 80.4, "isBest": false}, {"e": 2, "reward": 7.04, "passRate": 81.5, "isBest": false}, {"e": 3, "reward": 6.77, "passRate": 77.9, "isBest": false}, {"e": 4, "reward": 7.2, "passRate": 80.1, "isBest": false}, {"e": 5, "reward": 6.92, "passRate": 76.5, "isBest": false}], "summary": {"bestPassRate": 81.5, "bestReward": 7.4, "bestEpoch": 1, "composite": 15.55, "primaryLabel": "Pass 81.5% | Rew +7.40"}, "runNum": 8, "label": "R8: Single RL (task-125404)", "color": "#06b6d4"}, {"id": "task-125559", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-125559.log", "kind": "SINGLE_SUP", "family": "SUP", "titleHint": "Single Sup", "mtime": 1794318691.0489693, "mtimeIso": "19:21:31", "totalEpochs": 15, "completedEpochs": 15, "isLive": false, "durationSec": 990.9, "epochs": [{"e": 1, "trainLoss": 3.6821, "valNll": 0.9018, "bio": 84.48, "mod": 97.29, "f1": 95.72, "rel": 87.54, "em": 59.63, "isBest": false}, {"e": 2, "trainLoss": 1.2959, "valNll": 0.4817, "bio": 89.77, "mod": 100.0, "f1": 100.0, "rel": 95.95, "em": 85.95, "isBest": false}, {"e": 3, "trainLoss": 0.9841, "valNll": 0.4237, "bio": 91.05, "mod": 99.48, "f1": 99.69, "rel": 97.29, "em": 90.63, "isBest": false}, {"e": 4, "trainLoss": 0.8844, "valNll": 0.4156, "bio": 91.09, "mod": 100.0, "f1": 99.69, "rel": 96.66, "em": 90.48, "isBest": false}, {"e": 5, "trainLoss": 0.82, "valNll": 0.4055, "bio": 91.54, "mod": 100.0, "f1": 99.69, "rel": 95.88, "em": 87.57, "isBest": false}, {"e": 6, "trainLoss": 0.7579, "valNll": 0.3876, "bio": 91.85, "mod": 99.9, "f1": 99.69, "rel": 97.36, "em": 93.03, "isBest": false}, {"e": 7, "trainLoss": 0.6968, "valNll": 0.3786, "bio": 91.97, "mod": 100.0, "f1": 99.69, "rel": 97.11, "em": 92.4, "isBest": false}, {"e": 8, "trainLoss": 0.6392, "valNll": 0.3798, "bio": 92.12, "mod": 100.0, "f1": 99.69, "rel": 97.3, "em": 92.92, "isBest": false}, {"e": 9, "trainLoss": 0.5826, "valNll": 0.3815, "bio": 92.17, "mod": 100.0, "f1": 99.69, "rel": 97.19, "em": 92.3, "isBest": false}, {"e": 10, "trainLoss": 0.5257, "valNll": 0.3661, "bio": 92.34, "mod": 100.0, "f1": 99.69, "rel": 97.29, "em": 92.77, "isBest": false}, {"e": 11, "trainLoss": 0.4682, "valNll": 0.3757, "bio": 92.18, "mod": 100.0, "f1": 99.69, "rel": 97.34, "em": 93.03, "isBest": false}, {"e": 12, "trainLoss": 0.4089, "valNll": 0.3684, "bio": 92.2, "mod": 100.0, "f1": 99.69, "rel": 97.54, "em": 93.96, "isBest": false}, {"e": 13, "trainLoss": 0.3654, "valNll": 0.366, "bio": 92.25, "mod": 100.0, "f1": 99.69, "rel": 97.45, "em": 93.55, "isBest": false}, {"e": 14, "trainLoss": 0.3521, "valNll": 0.3654, "bio": 92.23, "mod": 100.0, "f1": 99.69, "rel": 97.39, "em": 93.29, "isBest": false}, {"e": 15, "trainLoss": 0.3511, "valNll": 0.3696, "bio": 92.22, "mod": 100.0, "f1": 99.69, "rel": 97.35, "em": 93.34, "isBest": false}], "summary": {"bestEm": 93.96, "bestNll": 0.3654, "bestF1": 100.0, "bestRel": 97.54, "bestBio": 92.34, "bestMod": 100.0, "bestDomTok": 0.0, "bestEpoch": 12, "composite": 94.531, "primaryLabel": "EM 93.96% | NLL 0.365"}, "runNum": 9, "label": "R9: Single Sup (task-125559)", "color": "#ec4899"}, {"id": "task-125597", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-125597.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794318842.147637, "mtimeIso": "19:24:02", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 69.0, "epochs": [{"e": 1, "reward": 6.79, "passRate": 83.7, "isBest": false}, {"e": 2, "reward": 7.42, "passRate": 84.9, "isBest": false}, {"e": 3, "reward": 7.24, "passRate": 81.3, "isBest": false}, {"e": 4, "reward": 6.91, "passRate": 81.1, "isBest": false}, {"e": 5, "reward": 6.76, "passRate": 83.3, "isBest": false}], "summary": {"bestPassRate": 84.9, "bestReward": 7.42, "bestEpoch": 2, "composite": 15.91, "primaryLabel": "Pass 84.9% | Rew +7.42"}, "runNum": 10, "label": "R10: Single RL (task-125597)", "color": "#8b5cf6"}, {"id": "task-125719", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-125719.log", "kind": "SINGLE_SUP", "family": "SUP", "titleHint": "Single Sup", "mtime": 1794320178.4280305, "mtimeIso": "19:46:18", "totalEpochs": 15, "completedEpochs": 9, "isLive": false, "durationSec": 886.8, "epochs": [{"e": 1, "trainLoss": 3.676, "valNll": 0.8816, "bio": 84.79, "mod": 97.43, "f1": 96.02, "rel": 82.46, "em": 52.93, "isBest": false}, {"e": 2, "trainLoss": 1.2571, "valNll": 0.4736, "bio": 90.54, "mod": 100.0, "f1": 99.41, "rel": 95.95, "em": 86.23, "isBest": false}, {"e": 3, "trainLoss": 0.9742, "valNll": 0.3862, "bio": 91.56, "mod": 100.0, "f1": 99.65, "rel": 97.53, "em": 91.41, "isBest": false}, {"e": 4, "trainLoss": 0.8781, "valNll": 0.3549, "bio": 92.01, "mod": 100.0, "f1": 99.95, "rel": 97.25, "em": 89.27, "isBest": false}, {"e": 5, "trainLoss": 0.8052, "valNll": 0.3341, "bio": 92.29, "mod": 100.0, "f1": 99.95, "rel": 97.48, "em": 90.94, "isBest": false}, {"e": 6, "trainLoss": 0.743, "valNll": 0.3361, "bio": 92.62, "mod": 100.0, "f1": 100.0, "rel": 97.62, "em": 89.84, "isBest": false}, {"e": 7, "trainLoss": 0.6846, "valNll": 0.3247, "bio": 92.68, "mod": 100.0, "f1": 99.95, "rel": 97.64, "em": 89.53, "isBest": false}, {"e": 8, "trainLoss": 0.6294, "valNll": 0.3137, "bio": 92.85, "mod": 100.0, "f1": 99.95, "rel": 97.49, "em": 88.74, "isBest": false}, {"e": 9, "trainLoss": 0.5742, "valNll": 0.3103, "bio": 92.87, "mod": 100.0, "f1": 100.0, "rel": 97.65, "em": 89.58, "isBest": false}], "summary": {"bestEm": 91.41, "bestNll": 0.3103, "bestF1": 100.0, "bestRel": 97.65, "bestBio": 92.87, "bestMod": 100.0, "bestDomTok": 0.0, "bestEpoch": 5, "composite": 93.5465, "primaryLabel": "EM 91.41% | NLL 0.310"}, "runNum": 11, "label": "R11: Single Sup (task-125719)", "color": "#f59e0b"}, {"id": "task-125800", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\4d2d2253-7670-4e91-8aa9-c22867375085\\.system_generated\\tasks\\task-125800.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794320262.461378, "mtimeIso": "19:47:42", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 33.6, "epochs": [{"e": 1, "reward": 7.01, "passRate": 82.9, "isBest": false}, {"e": 2, "reward": 6.77, "passRate": 79.7, "isBest": false}, {"e": 3, "reward": 7.38, "passRate": 80.7, "isBest": false}, {"e": 4, "reward": 6.93, "passRate": 81.2, "isBest": false}, {"e": 5, "reward": 6.91, "passRate": 79.1, "isBest": false}], "summary": {"bestPassRate": 82.9, "bestReward": 7.38, "bestEpoch": 3, "composite": 15.67, "primaryLabel": "Pass 82.9% | Rew +7.38"}, "runNum": 12, "label": "R12: Single RL (task-125800)", "color": "#3b82f6"}, {"id": "task-707", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-707.log", "kind": "SINGLE_SUP", "family": "SUP", "titleHint": "Single Sup", "mtime": 1794328984.9141722, "mtimeIso": "22:13:04", "totalEpochs": 15, "completedEpochs": 13, "isLive": false, "durationSec": 1005.4, "epochs": [{"e": 1, "trainLoss": 3.5478, "valNll": 1.0832, "bio": 83.77, "mod": 96.17, "f1": 89.11, "rel": 81.23, "em": 43.52, "isBest": true}, {"e": 2, "trainLoss": 1.3476, "valNll": 0.7132, "bio": 89.39, "mod": 97.57, "f1": 94.67, "rel": 87.9, "em": 71.0, "isBest": true}, {"e": 3, "trainLoss": 1.0689, "valNll": 0.6693, "bio": 90.25, "mod": 98.3, "f1": 96.13, "rel": 88.95, "em": 73.3, "isBest": true}, {"e": 4, "trainLoss": 0.9651, "valNll": 0.627, "bio": 90.71, "mod": 98.39, "f1": 97.23, "rel": 89.53, "em": 77.78, "isBest": true}, {"e": 5, "trainLoss": 0.8907, "valNll": 0.6318, "bio": 90.86, "mod": 98.48, "f1": 97.38, "rel": 90.59, "em": 78.87, "isBest": true}, {"e": 6, "trainLoss": 0.827, "valNll": 0.6382, "bio": 90.96, "mod": 98.52, "f1": 96.91, "rel": 89.97, "em": 78.35, "isBest": false}, {"e": 7, "trainLoss": 0.762, "valNll": 0.6074, "bio": 91.38, "mod": 98.91, "f1": 97.06, "rel": 90.51, "em": 81.78, "isBest": true}, {"e": 8, "trainLoss": 0.6975, "valNll": 0.6197, "bio": 91.53, "mod": 98.13, "f1": 96.56, "rel": 90.71, "em": 80.74, "isBest": false}, {"e": 9, "trainLoss": 0.6341, "valNll": 0.6184, "bio": 91.49, "mod": 98.52, "f1": 97.07, "rel": 90.33, "em": 80.74, "isBest": false}, {"e": 10, "trainLoss": 0.5704, "valNll": 0.6331, "bio": 91.39, "mod": 98.04, "f1": 96.78, "rel": 89.7, "em": 81.0, "isBest": false}, {"e": 11, "trainLoss": 0.5045, "valNll": 0.6407, "bio": 91.67, "mod": 98.52, "f1": 96.09, "rel": 90.18, "em": 79.61, "isBest": false}, {"e": 12, "trainLoss": 0.4388, "valNll": 0.6614, "bio": 91.76, "mod": 98.57, "f1": 96.05, "rel": 90.51, "em": 80.74, "isBest": false}, {"e": 13, "trainLoss": 0.3902, "valNll": 0.688, "bio": 91.63, "mod": 98.78, "f1": 95.79, "rel": 89.77, "em": 78.52, "isBest": false}], "summary": {"bestEm": 81.78, "bestNll": 0.6074, "bestF1": 97.38, "bestRel": 90.71, "bestBio": 91.76, "bestMod": 98.91, "bestDomTok": 0.0, "bestEpoch": 7, "composite": 86.638, "primaryLabel": "EM 81.78% | NLL 0.607"}, "runNum": 13, "label": "R13: Single Sup (task-707)", "color": "#10b981"}, {"id": "task-982", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-982.log", "kind": "SINGLE_SUP", "family": "SUP", "titleHint": "Single Sup", "mtime": 1794332368.8150167, "mtimeIso": "23:09:28", "totalEpochs": 15, "completedEpochs": 15, "isLive": false, "durationSec": 1264.1, "epochs": [{"e": 1, "trainLoss": 3.6137, "valNll": 1.2025, "bio": 84.09, "mod": 94.14, "f1": 88.4, "rel": 70.1, "em": 34.68, "isBest": true}, {"e": 2, "trainLoss": 1.3945, "valNll": 0.7414, "bio": 89.02, "mod": 97.64, "f1": 94.56, "rel": 85.45, "em": 70.51, "isBest": true}, {"e": 3, "trainLoss": 1.1072, "valNll": 0.6582, "bio": 90.25, "mod": 98.94, "f1": 95.57, "rel": 85.71, "em": 77.27, "isBest": true}, {"e": 4, "trainLoss": 0.9994, "valNll": 0.6238, "bio": 90.3, "mod": 99.41, "f1": 96.75, "rel": 87.38, "em": 77.43, "isBest": true}, {"e": 5, "trainLoss": 0.9174, "valNll": 0.6395, "bio": 90.79, "mod": 98.43, "f1": 96.61, "rel": 87.29, "em": 81.79, "isBest": true}, {"e": 6, "trainLoss": 0.849, "valNll": 0.6331, "bio": 90.71, "mod": 98.43, "f1": 96.79, "rel": 89.09, "em": 82.5, "isBest": true}, {"e": 7, "trainLoss": 0.7715, "valNll": 0.6397, "bio": 91.03, "mod": 98.43, "f1": 96.29, "rel": 87.06, "em": 82.66, "isBest": false}, {"e": 8, "trainLoss": 0.7087, "valNll": 0.6234, "bio": 91.11, "mod": 99.13, "f1": 96.52, "rel": 88.92, "em": 81.09, "isBest": false}, {"e": 9, "trainLoss": 0.6436, "valNll": 0.6234, "bio": 91.3, "mod": 99.17, "f1": 95.59, "rel": 88.25, "em": 81.71, "isBest": false}, {"e": 10, "trainLoss": 0.5765, "valNll": 0.6533, "bio": 91.01, "mod": 98.43, "f1": 96.09, "rel": 88.47, "em": 83.37, "isBest": true}, {"e": 11, "trainLoss": 0.512, "valNll": 0.6811, "bio": 91.65, "mod": 98.43, "f1": 96.35, "rel": 88.97, "em": 81.4, "isBest": false}, {"e": 12, "trainLoss": 0.4447, "valNll": 0.6819, "bio": 91.49, "mod": 98.43, "f1": 95.79, "rel": 86.98, "em": 81.4, "isBest": false}, {"e": 13, "trainLoss": 0.3932, "valNll": 0.7069, "bio": 91.73, "mod": 98.43, "f1": 95.84, "rel": 88.03, "em": 81.83, "isBest": false}, {"e": 14, "trainLoss": 0.3764, "valNll": 0.7372, "bio": 91.78, "mod": 98.43, "f1": 95.41, "rel": 87.45, "em": 81.71, "isBest": false}, {"e": 15, "trainLoss": 0.3706, "valNll": 0.7575, "bio": 91.78, "mod": 98.43, "f1": 95.26, "rel": 86.98, "em": 81.28, "isBest": false}], "summary": {"bestEm": 83.37, "bestNll": 0.6234, "bestF1": 96.79, "bestRel": 89.09, "bestBio": 91.78, "bestMod": 99.41, "bestDomTok": 0.0, "bestEpoch": 10, "composite": 86.4355, "primaryLabel": "EM 83.37% | NLL 0.623"}, "runNum": 14, "label": "R14: Single Sup (task-982)", "color": "#84cc16"}, {"id": "task-990", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-990.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794332534.160367, "mtimeIso": "23:12:14", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 61.7, "epochs": [{"e": 1, "reward": 7.83, "passRate": 84.7, "isBest": true}, {"e": 2, "reward": 7.89, "passRate": 84.0, "isBest": true}, {"e": 3, "reward": 7.71, "passRate": 87.1, "isBest": true}, {"e": 4, "reward": 7.2, "passRate": 78.9, "isBest": false}, {"e": 5, "reward": 7.8, "passRate": 83.4, "isBest": false}], "summary": {"bestPassRate": 87.1, "bestReward": 7.89, "bestEpoch": 3, "composite": 16.6, "primaryLabel": "Pass 87.1% | Rew +7.89"}, "runNum": 15, "label": "R15: Single RL (task-990)", "color": "#ef4444"}, {"id": "task-2248", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-2248.log", "kind": "SINGLE_SUP", "family": "SUP", "titleHint": "Single Sup", "mtime": 1794341221.6569784, "mtimeIso": "01:37:01", "totalEpochs": 15, "completedEpochs": 14, "isLive": false, "durationSec": 2150.1, "epochs": [{"e": 1, "trainLoss": 3.4572, "valNll": 1.1142, "bio": 84.46, "mod": 96.22, "f1": 88.66, "rel": 78.9, "em": 51.63, "isBest": true}, {"e": 2, "trainLoss": 1.3502, "valNll": 0.8363, "bio": 89.33, "mod": 96.87, "f1": 94.37, "rel": 86.24, "em": 71.71, "isBest": true}, {"e": 3, "trainLoss": 1.1064, "valNll": 0.774, "bio": 89.98, "mod": 97.72, "f1": 95.29, "rel": 88.0, "em": 77.18, "isBest": true}, {"e": 4, "trainLoss": 1.0038, "valNll": 0.7786, "bio": 90.05, "mod": 96.54, "f1": 95.84, "rel": 88.62, "em": 75.33, "isBest": false}, {"e": 5, "trainLoss": 0.9325, "valNll": 0.7751, "bio": 90.4, "mod": 97.0, "f1": 95.68, "rel": 87.0, "em": 77.18, "isBest": false}, {"e": 6, "trainLoss": 0.8652, "valNll": 0.744, "bio": 90.47, "mod": 97.07, "f1": 95.47, "rel": 88.82, "em": 76.69, "isBest": true}, {"e": 7, "trainLoss": 0.7986, "valNll": 0.7505, "bio": 90.54, "mod": 97.85, "f1": 95.22, "rel": 87.89, "em": 78.49, "isBest": true}, {"e": 8, "trainLoss": 0.7233, "valNll": 0.7459, "bio": 91.17, "mod": 97.62, "f1": 95.51, "rel": 87.5, "em": 79.34, "isBest": true}, {"e": 9, "trainLoss": 0.6567, "valNll": 0.7587, "bio": 91.36, "mod": 97.43, "f1": 95.57, "rel": 87.97, "em": 78.42, "isBest": false}, {"e": 10, "trainLoss": 0.5901, "valNll": 0.7764, "bio": 91.43, "mod": 97.69, "f1": 95.42, "rel": 87.83, "em": 77.61, "isBest": false}, {"e": 11, "trainLoss": 0.5237, "valNll": 0.775, "bio": 91.61, "mod": 97.59, "f1": 95.57, "rel": 87.89, "em": 77.74, "isBest": false}, {"e": 12, "trainLoss": 0.4575, "valNll": 0.776, "bio": 91.67, "mod": 98.01, "f1": 95.58, "rel": 88.31, "em": 78.36, "isBest": false}, {"e": 13, "trainLoss": 0.4047, "valNll": 0.8127, "bio": 91.59, "mod": 97.78, "f1": 95.51, "rel": 87.79, "em": 77.48, "isBest": false}, {"e": 14, "trainLoss": 0.3882, "valNll": 0.8357, "bio": 91.68, "mod": 97.75, "f1": 95.86, "rel": 87.05, "em": 78.49, "isBest": false}], "summary": {"bestEm": 79.34, "bestNll": 0.744, "bestF1": 95.86, "bestRel": 88.82, "bestBio": 91.68, "bestMod": 98.01, "bestDomTok": 0.0, "bestEpoch": 8, "composite": 83.9935, "primaryLabel": "EM 79.34% | NLL 0.744"}, "runNum": 16, "label": "R16: Single Sup (task-2248)", "color": "#06b6d4"}, {"id": "task-2283", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-2283.log", "kind": "SINGLE_RL", "family": "RL", "titleHint": "Single RL", "mtime": 1794341322.9694781, "mtimeIso": "01:38:42", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 69.1, "epochs": [{"e": 1, "reward": 16.93, "passRate": 89.4, "isBest": true}, {"e": 2, "reward": 17.65, "passRate": 93.5, "isBest": true}, {"e": 3, "reward": 17.93, "passRate": 93.8, "isBest": true}, {"e": 4, "reward": 18.11, "passRate": 94.6, "isBest": true}, {"e": 5, "reward": 18.22, "passRate": 95.2, "isBest": true}], "summary": {"bestPassRate": 95.2, "bestReward": 18.22, "bestEpoch": 5, "composite": 27.74, "primaryLabel": "Pass 95.2% | Rew +18.22"}, "runNum": 17, "label": "R17: Single RL (task-2283)", "color": "#ec4899"}, {"id": "task-2478", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-2478.log", "kind": "SINGLE_SUP", "family": "SUP", "titleHint": "Single Sup", "mtime": 1794344183.441497, "mtimeIso": "02:26:23", "totalEpochs": 15, "completedEpochs": 14, "isLive": false, "durationSec": 1039.6, "epochs": [{"e": 1, "trainLoss": 3.6236, "valNll": 1.268, "bio": 82.59, "mod": 96.32, "f1": 88.95, "rel": 74.67, "em": 54.74, "isBest": true}, {"e": 2, "trainLoss": 1.4551, "valNll": 0.8013, "bio": 88.39, "mod": 96.94, "f1": 95.06, "rel": 86.82, "em": 69.51, "isBest": true}, {"e": 3, "trainLoss": 1.166, "valNll": 0.7588, "bio": 89.49, "mod": 96.41, "f1": 95.77, "rel": 87.35, "em": 73.29, "isBest": true}, {"e": 4, "trainLoss": 1.048, "valNll": 0.7322, "bio": 90.34, "mod": 97.3, "f1": 96.0, "rel": 87.11, "em": 73.32, "isBest": true}, {"e": 5, "trainLoss": 0.9685, "valNll": 0.7373, "bio": 90.59, "mod": 96.48, "f1": 96.24, "rel": 87.16, "em": 73.98, "isBest": true}, {"e": 6, "trainLoss": 0.8947, "valNll": 0.7284, "bio": 90.8, "mod": 96.74, "f1": 95.97, "rel": 89.37, "em": 78.26, "isBest": true}, {"e": 7, "trainLoss": 0.8236, "valNll": 0.7488, "bio": 90.76, "mod": 96.28, "f1": 95.47, "rel": 88.58, "em": 75.82, "isBest": false}, {"e": 8, "trainLoss": 0.7481, "valNll": 0.7081, "bio": 91.34, "mod": 96.81, "f1": 96.04, "rel": 89.26, "em": 78.06, "isBest": true}, {"e": 9, "trainLoss": 0.6782, "valNll": 0.7381, "bio": 91.41, "mod": 96.88, "f1": 96.01, "rel": 88.21, "em": 77.99, "isBest": false}, {"e": 10, "trainLoss": 0.6087, "valNll": 0.7231, "bio": 91.33, "mod": 96.91, "f1": 95.75, "rel": 89.29, "em": 78.12, "isBest": false}, {"e": 11, "trainLoss": 0.5418, "valNll": 0.7488, "bio": 91.46, "mod": 96.41, "f1": 95.72, "rel": 89.4, "em": 78.19, "isBest": false}, {"e": 12, "trainLoss": 0.4732, "valNll": 0.7639, "bio": 91.53, "mod": 96.12, "f1": 95.61, "rel": 87.57, "em": 78.16, "isBest": false}, {"e": 13, "trainLoss": 0.4198, "valNll": 0.7716, "bio": 91.6, "mod": 96.68, "f1": 95.26, "rel": 87.97, "em": 76.88, "isBest": false}, {"e": 14, "trainLoss": 0.4032, "valNll": 0.8065, "bio": 91.65, "mod": 96.58, "f1": 95.43, "rel": 87.6, "em": 76.84, "isBest": false}], "summary": {"bestEm": 78.26, "bestNll": 0.7081, "bestF1": 96.24, "bestRel": 89.4, "bestBio": 91.65, "bestMod": 97.3, "bestDomTok": 0.0, "bestEpoch": 8, "composite": 83.936, "primaryLabel": "EM 78.26% | NLL 0.708"}, "runNum": 18, "label": "R18: Single Sup (task-2478)", "color": "#8b5cf6"}, {"id": "task-2583", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-2583.log", "kind": "DUAL_SUP", "family": "SUP", "titleHint": "Dual-Stream Sup", "mtime": 1794345924.8352013, "mtimeIso": "02:55:24", "totalEpochs": 15, "completedEpochs": 12, "isLive": false, "durationSec": null, "epochs": [{"e": 1, "valNll": 1.1735, "domTok": 90.51, "bio": 82.17, "mod": 95.66, "f1": 83.2, "rel": 75.81, "em": 45.86, "isBest": true}, {"e": 2, "valNll": 1.0027, "domTok": 93.79, "bio": 85.05, "mod": 91.58, "f1": 91.76, "rel": 81.58, "em": 60.92, "isBest": true}, {"e": 3, "valNll": 0.9173, "domTok": 93.48, "bio": 86.01, "mod": 94.11, "f1": 91.3, "rel": 84.46, "em": 67.7, "isBest": true}, {"e": 4, "valNll": 0.8853, "domTok": 94.94, "bio": 86.71, "mod": 95.69, "f1": 92.89, "rel": 84.43, "em": 69.74, "isBest": true}, {"e": 5, "valNll": 0.8409, "domTok": 95.12, "bio": 87.52, "mod": 95.86, "f1": 91.6, "rel": 86.25, "em": 71.38, "isBest": true}, {"e": 6, "valNll": 0.8769, "domTok": 95.11, "bio": 87.61, "mod": 96.18, "f1": 92.22, "rel": 85.56, "em": 72.37, "isBest": true}, {"e": 7, "valNll": 0.9493, "domTok": 95.87, "bio": 87.35, "mod": 96.15, "f1": 91.7, "rel": 85.5, "em": 71.48, "isBest": false}, {"e": 8, "valNll": 1.0448, "domTok": 95.76, "bio": 87.49, "mod": 95.99, "f1": 91.35, "rel": 85.52, "em": 72.89, "isBest": false}, {"e": 9, "valNll": 1.2045, "domTok": 96.03, "bio": 87.03, "mod": 97.24, "f1": 91.23, "rel": 82.98, "em": 71.51, "isBest": false}, {"e": 10, "valNll": 1.2591, "domTok": 96.12, "bio": 86.92, "mod": 96.35, "f1": 91.77, "rel": 85.46, "em": 70.3, "isBest": false}, {"e": 11, "valNll": 1.3755, "domTok": 96.28, "bio": 86.96, "mod": 96.32, "f1": 91.81, "rel": 83.59, "em": 70.43, "isBest": false}, {"e": 12, "valNll": 1.4235, "domTok": 96.32, "bio": 87.24, "mod": 96.61, "f1": 91.54, "rel": 84.46, "em": 68.59, "isBest": false}], "summary": {"bestEm": 72.89, "bestNll": 0.8409, "bestF1": 92.89, "bestRel": 86.25, "bestBio": 87.61, "bestMod": 97.24, "bestDomTok": 96.32, "bestEpoch": 6, "composite": 79.0295, "primaryLabel": "EM 72.89% | NLL 0.841"}, "runNum": 19, "label": "R19: Dual-Stream Sup (task-2583)", "color": "#f59e0b"}, {"id": "task-2731", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-2731.log", "kind": "DUAL_RL", "family": "RL", "titleHint": "Dual-Stream RL", "mtime": 1794347277.3410337, "mtimeIso": "03:17:57", "totalEpochs": 5, "completedEpochs": 5, "isLive": false, "durationSec": 90.4, "epochs": [{"e": 1, "reward": 16.3, "passRate": 86.3, "isBest": true, "bioAgree": 98.71}, {"e": 2, "reward": 17.0, "passRate": 90.0, "isBest": true, "bioAgree": 98.53}, {"e": 3, "reward": 17.14, "passRate": 90.3, "isBest": true, "bioAgree": 98.78}, {"e": 4, "reward": 17.42, "passRate": 91.5, "isBest": true, "bioAgree": 99.01}, {"e": 5, "reward": 17.2, "passRate": 90.6, "isBest": false, "bioAgree": 98.8}], "summary": {"bestPassRate": 91.5, "bestReward": 17.42, "bestEpoch": 4, "composite": 26.57, "primaryLabel": "Pass 91.5% | Rew +17.42"}, "runNum": 20, "label": "R20: Dual-Stream RL (task-2731)", "color": "#3b82f6"}, {"id": "task-2956", "file": "C:\\Users\\Mondeep Engti\\.gemini\\antigravity\\brain\\3700acc6-5501-4c72-a73e-6b15761d81a6\\.system_generated\\tasks\\task-2956.log", "kind": "DUAL_SUP", "family": "SUP", "titleHint": "Dual-Stream Sup", "mtime": 1794351540.9560282, "mtimeIso": "04:29:00", "totalEpochs": 15, "completedEpochs": 10, "isLive": true, "durationSec": null, "epochs": [{"e": 1, "valNll": 1.2941, "domTok": 86.03, "bio": 81.81, "mod": 96.22, "f1": 83.68, "rel": 65.15, "em": 29.18, "isBest": true}, {"e": 2, "valNll": 0.9653, "domTok": 93.39, "bio": 85.03, "mod": 96.97, "f1": 91.6, "rel": 79.05, "em": 56.25, "isBest": true}, {"e": 3, "valNll": 0.8901, "domTok": 93.75, "bio": 86.17, "mod": 96.32, "f1": 92.41, "rel": 82.36, "em": 63.29, "isBest": true}, {"e": 4, "valNll": 0.8461, "domTok": 93.84, "bio": 87.18, "mod": 95.79, "f1": 92.21, "rel": 86.59, "em": 66.74, "isBest": true}, {"e": 5, "valNll": 0.8114, "domTok": 95.48, "bio": 88.06, "mod": 96.12, "f1": 92.15, "rel": 86.65, "em": 69.84, "isBest": true}, {"e": 6, "valNll": 0.8176, "domTok": 96.15, "bio": 88.1, "mod": 96.91, "f1": 91.99, "rel": 85.59, "em": 69.9, "isBest": false}, {"e": 7, "valNll": 0.8021, "domTok": 96.05, "bio": 88.38, "mod": 96.74, "f1": 92.7, "rel": 86.84, "em": 70.92, "isBest": true}, {"e": 8, "valNll": 0.7973, "domTok": 96.66, "bio": 88.51, "mod": 96.84, "f1": 92.62, "rel": 87.68, "em": 72.53, "isBest": true}, {"e": 9, "valNll": 0.797, "domTok": 96.5, "bio": 88.63, "mod": 96.22, "f1": 93.64, "rel": 87.83, "em": 73.75, "isBest": true}, {"e": 10, "valNll": 0.7508, "domTok": 96.62, "bio": 88.68, "mod": 97.04, "f1": 93.69, "rel": 87.95, "em": 74.97, "isBest": true}], "summary": {"bestEm": 74.97, "bestNll": 0.7508, "bestF1": 93.69, "bestRel": 87.95, "bestBio": 88.68, "bestMod": 97.04, "bestDomTok": 96.66, "bestEpoch": 10, "composite": 81.5885, "primaryLabel": "EM 74.97% | NLL 0.751"}, "runNum": 21, "label": "R21: Dual-Stream Sup (task-2956)", "color": "#10b981"}];
+    let activeFamily = "SUP";
+    let activeMetric = "valNll";
+    let presetMode = "RECENT_VS";
+    let rankBy = "composite";
+    let visibleSet = new Set();
+
+    const SUP_METRICS = [
+      { key: "valNll",    label: "Val NLL (Loss)", min: 0.55, max: 1.45, unit: "",  lower: true,  hint: "Lower is better. Rise after minimum = overfitting." },
+      { key: "em",        label: "Clause EM %",    min: 30,   max: 88,   unit: "%", lower: false, hint: "Full clause exact match on 3,040 OOD samples." },
+      { key: "bio",       label: "BIO Acc %",      min: 78,   max: 95,   unit: "%", lower: false, hint: "Token boundary BIO tagging accuracy." },
+      { key: "f1",        label: "Macro-F1 %",     min: 80,   max: 100,  unit: "%", lower: false, hint: "SRL semantic role Macro-F1 across roles." },
+      { key: "rel",       label: "Rel LAS F1 %",   min: 68,   max: 95,   unit: "%", lower: false, hint: "Biaffine edge labeled attachment F1." },
+      { key: "mod",       label: "Modality %",     min: 88,   max: 100,  unit: "%", lower: false, hint: "8-way rule modality accuracy." },
+      { key: "domTok",    label: "DomTok %",       min: 88,   max: 100,  unit: "%", lower: false, hint: "Dual-Stream Model B token typing accuracy." },
+      { key: "trainLoss", label: "Train Loss",     min: 0.25, max: 3.80, unit: "",  lower: true,  hint: "Single-model supervised training loss." },
+    ];
+    const RL_METRICS = [
+      { key: "passRate", label: "USVM Pass %",     min: 35,   max: 100,  unit: "%", lower: false, hint: "GRPO execution vector pass rate in JS USVM." },
+      { key: "reward",   label: "Mean Reward",     min: -3,   max: 22,   unit: "",  lower: false, hint: "Mean USVM rollout reward per clause." },
+      { key: "bioAgree", label: "BIO Agreement %", min: 95,   max: 100,  unit: "%", lower: false, hint: "Token boundary stability vs frozen reference policy." },
+    ];
+
+    const presetSel = document.getElementById("presetSel");
+    const rankSel = document.getElementById("rankSel");
+    const metricTabs = document.getElementById("metricTabs");
+    const visBar = document.getElementById("visBar");
+    const svgEl = document.getElementById("chart");
+    const hoverReadout = document.getElementById("hoverReadout");
+    const metricHint = document.getElementById("metricHint");
+    const liveBadge = document.getElementById("liveBadge");
+
+    function scoreForRank(r, criterion) {
+      if (criterion === "mtime") return r.mtime || 0;
+      if (r.family === "RL") {
+        if (criterion === "passRate") return r.summary.bestPassRate || 0;
+        return r.summary.composite || 0;
+      }
+      if (criterion === "bestEm") return r.summary.bestEm || 0;
+      if (criterion === "bestNll") return -(r.summary.bestNll || 99);
+      return r.summary.composite || 0;
+    }
+
+    function rankedFamilyRuns(fam) {
+      const list = RUNS.filter((r) => r.family === fam);
+      list.sort((a, b) => scoreForRank(b, rankBy) - scoreForRank(a, rankBy));
+      return list;
+    }
+
+    function switchFamily(fam) {
+      activeFamily = fam;
+      if (activeFamily === "RL") {
+        if (!RL_METRICS.some((m) => m.key === activeMetric)) activeMetric = "passRate";
+      } else {
+        if (!SUP_METRICS.some((m) => m.key === activeMetric)) activeMetric = "valNll";
+      }
+      applyPreset(false);
+      renderAll();
+    }
+
+    function applyPreset(preserveManual = false) {
+      const famRanked = rankedFamilyRuns(activeFamily);
+      if (preserveManual && visibleSet.size > 0) return;
+
+      visibleSet = new Set();
+      if (presetMode === "TOP_2") {
+        famRanked.slice(0, 2).forEach((r) => visibleSet.add(r.id));
+        const live = famRanked.find((r) => r.isLive);
+        if (live) visibleSet.add(live.id);
+      } else if (presetMode === "TOP_3") {
+        famRanked.slice(0, 3).forEach((r) => visibleSet.add(r.id));
+        const live = famRanked.find((r) => r.isLive);
+        if (live) visibleSet.add(live.id);
+      } else if (presetMode === "TOP_5") {
+        famRanked.slice(0, 5).forEach((r) => visibleSet.add(r.id));
+      } else if (presetMode === "RECENT_VS" || presetMode === "LIVE_LATEST") {
+        const byTime = [...famRanked].sort((a, b) => b.mtime - a.mtime);
+        const dualLatest = byTime.find((r) => r.kind && r.kind.startsWith("DUAL"));
+        const singleLatest = byTime.find((r) => r.kind && r.kind.startsWith("SINGLE"));
+        if (dualLatest) visibleSet.add(dualLatest.id);
+        if (singleLatest) visibleSet.add(singleLatest.id);
+        const live = famRanked.find((r) => r.isLive);
+        if (live) visibleSet.add(live.id);
+        if (visibleSet.size === 0) {
+          byTime.slice(0, 2).forEach((r) => visibleSet.add(r.id));
+        }
+      } else {
+        famRanked.forEach((r) => visibleSet.add(r.id));
+      }
+    }
+
+    function renderAll() {
+      const supRuns = RUNS.filter((r) => r.family === "SUP");
+      const rlRuns = RUNS.filter((r) => r.family === "RL");
+      const anyLive = RUNS.some((r) => r.isLive);
+      liveBadge.classList.toggle("hidden", !anyLive);
+
+      const supCountEl = document.getElementById("supCount");
+      const rlCountEl = document.getElementById("rlCount");
+      if (supCountEl) supCountEl.textContent = supRuns.length;
+      if (rlCountEl) rlCountEl.textContent = rlRuns.length;
+
+      const supBtn = document.getElementById("familyBtnSup");
+      const rlBtn = document.getElementById("familyBtnRl");
+      if (supBtn && rlBtn) {
+        if (activeFamily === "SUP") {
+          supBtn.className = "px-3 py-1 rounded-md text-xs font-semibold bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm transition";
+          rlBtn.className = "px-3 py-1 rounded-md text-xs font-semibold border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition";
+        } else {
+          rlBtn.className = "px-3 py-1 rounded-md text-xs font-semibold bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm transition";
+          supBtn.className = "px-3 py-1 rounded-md text-xs font-semibold border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition";
+        }
+      }
+
+      const famSummary = document.getElementById("familySummary");
+      if (famSummary) {
+        if (activeFamily === "RL") {
+          famSummary.textContent = "GRPO policy gradient on canonical JS USVM execution vectors";
+        } else {
+          famSummary.textContent = "Supervised cross-entropy token & edge classification on 3,040 OOD samples";
+        }
+      }
+
+      const metricsList = activeFamily === "RL" ? RL_METRICS : SUP_METRICS;
+      metricTabs.innerHTML = "";
+      metricsList.forEach((m) => {
+        const btn = document.createElement("button");
+        const on = m.key === activeMetric;
+        btn.className = on
+          ? "px-2.5 py-1 rounded-md text-xs font-medium bg-[var(--primary)] text-[var(--primary-foreground)] transition"
+          : "px-2.5 py-1 rounded-md text-xs font-medium border border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition";
+        btn.textContent = m.label;
+        btn.onclick = () => { activeMetric = m.key; renderAll(); };
+        metricTabs.appendChild(btn);
+      });
+
+      const famRuns = rankedFamilyRuns(activeFamily);
+      visBar.innerHTML = "";
+      famRuns.forEach((r, idx) => {
+        const on = visibleSet.has(r.id);
+        const chip = document.createElement("button");
+        chip.className = "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs border transition " +
+          (on ? "border-[var(--foreground)]/40 bg-[var(--secondary)]/60 text-[var(--foreground)]" : "border-[var(--border)] text-[var(--muted-foreground)] opacity-55");
+        const liveDot = r.isLive ? " [LIVE " + r.completedEpochs + "/" + r.totalEpochs + "]" : "";
+        chip.innerHTML = `<span class="w-2.5 h-2.5 rounded-full inline-block" style="background:${r.color}"></span>` +
+          `<span>#${idx + 1} ${r.titleHint} (${r.id})${liveDot}</span>`;
+        chip.title = `${r.summary.primaryLabel} | Click to toggle visibility`;
+        chip.onclick = () => {
+          if (visibleSet.has(r.id)) visibleSet.delete(r.id);
+          else visibleSet.add(r.id);
+          renderAll();
+        };
+        visBar.appendChild(chip);
+      });
+
+      renderChart(famRuns, metricsList.find((m) => m.key === activeMetric) || metricsList[0]);
+      renderTable();
+    }
+
+    function renderChart(famRuns, m) {
+      const isLight = document.documentElement.classList.contains("light");
+      const gridCol = isLight ? "rgba(0,0,0,0.10)" : "rgba(255,255,255,0.12)";
+      const axisCol = isLight ? "#52525b" : "#a1a1aa";
+      const W = 740, H = 290;
+      const padL = 48, padR = 16, padT = 14, padB = 26;
+      const plotW = W - padL - padR, plotH = H - padT - padB;
+
+      const shown = famRuns.filter((r) => visibleSet.has(r.id));
+      const allVals = [];
+      let maxEp = 1;
+      shown.forEach((r) => {
+        r.epochs.forEach((ep) => {
+          if (ep.e > maxEp) maxEp = ep.e;
+          if (typeof ep[m.key] === "number") allVals.push(ep[m.key]);
+        });
+      });
+      maxEp = Math.max(maxEp, activeFamily === "RL" ? 5 : 14);
+      const yMin = allVals.length ? Math.min(m.min, Math.floor((Math.min(...allVals) - (m.max - m.min) * 0.05) * 100) / 100) : m.min;
+      const yMax = allVals.length ? Math.max(m.max, Math.ceil((Math.max(...allVals) + (m.max - m.min) * 0.05) * 100) / 100) : m.max;
+
+      const xPos = (e) => padL + ((e - 1) / Math.max(1, maxEp - 1)) * plotW;
+      const yPos = (v) => padT + (1 - Math.max(0, Math.min(1, (v - yMin) / Math.max(1e-6, yMax - yMin)))) * plotH;
+
+      let out = "";
+      for (let i = 0; i <= 4; i++) {
+        const v = yMin + ((yMax - yMin) * i) / 4;
+        const y = yPos(v);
+        out += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="${gridCol}" stroke-width="1"/>`;
+        const lbl = m.unit ? v.toFixed(0) + "%" : v.toFixed(2);
+        out += `<text x="${padL - 6}" y="${y + 4}" text-anchor="end" font-size="12" fill="${axisCol}">${lbl}</text>`;
+      }
+      for (let e = 1; e <= maxEp; e++) {
+        const x = xPos(e);
+        out += `<line x1="${x}" y1="${padT}" x2="${x}" y2="${H - padB}" stroke="${gridCol}" stroke-width="0.6" stroke-dasharray="2,3"/>`;
+        out += `<text x="${x}" y="${H - 7}" text-anchor="middle" font-size="12" fill="${axisCol}">E${e}</text>`;
+      }
+
+      shown.forEach((r) => {
+        const pts = r.epochs.filter((ep) => typeof ep[m.key] === "number");
+        if (!pts.length) return;
+        const path = pts.map((ep, i) => `${i === 0 ? "M" : "L"}${xPos(ep.e).toFixed(1)},${yPos(ep[m.key]).toFixed(1)}`).join(" ");
+        const dash = r.isLive ? ` stroke-dasharray="6,3"` : "";
+        out += `<path d="${path}" fill="none" stroke="${r.color}" stroke-width="2.4" stroke-linecap="round"${dash}/>`;
+        pts.forEach((ep) => {
+          const rad = ep.e === r.summary.bestEpoch ? 5.2 : 3.4;
+          const stroke = ep.e === r.summary.bestEpoch ? ` stroke="currentColor" stroke-width="1.2"` : "";
+          out += `<circle cx="${xPos(ep.e)}" cy="${yPos(ep[m.key])}" r="${rad}" fill="${r.color}"${stroke}/>`;
+        });
+      });
+
+      const colW = plotW / Math.max(1, maxEp - 1);
+      for (let e = 1; e <= maxEp; e++) {
+        out += `<rect x="${xPos(e) - colW / 2}" y="${padT}" width="${colW}" height="${plotH}" fill="transparent" data-ep="${e}" class="cursor-pointer"/>`;
+      }
+
+      svgEl.innerHTML = out;
+      metricHint.textContent = m.hint;
+      showEpochReadout(Math.min(maxEp, Math.max(1, ...shown.map((r) => r.completedEpochs), 1)), shown, m);
+      svgEl.querySelectorAll("rect[data-ep]").forEach((el) => {
+        el.addEventListener("mouseenter", () => showEpochReadout(Number(el.getAttribute("data-ep")), shown, m));
+      });
+    }
+
+    function showEpochReadout(epNum, shown, m) {
+      if (!shown.length) {
+        hoverReadout.textContent = "No runs selected. Toggle a run chip above.";
+        return;
+      }
+      const parts = [];
+      shown.forEach((r) => {
+        const row = r.epochs.find((x) => x.e === epNum);
+        if (row && typeof row[m.key] === "number") {
+          const v = m.unit ? row[m.key].toFixed(2) + "%" : row[m.key].toFixed(4);
+          parts.push(`${r.id}=${v}`);
+        }
+      });
+      hoverReadout.textContent = `E${String(epNum).padStart(2, "0")}: ` + (parts.length ? parts.join(" | ") : "No data at this epoch");
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById("runTableBody");
+      if (!tbody) return;
+      const list = [...RUNS].filter((r) => r.family === activeFamily).sort((a, b) => scoreForRank(b, rankBy) - scoreForRank(a, rankBy));
+      tbody.innerHTML = list.map((r) => {
+        const on = visibleSet.has(r.id);
+        const st = r.isLive ? `<span class="text-[#10b981] font-semibold">LIVE</span>` : "DONE";
+        return `<tr class="border-b border-[var(--border)]/50">` +
+          `<td class="py-1.5 pr-3"><input type="checkbox" data-runid="${r.id}" ${on ? "checked" : ""}/></td>` +
+          `<td class="py-1.5 pr-3"><span class="inline-block w-2.5 h-2.5 rounded-full mr-1.5" style="background:${r.color}"></span>${r.titleHint} (${r.id})</td>` +
+          `<td class="py-1.5 pr-3">${st}</td>` +
+          `<td class="py-1.5 pr-3">${r.completedEpochs}/${r.totalEpochs}</td>` +
+          `<td class="py-1.5 pr-3">E${r.summary.bestEpoch}</td>` +
+          `<td class="py-1.5 pr-3">${r.summary.primaryLabel}</td>` +
+          `<td class="py-1.5 pr-3">${r.summary.composite.toFixed(2)}</td>` +
+          `<td class="py-1.5 text-[var(--muted-foreground)]">${r.mtimeIso}</td>` +
+          `</tr>`;
+      }).join("");
+      tbody.querySelectorAll("input[data-runid]").forEach((cb) => {
+        cb.onchange = () => {
+          const id = cb.getAttribute("data-runid");
+          if (cb.checked) visibleSet.add(id); else visibleSet.delete(id);
+          renderAll();
+        };
+      });
+    }
+
+    function updateRuns(fresh) {
+      RUNS = fresh;
+      document.getElementById("stampText").textContent = new Date().toLocaleTimeString();
+      applyPreset(true);
+      renderAll();
+    }
+
+    presetSel.onchange = () => { presetMode = presetSel.value; applyPreset(false); renderAll(); };
+    rankSel.onchange = () => { rankBy = rankSel.value; applyPreset(false); renderAll(); };
+
+    applyPreset(false);
+    renderAll();
+    
+  </script>
+</body>
+</html>
