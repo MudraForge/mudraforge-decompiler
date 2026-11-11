@@ -18,7 +18,10 @@ Features:
 import os
 import re
 import sys
-import fitz # PyMuPDF
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -107,6 +110,8 @@ class StatutoryDocumentIngestor:
         """
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+        if fitz is None:
+            raise ImportError("PyMuPDF (fitz) is required for PDF ingestion. Install with: pip install PyMuPDF")
 
         doc = fitz.open(pdf_path)
         raw_blocks = []
