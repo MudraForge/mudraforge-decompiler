@@ -3958,7 +3958,10 @@ class MudraDecompilerInference:
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        except Exception:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.vocab = checkpoint["vocab"]
         self.config = checkpoint["config"]
         self.roles = checkpoint.get("roles", SEMANTIC_ROLES)

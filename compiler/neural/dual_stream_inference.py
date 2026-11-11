@@ -50,7 +50,10 @@ class DualStreamDecompilerInference:
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Dual-stream checkpoint not found: {checkpoint_path}")
 
-        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        try:
+            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        except Exception:
+            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.vocab = ckpt["raw_vocab"]
         self.logic_vocab = ckpt.get("logic_vocab", LOGIC_VOCAB)
         self.roles = ckpt.get("roles", SEMANTIC_ROLES)
