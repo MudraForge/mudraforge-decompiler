@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, 'feat/**', 'fix/**', 'refactor/**' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-verify:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.10', '3.11']
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Node.js Dependencies
+        run: npm install
+
+      - name: Static Security & Rule 20 Zero-Emoji Audit
+        run: python scripts/security_audit.py
+
+      - name: Run Unit Tests
+        run: python -m unittest tests/test_decompiler_unit.py
+
+      - name: Run Cross-Domain Regulatory Benchmark
+        run: python benchmarks/test_crossdomain_deonticbench.py

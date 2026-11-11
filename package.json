@@ -13,10 +13,12 @@
     "url": "https://github.com/MudraForge/mudraforge-decompiler/issues"
   },
   "scripts": {
+    "test": "npm run audit && npm run test:unit && npm run test:deonticbench",
     "test:unit": "python -m unittest tests/test_decompiler_unit.py",
     "test:sara": "python benchmarks/test_sara_benchmark.py",
     "test:deonticbench": "python benchmarks/test_crossdomain_deonticbench.py",
-    "test:all": "python -m unittest discover tests && python benchmarks/test_sara_benchmark.py"
+    "test:all": "npm run test && npm run test:sara",
+    "audit": "python scripts/security_audit.py"
   },
   "author": "MudraForge Labs <engineering@mudraforge.in>",
   "license": "Apache-2.0",
