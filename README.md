@@ -1,4 +1,4 @@
-# Mudra Decompiler
+# MudraForge Decompiler
 
 **Zero-Shot Neuro-Symbolic Compiler for Computational Law & Statutory Reasoning**
 
@@ -12,7 +12,7 @@
 
 ## Executive Summary
 
-`mudra-decompiler` is a 5.8-million-parameter dual-stream neuro-symbolic compiler that translates unstructured legal statutes, tax regulations, and contract provisions directly into deterministic, executable Abstract Syntax Trees (ASTs) conforming to the Open Knowledge Format (OKF v0.2).
+`mudraforge-decompiler` is a 5.8-million-parameter dual-stream neuro-symbolic compiler that translates unstructured legal statutes, tax regulations, and contract provisions directly into deterministic, executable Abstract Syntax Trees (ASTs) conforming to the Open Knowledge Format (OKF v0.2).
 
 Rather than delegating mathematical or legal deduction to stochastic next-token generation (which suffers from hallucinations and arithmetic rounding drift), the system decouples statutory reasoning into two mathematically sound tiers:
 
@@ -107,8 +107,8 @@ Unstructured Statutory Text
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/mudraforge/mudra-decompiler.git
-cd mudra-decompiler
+git clone https://github.com/MudraForge/mudraforge-decompiler.git
+cd mudraforge-decompiler
 
 # Install Python requirements
 pip install -r requirements.txt
@@ -187,7 +187,7 @@ python benchmarks/test_sara_benchmark.py
 ## Repository Structure
 
 ```
-mudra-decompiler/
+mudraforge-decompiler/
 ├── cli.py                         # Root command-line interface
 ├── requirements.txt               # Python package dependencies
 ├── package.json                   # Node.js manifest with @mudraforge/statutory dependency
@@ -247,7 +247,7 @@ To maintain rigorous scientific and intellectual integrity, we explicitly deline
 5. **Constrained Viterbi Sequence Decoding**:
    The foundational principles of sequence tagging via transition-constrained Viterbi decoding build on **Viterbi (1967)** and **Lafferty, McCallum, and Pereira (2001)**.
 
-### Novel Contributions of MudraForge (`mudra-decompiler`)
+### Novel Contributions of MudraForge (`mudraforge-decompiler`)
 
 We claim the following specific contributions:
 
@@ -275,7 +275,7 @@ We claim the following specific contributions:
 
 ## Citation
 
-If you use `mudra-decompiler` in your research or applications, please cite:
+If you use `mudraforge-decompiler` in your research or applications, please cite:
 
 ```bibtex
 @article{mudraforge2026decompiler,
@@ -283,7 +283,7 @@ If you use `mudra-decompiler` in your research or applications, please cite:
   author={MudraForge Research Team},
   journal={arXiv preprint},
   year={2026},
-  url={https://github.com/mudraforge/mudra-decompiler}
+  url={https://github.com/MudraForge/mudraforge-decompiler}
 }
 ```
 

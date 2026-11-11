@@ -100,13 +100,13 @@ Because of these internal rounding discrepancies in their own ground-truth gener
 Clone the repository and run the full SARA benchmark in under 15 seconds:
 
 ```bash
-git clone https://github.com/mudraforge/mudra-decompiler.git
-cd mudra-decompiler
-python tools/learning/model/test_sara_benchmark.py
+git clone https://github.com/MudraForge/mudraforge-decompiler.git
+cd mudraforge-decompiler
+python benchmarks/test_sara_benchmark.py
 ```
 
 Read our full 22-entry training diary and the technical report at:  
-`docs/publications/deontic_breakthrough/NEURO_SYMBOLIC_STATUTORY_BREAKTHROUGH.md`
+`docs/PAPER.md`
 
 ---
 
@@ -119,7 +119,7 @@ Read our full 22-entry training diary and the technical report at:
 
 Hi HN,
 
-We built MudraForge (https://github.com/mudraforge/mudra-decompiler), a neuro-symbolic compiler for statutory law and enterprise finance.
+We built MudraForge Decompiler (https://github.com/MudraForge/mudraforge-decompiler), a neuro-symbolic compiler for statutory law and enterprise finance.
 
 For the past few weeks, we conducted an experiment on the SARA (Statutory Reasoning Assessment) benchmark from Johns Hopkins/UMD (Holzenberger et al., 2020) and the recent DeonticBench paper (Dou et al., arXiv:2604.04443, 2026).
 
@@ -142,10 +142,10 @@ How it works:
 When auditing the 3 cases that differed by $1, we found that our USVM computed exact cents ($68,844.74 in case 10), which rounds to $68,845 under IRS rules. The benchmark authors used `int()` in their ground-truth generator, dropping the 74 cents to get $68,844. DeonticBench explicitly specifies a +- $1 tolerance because of these internal rounding artifacts.
 
 We documented every step of this journey across 22 training diary entries (including GPU memory issues, Viterbi transition matrix fixes, and early stopping):
-https://github.com/mudraforge/mudra-decompiler/blob/main/docs/COMPILER_TRAINING_DIARY.md
+https://github.com/MudraForge/mudraforge-decompiler/blob/main/docs/COMPILER_TRAINING_DIARY.md
 
 The full technical paper is available here:
-https://github.com/mudraforge/mudra-decompiler/blob/main/docs/publications/deontic_breakthrough/NEURO_SYMBOLIC_STATUTORY_BREAKTHROUGH.md
+https://github.com/MudraForge/mudraforge-decompiler/blob/main/docs/PAPER.md
 
 Happy to answer questions about the grammar constraints, Viterbi decoding, or the USVM architecture!
 
@@ -201,10 +201,10 @@ This isn't just tax:
 
 **Tweet 8 (Open Source & Links)**:  
 Reproduce the full benchmark on your machine in 15 seconds:
-`python tools/learning/model/test_sara_benchmark.py`
+`python benchmarks/test_sara_benchmark.py`
 
 Read the full technical brief & 22-entry training diary:  
-https://github.com/mudraforge/mudra-decompiler
+https://github.com/MudraForge/mudraforge-decompiler
 
 ---
 

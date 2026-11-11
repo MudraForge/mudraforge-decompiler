@@ -11,7 +11,7 @@ This document maintains an append-only, chronologically indexed engineering diar
 - **Python Environment:** Python 3.11.4 (`C:\Python311\python.exe`)
 - **Core Libraries:** PyTorch `2.5.1+cu121`, PyMuPDF (`fitz 1.27.2`)
 - **Primary Cache Path:** `./checkpoints/` (enforced storage partition)
-- **Code Repository:** `mudra-decompiler/` (Branch: `feat/statutory-ast-compiler`)
+- **Code Repository:** `mudraforge-decompiler/` (Branch: `feat/statutory-ast-compiler`)
 
 ---
 
@@ -543,7 +543,7 @@ This document maintains an append-only, chronologically indexed engineering diar
 ---
 
 ## Diary Entry 19: Controllership Execution Engine Upgrade: Ind AS 116 Multi-Period EIR Leases, 3-Way Triangulation Matching, and Balanced ERP Vouchers
-- **Objective:** Upgrade the V8 controllership runtime engines in `mudra-decompiler` to enforce core corporate controllership invariants:
+- **Objective:** Upgrade the V8 controllership runtime engines in `mudraforge-decompiler` to enforce core corporate controllership invariants:
   1. Ind AS 116 / ASC 842 multi-period EIR lease amortization schedules across full contractual terms ($N$ months), with terminal paisa adjustment ensuring closing liability and net ROU asset amortize to exactly 0.00 paisa.
   2. Canonical 3-way matching engine (`lib/enterprise/three_way_matching.js`) triangulating line items across PO, GRN, and Invoices with HSN/SAC validation, Quantity Overrun Gating, Warehouse QA Rejection tracking, Price Variance Gating, and statutory gating for CGST Section 16(2)(b) and Direct Tax withholding.
   3. Balanced double-entry ERP journal vouchers (`createIndAs116InitialCapitalizationVoucher`, `createIndAs116MonthlyAccrualVoucher`, `createThreeWayMatchDebitNoteVoucher`) with Debits strictly equaling Credits to the exact paisa.

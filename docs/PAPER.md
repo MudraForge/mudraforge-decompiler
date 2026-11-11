@@ -2,7 +2,7 @@
 
 **Date**: November 2026  
 **Authors**: MudraForge Research & Core Architecture Team  
-**Repository**: `mudra-decompiler`  
+**Repository**: `mudraforge-decompiler` (https://github.com/MudraForge/mudraforge-decompiler)  
 **Artifact Classification**: Academic & Industrial Research Publication Brief  
 **Domain**: Computational Law, Neuro-Symbolic AI, Statutory Formalization, Tax & Regulatory Reasoning  
 
@@ -220,7 +220,7 @@ To maintain rigorous scientific and intellectual integrity, we explicitly deline
 5. **Constrained Viterbi Sequence Decoding**:
    The foundational principles of sequence tagging via transition-constrained Viterbi decoding build on **Viterbi (1967)** and **Lafferty, McCallum, and Pereira (2001)**.
 
-### 7.2 Novel Contributions of MudraForge (`mudra-decompiler`)
+### 7.2 Novel Contributions of MudraForge (`mudraforge-decompiler`)
 We claim the following specific contributions:
 1. **The Dual-Stream Transformer Architecture**: A compact 5.8-million-parameter encoder architecture (`DomainSensor` || `LogicReasoner`) fusing lexical semantic roles with deontic operator embeddings, achieving high parameter efficiency without large foundation model footprint.
 2. **Zero-Shot Neural-to-AST Compilation**: An automated pipeline that translates raw natural language statutory prose directly into strongly-typed Declarative Abstract Syntax Trees (ASTs) conforming to the Open Knowledge Format (OKF v0.2), eliminating the need for human experts to manually hand-author formal Prolog or Datalog rules.
