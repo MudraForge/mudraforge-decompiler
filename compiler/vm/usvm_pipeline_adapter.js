@@ -20,9 +20,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { evaluateStatutoryAst } from './evaluation_vm.js';
-import { validateStatutoryAst, StatutoryAstValidationError } from './schemas/statutory_ast_schema.js';
-import { classifyOkfRuleLifecycle } from './okf_lifecycle_monitor.js';
+import {
+    evaluateStatutoryAst,
+    validateStatutoryAst,
+    StatutoryAstValidationError,
+    classifyOkfRuleLifecycle
+} from '@mudraforge/statutory/usvm';
 
 const __filename = typeof import.meta?.url === 'string' && import.meta.url.startsWith('file:') ? fileURLToPath(import.meta.url) : '';
 const __dirname = __filename ? path.dirname(__filename) : '';
