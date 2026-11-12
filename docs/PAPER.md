@@ -36,6 +36,20 @@ In conventional NLP benchmarks (SQuAD, GSM8K, MMLU), answers tolerate approximat
 - **Relational & Temporal Kinship Dependencies**: Determining taxpayer filing status under § 2 requires evaluating marital continuity under § 7703, household maintenance cost proportions, dependent qualification under § 151/152, and the exact year of spousal death.
 - **Multi-Tier Progressive Math**: Statutory tax computation requires evaluating marginal brackets, standard deduction age/blindness additions under § 63, and agricultural employer payroll taxes under § 3301/3306. Pure autoregressive LLMs attempt to perform this multi-step arithmetic inside their text tokens, inevitably drifting and hallucinating.
 
+### 1.3 The Decompiler Thesis: Statutes as Compiled Binaries for Human Runtime
+
+A foundational conceptual contribution of this work is establishing why this architecture operates as a **Decompiler** rather than an ordinary language compiler.
+
+In classical compiler engineering:
+- A **compiler** takes human-readable, high-level source code and translates it down into a low-level, serialized binary representation (machine code or bytecode) optimized for execution on hardware runtimes.
+- A **decompiler** (e.g., Ghidra, IDA Pro, or JADX) inverts this process: it ingests an opaque, compiled binary and reverse-engineers its latent Abstract Syntax Tree (AST), recovering typed variables, structured control-flow graphs, and operational primitives.
+
+In computational law, the legislative process precisely mirrors this pipeline:
+1. **The Upstream Legislative Compiler**: When a parliament or statutory drafting committee authors legislation, they begin with abstract policy objectives and mathematical specifications (e.g., progressive tax brackets, economic deterrence thresholds, corporate governance checks). The drafters then **compile** these formal specifications into dense, defensive, natural-language statutory prose—the official Acts and Gazettes.
+2. **Statutes as Compiled Binaries**: Legal prose is not free-form natural language; it is a highly structured, defensive serialization format designed specifically for a biological, human judicial runtime (judges, revenue agents, and attorneys). To an autonomous computer system, statutory prose behaves exactly like a stripped, compiled binary: it is saturated with conditional jumps (*"subject to paragraph (2)"*), variable indirection (*"within the meaning of section 7703"*), implicit scope definitions, and defeasible exceptions (*"shall not apply if..."*).
+3. **Statutory Decompilation**: Because the statute is already a compiled end-product, an AI system cannot "compile" it from source. Instead, `mudraforge-decompiler` acts as a **true statutory decompiler**: it takes the opaque natural-language legal artifact, strips away linguistic and bureaucratic serialization layers, discovers semantic span boundaries via BIO sequence labeling, infers relational types (`symbolLegend`), and reconstructs the clean Declarative Abstract Syntax Tree (OKF v0.2 AST).
+4. **Virtual Machine Lowering**: The recovered AST is subsequently executed in the Universal Statutory Virtual Machine (USVM) using exact BigInt rational arithmetic (cents and paisa), eliminating floating-point rounding drift and enforcing non-negotiable controllership invariants (`isAuthorizedToDisburse: false`).
+
 ---
 
 ## 2. Comparative Benchmark Results
