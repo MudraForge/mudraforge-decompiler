@@ -25,6 +25,7 @@ if REPO_ROOT not in sys.path:
 
 from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
 from compiler.vm.usvm_evaluator import CanonicalUsvmEvaluator
+from compiler.converters.catala_emitter import emit_catala_code, save_catala_file
 
 
 def parse_args():
@@ -56,9 +57,14 @@ def parse_args():
     )
     parser.add_argument(
         "--format",
-        choices=["pretty", "json"],
+        choices=["pretty", "json", "catala"],
         default="pretty",
-        help="Output format (pretty or raw json)",
+        help="Output format (pretty, raw json, or literate catala)",
+    )
+    parser.add_argument(
+        "--export-catala",
+        dest="catala_path",
+        help="Optional destination path to export decompiled Catala source (.catala_en)",
     )
     parser.add_argument(
         "-e", "--evaluate",
@@ -161,6 +167,8 @@ def main():
                 res = decompiler.decompile_text(line, rule_domain=args.domain)
                 if args.format == "json":
                     print(json.dumps(res, indent=2))
+                elif args.format == "catala":
+                    print(emit_catala_code(res))
                 else:
                     print_pretty_result(res)
         finally:
@@ -194,11 +202,17 @@ def main():
     if evaluator:
         evaluator.close()
 
+    if args.catala_path:
+        out_catala = save_catala_file(res, args.catala_path)
+        print(f"[CATALA] Decompiled Catala source exported to: {out_catala}")
+
     if args.format == "json":
         payload = {"decompilation": res}
         if eval_res is not None:
             payload["evaluation"] = eval_res
         print(json.dumps(payload, indent=2))
+    elif args.format == "catala":
+        print(emit_catala_code(res))
     else:
         print_pretty_result(res, eval_res)
 

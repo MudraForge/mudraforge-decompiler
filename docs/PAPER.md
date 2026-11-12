@@ -329,6 +329,7 @@ A central architectural principle of this system is that **neural inference and 
 2. **Relational Arc Resolution**: A biaffine span head predicts dependency arcs connecting arguments (`REL_TAX_BASE_OF`, `REL_APPLIES_TO`, `REL_TEMPORAL_WINDOW`, `REL_PROVISO_TO_EXCEPTION`).
 3. **AST Synthesis**: The parser aggregates these extracted parameters into a strongly-typed **Declarative Abstract Syntax Tree (AST)** conforming to the Open Knowledge Format (OKF v0.2). This AST explicitly records threshold modes (`"CLIFF"` vs. `"EXCESS"`), rate fractions, base formulas, and exception carveout gates.
 4. **Deterministic USVM Execution**: Only after the AST is completely validated does the **Universal Statutory Virtual Machine (USVM)** in `@mudraforge/statutory` receive it. The USVM executes the AST over the taxpayer's factual profile using exact 64-bit integer BigInt rational math, returning an auditable verdict while enforcing `isAuthorizedToDisburse: false`.
+5. **Target Code Lowering & Formal Catala Bridge**: Beyond direct in-memory USVM execution, the decompiler incorporates an automated code emitter (`compiler.converters.catala_emitter`) that lowers synthesized ASTs into literate Catala source code (`.catala_en`). This establishes the first automated bridge connecting natural language legislation with Inria's certified Catala toolchain, enabling formal verification, interactive theorem proving, and interoperability across European and U.S. computational law systems.
 
 ### 7.3 Novel Contributions of MudraForge (`mudraforge-decompiler`)
 We claim the following specific contributions:
@@ -337,6 +338,7 @@ We claim the following specific contributions:
 3. **The Universal Statutory Virtual Machine (USVM)**: A sandboxed, domain-agnostic virtual machine operating in a JavaScript isolate with 43 universal ALU opcodes, bounded first-order collection quantifiers, 64-bit integer BigInt rational math (zero IEEE-754 drift), and an immutable non-disbursement invariant (`isAuthorizedToDisburse: false`).
 4. **Zero-Shot Cross-Jurisdiction Generalization**: Demonstrating for the first time that a neuro-symbolic decompiler trained exclusively on statutory drafting grammar and non-U.S. tax corpora can generalize zero-shot to 100% precision on the U.S. Internal Revenue Code.
 5. **Cent-Level Forensic Resolution**: Resolving the long-standing discrepancy on the 3 out-of-bounds cases in SARA numeric by mathematically demonstrating the ground-truth integer truncation artifact ($0.74, $0.32, $0.94).
+6. **Automated Catala Code Generation**: The first automated compiler translating natural language statutes into literate Catala source code (`.catala_en`), replacing the labor-intensive pair programming traditionally required between lawyers and software engineers.
 
 ---
 

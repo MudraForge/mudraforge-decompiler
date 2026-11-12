@@ -230,6 +230,12 @@ python cli.py "In the case of a head of household, the basic standard deduction 
 # Export compiled AST to JSON
 python cli.py -f examples/statute.txt --format json
 
+# Export compiled AST as literate Catala (.catala_en) source code
+python cli.py "Any person paying to a resident sum for purchase of goods exceeding 50 Lakh rupees shall deduct 0.1 percent." --format catala
+
+# Export decompiled Catala source directly to file
+python cli.py -f examples/statute.txt --export-catala output/statute.catala_en
+
 # Interactive REPL session
 python cli.py --interactive
 ```
@@ -261,6 +267,23 @@ try:
     print("Verdict:", verdict[0]["isApplicable"])
 finally:
     evaluator.close()
+```
+
+### Formal DSL Interoperability: Catala Bridge
+
+The MudraForge Decompiler includes a built-in bridge (`compiler.converters.catala_emitter`) that transpiles synthesized Declarative ASTs into literate, idiomatic **Catala source code (`.catala_en`)** according to the ACM ICFP 2021 specification (*Merigoux et al.*).
+
+This enables downstream formal verification, certified compilation, and cross-validation against European and U.S. statutory formalizations:
+
+```python
+from compiler.converters.catala_emitter import emit_catala_code, save_catala_file
+
+# Convert compiled decompiler result into Catala literate markdown
+catala_source = emit_catala_code(res, title="IRC Section Formalization")
+print(catala_source)
+
+# Export directly to file
+save_catala_file(res, "output/statute.catala_en", title="IRC Section Formalization")
 ```
 
 ---
@@ -322,6 +345,9 @@ mudraforge-decompiler/
 ├── checkpoints/                   # Pretrained weights (dual_stream_sup.pt, dual_stream_rl.pt)
 ├── data/                          # Cached benchmark corpora (DeonticBench SARA)
 ├── compiler/
+│   ├── converters/                # Target code emitters & formal legal DSL bridges
+│   │   ├── __init__.py
+│   │   └── catala_emitter.py      # Declarative AST -> Literate Catala (.catala_en)
 │   ├── neural/                    # 5.8M dual-stream transformer modules
 │   │   ├── statutory_neural_parser.py
 │   │   ├── logic_reasoner.py
@@ -342,6 +368,7 @@ mudraforge-decompiler/
 │   ├── test_sara_benchmark.py
 │   └── test_crossdomain_deonticbench.py
 ├── tests/                         # Unit tests
+│   ├── test_catala_emitter.py     # Catala emitter bridge unit tests
 │   └── test_decompiler_unit.py
 └── docs/                          # Detailed research papers and diaries
     ├── PAPER.md                   # Full research paper
