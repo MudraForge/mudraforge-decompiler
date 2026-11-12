@@ -261,6 +261,32 @@ python benchmarks/test_crossdomain_deonticbench.py
 
 # Run the complete SARA U.S. IRC benchmark (Tracks 1A, 1B, 1C, 1D, Track 2 Binary & Numeric)
 python benchmarks/test_sara_benchmark.py
+
+# Or run everything via npm in one command:
+npm run test:all
+```
+
+---
+
+## Training & Model Alignment
+
+The repository includes the complete pipeline to synthesize statutory training corpora, train the dual-stream transformer from scratch, and align the policy via execution-guided Group Relative Policy Optimization (GRPO):
+
+```bash
+# 1. Quick environment smoke test (verifies CUDA, training forward/backward pass, and USVM in <6s)
+python train.py --smoke-test
+
+# 2. Synthesize multi-domain training dataset from procedural legal grammar
+python train.py --stage dataset --samples 4000 --dataset checkpoints/dataset.pt
+
+# 3. Stage 1: Supervised Disentangled Training (Model B DomainSensor + Model A LogicReasoner)
+python train.py --stage supervised --epochs 15 --lr 3e-4 --sup-ckpt checkpoints/dual_stream_sup.pt
+
+# 4. Stage 2: Execution-Guided GRPO Reinforcement Learning (Freezes Model B, tunes LogicReasoner with USVM rewards)
+python train.py --stage grpo --epochs 5 --lr 3e-5 --checkpoint-in checkpoints/dual_stream_sup.pt --rl-ckpt checkpoints/dual_stream_rl.pt
+
+# 5. Run complete pipeline end-to-end
+python train.py --stage all
 ```
 
 ---
@@ -269,8 +295,10 @@ python benchmarks/test_sara_benchmark.py
 
 ```
 mudraforge-decompiler/
-├── cli.py                         # Root command-line interface
-├── requirements.txt               # Python package dependencies
+├── cli.py                         # Root inference command-line interface
+├── train.py                       # Unified training and RL alignment CLI
+├── pyproject.toml                 # Standard PEP 517/621 packaging metadata
+├── requirements.txt               # Python dependencies (torch, numpy, matplotlib, pypdf)
 ├── package.json                   # Node.js manifest with @mudraforge/statutory dependency
 ├── LICENSE                        # Apache 2.0 license
 ├── README.md                      # Architecture and documentation
@@ -284,6 +312,10 @@ mudraforge-decompiler/
 │   │   ├── tokenizer.py
 │   │   ├── inference.py
 │   │   └── dual_stream_inference.py
+│   ├── training/                  # Synthetic generation & GRPO alignment loops
+│   │   ├── dataset_generator.py   # Procedural statutory grammar generator
+│   │   ├── train_dual_stream.py   # Disentangled supervised + GRPO training
+│   │   └── usvm_rl_environment.py# USVM execution reward oracle
 │   └── vm/                        # USVM Execution Adapter (bridges to @mudraforge/statutory)
 │       ├── index.js               # Runtime barrel re-exporting @mudraforge/statutory/usvm
 │       ├── usvm_pipeline_adapter.js # Pipeline adapter & shadow validation

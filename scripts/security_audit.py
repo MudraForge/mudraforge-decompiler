@@ -21,7 +21,7 @@ EMOJI_PATTERN = re.compile(
     re.UNICODE
 )
 
-EXCLUDED_DIRS = {".git", "node_modules", "__pycache__", ".pytest_cache", "checkpoints"}
+EXCLUDED_DIRS = {".git", ".agents", "node_modules", "__pycache__", ".pytest_cache", "checkpoints"}
 EXCLUDED_EXTS = {".pt", ".pyc", ".png", ".jpg", ".jpeg", ".ico"}
 
 def audit_zero_emojis(repo_root: str) -> list[str]:

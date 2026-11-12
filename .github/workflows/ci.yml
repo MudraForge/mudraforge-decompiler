@@ -35,17 +35,21 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install Python Dependencies
+      - name: Install Python Dependencies & Package
         run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
+            python -m pip install --upgrade pip
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+            pip install -r requirements.txt
+            pip install -e .
 
       - name: Install Node.js Dependencies
         run: npm install
 
       - name: Static Security & Rule 20 Zero-Emoji Audit
         run: python scripts/security_audit.py
+
+      - name: Verify Training Pipeline (Smoke Test)
+        run: python train.py --smoke-test
 
       - name: Run Unit Tests
         run: python -m unittest discover tests -v

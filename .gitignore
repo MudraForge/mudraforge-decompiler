@@ -51,3 +51,7 @@ Thumbs.db
 # Run logs
 *.log
 .mudraforge/
+
+# Generated datasets and temporary test checkpoints
+checkpoints/dataset.pt
+checkpoints/smoke_test_*.pt

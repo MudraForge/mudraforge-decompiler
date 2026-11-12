@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mudraforge-decompiler"
+version = "1.0.0"
+description = "Zero-shot neuro-symbolic compiler for computational law and statutory reasoning"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "MudraForge Core Architecture Team", email = "engineering@mudraforge.in" }
+]
+keywords = [
+    "computational-law",
+    "neuro-symbolic",
+    "decompiler",
+    "statutory-reasoning",
+    "compiler",
+    "deontic-logic",
+    "tax-compliance",
+    "virtual-machine"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Legal Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Compilers",
+]
+dependencies = [
+    "torch>=2.1.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-timeout>=2.1.0",
+    "pypdf>=3.17.0",
+    "matplotlib>=3.7.0",
+]
+
+[project.scripts]
+mudraforge-decompiler = "cli:main"
+mudraforge-train = "train:main"
+
+[project.urls]
+Homepage = "https://github.com/MudraForge/mudraforge-decompiler"
+Documentation = "https://github.com/MudraForge/mudraforge-decompiler#readme"
+Repository = "https://github.com/MudraForge/mudraforge-decompiler.git"
+Issues = "https://github.com/MudraForge/mudraforge-decompiler/issues"
+
+[tool.setuptools]
+packages = ["compiler", "compiler.neural", "compiler.training", "compiler.vm"]
+py-modules = ["cli", "train"]
