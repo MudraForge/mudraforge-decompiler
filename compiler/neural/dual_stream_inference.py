@@ -32,6 +32,7 @@ from .inference import (
     segment_clauses,
     parse_numeric_quantity,
     parse_unit_and_type,
+    stitch_classified_spans,
     synthesize_usvm_ast,
 )
 from .domain_sensor import DOMAIN_TOKEN_CLASSES, ID2DOMAIN_CLASS
@@ -286,91 +287,8 @@ class DualStreamDecompilerInference:
                 "clauseIdx": _locate_clause_idx(s_info["token_start"], s_info["token_end"]),
             })
 
-        COMP_PREFIXES = {
-            "exceed", "exceeds", "exceeding", "over", "above", "under", "below",
-            "not over", "up to", "not less than", "at least", "more than",
-            "less than", "not exceeding", "excess over", "does not exceed",
-        }
-        UNIT_TAIL_RE = re.compile(
-            r"^(?:crores?|lakhs?|lacs?|thousand|million|billion|rupees?|dollars?|euros?|pounds?|paise|paisa|cents?|pence|rs\.?|inr|usd|eur|gbp)$",
-            re.IGNORECASE,
-        )
-        NON_STITCH_ROLES = {
-            "ROLE_COMPUTATION_OPERAND",
-            "ROLE_PROHIBITION_GATE",
-            "ROLE_MANDATORY_ACTION_OBLIGATION",
-            "ROLE_EXCEPTION_CARVEOUT",
-        }
-        stitched_spans = []
-        old_to_new_span_idx = {}
-        skip_indices = set()
-        for idx in range(len(classified_spans)):
-            if idx in skip_indices:
-                continue
-            curr = classified_spans[idx]
-            new_idx = len(stitched_spans)
-            if idx + 1 < len(classified_spans):
-                nxt = classified_spans[idx + 1]
-                gap_str = text[curr["charRange"][1]:nxt["charRange"][0]]
-                if nxt["charRange"][0] - curr["charRange"][1] <= 1 and "," not in gap_str:
-                    comb_text = text[curr["charRange"][0]:nxt["charRange"][1]].strip()
-                    qty_curr = parse_numeric_quantity(curr["span"])
-                    qty_nxt = parse_numeric_quantity(nxt["span"])
-                    sym_curr, _, _ = parse_unit_and_type(curr["span"])
-                    sym_nxt, _, _ = parse_unit_and_type(nxt["span"])
-                    qty_comb = parse_numeric_quantity(comb_text)
-
-                    can_stitch = False
-                    if qty_comb is not None:
-                        if qty_curr is None and sym_curr == "MONETARY_QUANTUM" and qty_nxt is not None:
-                            can_stitch = True
-                        elif qty_curr is not None and sym_curr == "BOOLEAN_FLAG" and qty_nxt is None and sym_nxt in ("MONETARY_QUANTUM", "PERCENTAGE_RATE", "TEMPORAL_DURATION"):
-                            can_stitch = True
-                        elif qty_curr is not None and sym_curr == "MONETARY_QUANTUM" and qty_nxt is None and UNIT_TAIL_RE.match(nxt["span"].strip()):
-                            can_stitch = True
-                        elif (
-                            curr["span"].strip().lower() in COMP_PREFIXES
-                            or (
-                                curr["span"].strip().lower() in {"not", "no", "up"}
-                                and curr.get("bioType") in ("THRESHOLD", "PRECONDITION", "DEADLINE")
-                                and re.match(r"^(?:over|above|exceeding|exceed|more\s+than|less\s+than|under|below|to)\b", nxt["span"].strip(), flags=re.IGNORECASE)
-                            )
-                        ) and qty_nxt is not None and sym_nxt == "MONETARY_QUANTUM":
-                            can_stitch = True
-                        elif (
-                            qty_curr is not None
-                            and qty_nxt is not None
-                            and curr["role"] not in NON_STITCH_ROLES
-                            and nxt["role"] not in NON_STITCH_ROLES
-                            and curr["clauseIdx"] == nxt["clauseIdx"]
-                        ):
-                            can_stitch = True
-
-                    if can_stitch:
-                        dominant_role = curr["role"] if curr["role"] != "ROLE_IGNORE" else nxt["role"]
-                        if "ROLE_TRANSACTION_CLIFF_THRESHOLD" in (curr["role"], nxt["role"]):
-                            dominant_role = "ROLE_TRANSACTION_CLIFF_THRESHOLD"
-                        elif "ROLE_TRANSACTION_EXCESS_THRESHOLD" in (curr["role"], nxt["role"]):
-                            dominant_role = "ROLE_TRANSACTION_EXCESS_THRESHOLD"
-                        elif "ROLE_AGENT_STATE_PRECONDITION" in (curr["role"], nxt["role"]):
-                            dominant_role = "ROLE_AGENT_STATE_PRECONDITION"
-                        elif "ROLE_STANDARD_STATUTORY_RATE" in (curr["role"], nxt["role"]):
-                            dominant_role = "ROLE_STANDARD_STATUTORY_RATE"
-                        stitched_spans.append({
-                            "span": comb_text,
-                            "bioType": curr["bioType"],
-                            "role": dominant_role,
-                            "confidence": round((curr["confidence"] + nxt["confidence"]) / 2, 4),
-                            "charRange": [curr["charRange"][0], nxt["charRange"][1]],
-                            "tokenRange": [curr["tokenRange"][0], nxt["tokenRange"][1]],
-                            "clauseIdx": curr["clauseIdx"],
-                            "spanIdx": new_idx,
-                        })
-                        old_to_new_span_idx[idx] = new_idx
-                        old_to_new_span_idx[idx + 1] = new_idx
-                        skip_indices.add(idx + 1)
-                        continue
-            curr_copy = dict(curr)
+        stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
+        for curr_copy in stitched_spans:
             # Prepositional Phrase & Excess constituent binding:
             # If head is a computation operand like 'amount', 'sum', 'portion', 'part', 'excess'
             # and is followed by 'of the [noun phrase]' before statutory verb/modal/threshold boundaries
@@ -386,9 +304,6 @@ class DualStreamDecompilerInference:
                     if m_over:
                         curr_copy["span"] = text[curr_copy["charRange"][0]:c_end + m_over.end()].strip()
                         curr_copy["charRange"] = [curr_copy["charRange"][0], c_end + m_over.end()]
-            curr_copy["spanIdx"] = new_idx
-            stitched_spans.append(curr_copy)
-            old_to_new_span_idx[idx] = new_idx
         classified_spans = stitched_spans
 
         rel_edges = []

@@ -194,6 +194,126 @@ def parse_numeric_quantity(text: str):
     return int(val) if val.is_integer() else val
 
 
+_COMP_PREFIXES = {
+    "exceed", "exceeds", "exceeding", "over", "above", "under", "below",
+    "not over", "up to", "not less than", "at least", "more than",
+    "less than", "not exceeding", "excess over", "does not exceed",
+}
+_UNIT_TAIL_RE = re.compile(
+    r"^(?:crores?|lakhs?|lacs?|thousand|million|billion|rupees?|dollars?|euros?|pounds?|paise|paisa|cents?|pence|rs\.?|inr|usd|eur|gbp)$",
+    re.IGNORECASE,
+)
+_NON_STITCH_ROLES = {
+    "ROLE_COMPUTATION_OPERAND",
+    "ROLE_PROHIBITION_GATE",
+    "ROLE_MANDATORY_ACTION_OBLIGATION",
+    "ROLE_EXCEPTION_CARVEOUT",
+}
+
+
+def spans_are_stitchable(curr: dict, nxt: dict, text: str) -> bool:
+    """Decides whether two adjacent classified spans form one compound quantity.
+
+    Shared by the standalone and dual-stream inference paths so their span
+    stitching cannot drift apart.
+    """
+    gap_str = text[curr["charRange"][1]:nxt["charRange"][0]]
+    if "," in gap_str:
+        return False
+    gap_norm = gap_str.strip().lower()
+    # Compound Indian monetary amounts ("two lakh and fifty thousand rupees")
+    # arrive as two monetary spans joined by the connective "and".
+    is_amount_connective = (
+        gap_norm == "and"
+        and curr["clauseIdx"] == nxt["clauseIdx"]
+        and parse_unit_and_type(curr["span"])[0] == "MONETARY_QUANTUM"
+        and parse_unit_and_type(nxt["span"])[0] == "MONETARY_QUANTUM"
+    )
+    if not (nxt["charRange"][0] - curr["charRange"][1] <= 1 or is_amount_connective):
+        return False
+
+    comb_text = text[curr["charRange"][0]:nxt["charRange"][1]].strip()
+    qty_curr = parse_numeric_quantity(curr["span"])
+    qty_nxt = parse_numeric_quantity(nxt["span"])
+    sym_curr, _, _ = parse_unit_and_type(curr["span"])
+    sym_nxt, _, _ = parse_unit_and_type(nxt["span"])
+    qty_comb = parse_numeric_quantity(comb_text)
+    if qty_comb is None:
+        return False
+
+    if qty_curr is None and sym_curr == "MONETARY_QUANTUM" and qty_nxt is not None:
+        return True
+    if qty_curr is not None and sym_curr == "BOOLEAN_FLAG" and qty_nxt is None and sym_nxt in ("MONETARY_QUANTUM", "PERCENTAGE_RATE", "TEMPORAL_DURATION"):
+        return True
+    if qty_curr is not None and sym_curr == "MONETARY_QUANTUM" and qty_nxt is None and _UNIT_TAIL_RE.match(nxt["span"].strip()):
+        return True
+    if (
+        curr["span"].strip().lower() in _COMP_PREFIXES
+        or (
+            curr["span"].strip().lower() in {"not", "no", "up"}
+            and curr.get("bioType") in ("THRESHOLD", "PRECONDITION", "DEADLINE")
+            and re.match(r"^(?:over|above|exceeding|exceed|more\s+than|less\s+than|under|below|to)\b", nxt["span"].strip(), flags=re.IGNORECASE)
+        )
+    ) and qty_nxt is not None and sym_nxt == "MONETARY_QUANTUM":
+        return True
+    if (
+        qty_curr is not None
+        and qty_nxt is not None
+        and curr["role"] not in _NON_STITCH_ROLES
+        and nxt["role"] not in _NON_STITCH_ROLES
+        and curr["clauseIdx"] == nxt["clauseIdx"]
+    ):
+        return True
+    return False
+
+
+def stitch_classified_spans(classified_spans: list[dict], text: str) -> tuple[list[dict], dict]:
+    """Greedily merges adjacent spans that form one compound quantity.
+
+    A merged span is re-tested against the following span so multi-part
+    amounts ("exceeds" + "two lakh" + "fifty thousand rupees") collapse into
+    a single threshold. Shared by both inference paths.
+    """
+    stitched: list[dict] = []
+    old_to_new: dict = {}
+    idx = 0
+    while idx < len(classified_spans):
+        curr = dict(classified_spans[idx])
+        new_idx = len(stitched)
+        consumed = 1
+        while idx + consumed < len(classified_spans):
+            nxt = classified_spans[idx + consumed]
+            if not spans_are_stitchable(curr, nxt, text):
+                break
+            comb_text = text[curr["charRange"][0]:nxt["charRange"][1]].strip()
+            dominant_role = curr["role"] if curr["role"] != "ROLE_IGNORE" else nxt["role"]
+            for role in (
+                "ROLE_TRANSACTION_CLIFF_THRESHOLD",
+                "ROLE_TRANSACTION_EXCESS_THRESHOLD",
+                "ROLE_AGENT_STATE_PRECONDITION",
+                "ROLE_STANDARD_STATUTORY_RATE",
+            ):
+                if role in (curr["role"], nxt["role"]):
+                    dominant_role = role
+                    break
+            curr = {
+                "span": comb_text,
+                "bioType": curr["bioType"],
+                "role": dominant_role,
+                "confidence": round((curr["confidence"] + nxt["confidence"]) / 2, 4),
+                "charRange": [curr["charRange"][0], nxt["charRange"][1]],
+                "tokenRange": [curr["tokenRange"][0], nxt["tokenRange"][1]],
+                "clauseIdx": curr["clauseIdx"],
+            }
+            consumed += 1
+        curr["spanIdx"] = new_idx
+        stitched.append(curr)
+        for k in range(idx, idx + consumed):
+            old_to_new[k] = new_idx
+        idx += consumed
+    return stitched, old_to_new
+
+
 def parse_unit_and_type(text: str):
     low = text.lower()
     # Mask 'per cent' / 'per centum' BEFORE minor-unit 'cent' matching
@@ -4247,95 +4367,7 @@ class MudraDecompilerInference:
             })
 
         # 4. Contiguous numeric and compound quantifier span stitching (strictly guarded against verb swallowing)
-        COMP_PREFIXES = {
-            "exceed", "exceeds", "exceeding", "over", "above", "under", "below",
-            "not over", "up to", "not less than", "at least", "more than",
-            "less than", "not exceeding", "excess over", "does not exceed"
-        }
-        UNIT_TAIL_RE = re.compile(
-            r"^(?:crores?|lakhs?|lacs?|thousand|million|billion|rupees?|dollars?|euros?|pounds?|paise|paisa|cents?|pence|rs\.?|inr|usd|eur|gbp)$",
-            re.IGNORECASE
-        )
-        NON_STITCH_ROLES = {
-            "ROLE_COMPUTATION_OPERAND",
-            "ROLE_PROHIBITION_GATE",
-            "ROLE_MANDATORY_ACTION_OBLIGATION",
-            "ROLE_EXCEPTION_CARVEOUT"
-        }
-        stitched_spans = []
-        old_to_new_span_idx = {}
-        skip_indices = set()
-        for idx in range(len(classified_spans)):
-            if idx in skip_indices:
-                continue
-            curr = classified_spans[idx]
-            new_idx = len(stitched_spans)
-            if idx + 1 < len(classified_spans):
-                nxt = classified_spans[idx + 1]
-                gap_str = text[curr["charRange"][1]:nxt["charRange"][0]]
-                if nxt["charRange"][0] - curr["charRange"][1] <= 1 and "," not in gap_str:
-                    comb_text = text[curr["charRange"][0]:nxt["charRange"][1]].strip()
-                    qty_curr = parse_numeric_quantity(curr["span"])
-                    qty_nxt = parse_numeric_quantity(nxt["span"])
-                    sym_curr, _, _ = parse_unit_and_type(curr["span"])
-                    sym_nxt, _, _ = parse_unit_and_type(nxt["span"])
-                    qty_comb = parse_numeric_quantity(comb_text)
-
-                    can_stitch = False
-                    if qty_comb is not None:
-                        if qty_curr is None and sym_curr == "MONETARY_QUANTUM" and qty_nxt is not None:
-                            can_stitch = True
-                        elif qty_curr is not None and sym_curr == "BOOLEAN_FLAG" and qty_nxt is None and sym_nxt in ("MONETARY_QUANTUM", "PERCENTAGE_RATE", "TEMPORAL_DURATION"):
-                            can_stitch = True
-                        elif qty_curr is not None and sym_curr == "MONETARY_QUANTUM" and qty_nxt is None and UNIT_TAIL_RE.match(nxt["span"].strip()):
-                            can_stitch = True
-                        elif (
-                            curr["span"].strip().lower() in COMP_PREFIXES
-                            or (
-                                curr["span"].strip().lower() in {"not", "no", "up"}
-                                and curr.get("bioType") in ("THRESHOLD", "PRECONDITION", "DEADLINE")
-                                and re.match(r"^(?:over|above|exceeding|exceed|more\s+than|less\s+than|under|below|to)\b", nxt["span"].strip(), flags=re.IGNORECASE)
-                            )
-                        ) and qty_nxt is not None and sym_nxt == "MONETARY_QUANTUM":
-                            can_stitch = True
-                        elif (
-                            qty_curr is not None
-                            and qty_nxt is not None
-                            and curr["role"] not in NON_STITCH_ROLES
-                            and nxt["role"] not in NON_STITCH_ROLES
-                            and curr["clauseIdx"] == nxt["clauseIdx"]
-                        ):
-                            can_stitch = True
-
-                    if can_stitch:
-                        dominant_role = curr["role"] if curr["role"] != "ROLE_IGNORE" else nxt["role"]
-                        if curr["role"] == "ROLE_TRANSACTION_CLIFF_THRESHOLD" or nxt["role"] == "ROLE_TRANSACTION_CLIFF_THRESHOLD":
-                            dominant_role = "ROLE_TRANSACTION_CLIFF_THRESHOLD"
-                        elif curr["role"] == "ROLE_TRANSACTION_EXCESS_THRESHOLD" or nxt["role"] == "ROLE_TRANSACTION_EXCESS_THRESHOLD":
-                            dominant_role = "ROLE_TRANSACTION_EXCESS_THRESHOLD"
-                        elif curr["role"] == "ROLE_AGENT_STATE_PRECONDITION" or nxt["role"] == "ROLE_AGENT_STATE_PRECONDITION":
-                            dominant_role = "ROLE_AGENT_STATE_PRECONDITION"
-                        elif curr["role"] == "ROLE_STANDARD_STATUTORY_RATE" or nxt["role"] == "ROLE_STANDARD_STATUTORY_RATE":
-                            dominant_role = "ROLE_STANDARD_STATUTORY_RATE"
-                        stitched_spans.append({
-                            "span": comb_text,
-                            "bioType": curr["bioType"],
-                            "role": dominant_role,
-                            "confidence": round((curr["confidence"] + nxt["confidence"]) / 2, 4),
-                            "charRange": [curr["charRange"][0], nxt["charRange"][1]],
-                            "tokenRange": [curr["tokenRange"][0], nxt["tokenRange"][1]],
-                            "clauseIdx": curr["clauseIdx"],
-                            "spanIdx": new_idx
-                        })
-                        old_to_new_span_idx[idx] = new_idx
-                        old_to_new_span_idx[idx + 1] = new_idx
-                        skip_indices.add(idx + 1)
-                        continue
-            curr_copy = dict(curr)
-            curr_copy["spanIdx"] = new_idx
-            stitched_spans.append(curr_copy)
-            old_to_new_span_idx[idx] = new_idx
-        classified_spans = stitched_spans
+        classified_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
 
         # 5. Extract active relational edges with unambiguous span indices
         rel_edges = []

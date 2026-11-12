@@ -1,0 +1,1230 @@
+{
+ "futa": {
+  "clause": "Every employer shall pay for each calendar year an excise tax equal to 6 percent of the total wages paid by such employer during the calendar year.",
+  "ast": {
+   "sectionId": "DRAFT_94DEA82C",
+   "version": "0.1.0-draft",
+   "executionMode": "DEVELOPMENT",
+   "ruleDomain": "STATUTORY_FINANCE",
+   "predictedModality": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+   "modalityConfidence": 0.9385,
+   "clauseModalities": [
+    {
+     "clauseIdx": 0,
+     "tokenRange": [
+      0,
+      27
+     ],
+     "charRange": [
+      0,
+      147
+     ],
+     "modality": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+     "confidence": 0.9385
+    }
+   ],
+   "triggerPolicy": {
+    "type": "EARLIER_OF",
+    "events": [
+     "BOOK_CREDIT",
+     "PAYMENT_DISBURSEMENT"
+    ]
+   },
+   "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": true
+   },
+   "sourceLineage": {
+    "documentIdentifier": "STATUTORY_INSTRUMENT",
+    "issuingAuthority": "CBDT/CBIC",
+    "publicationDate": "UNKNOWN_DATE",
+    "referencedSections": []
+   },
+   "guards": [],
+   "computation": {
+    "archetype": "DECLARATIVE_PIPELINE",
+    "thresholdPaisa": "0",
+    "standardRateBps": 600,
+    "pipeline": {
+     "steps": [
+      {
+       "assign": "currBasePaisa",
+       "expr": {
+        "op": "CONDITIONAL",
+        "test": {
+         "op": "GT",
+         "left": "facts.currentInvoicePaisa",
+         "right": {
+          "op": "TO_PAISE",
+          "value": "0"
+         }
+        },
+        "then": "facts.currentInvoicePaisa",
+        "else": "facts.primaryBasePaisa"
+       }
+      },
+      {
+       "assign": "taxableBasePaisa",
+       "expr": {
+        "op": "MAX",
+        "left": {
+         "op": "TO_PAISE",
+         "value": "0"
+        },
+        "right": "vars.currBasePaisa"
+       }
+      },
+      {
+       "assign": "isApplicable",
+       "expr": {
+        "op": "GT",
+        "left": "vars.taxableBasePaisa",
+        "right": {
+         "op": "TO_PAISE",
+         "value": "0"
+        }
+       }
+      },
+      {
+       "assign": "tdsAmountPaisa",
+       "expr": {
+        "op": "RATIONAL_MULTIPLY",
+        "base": "vars.taxableBasePaisa",
+        "rateBps": "rules.effectiveRateBps",
+        "denominator": 10000
+       }
+      },
+      {
+       "assign": "effectiveRateBps",
+       "expr": {
+        "op": "CONDITIONAL",
+        "test": "vars.isApplicable",
+        "then": "rules.effectiveRateBps",
+        "else": 0
+       }
+      },
+      {
+       "assign": "tdsRatePercent",
+       "expr": {
+        "op": "DIV",
+        "left": "vars.effectiveRateBps",
+        "right": 100
+       }
+      }
+     ],
+     "output": {
+      "taxableBasePaisa": "vars.taxableBasePaisa",
+      "tdsAmountPaisa": "vars.tdsAmountPaisa",
+      "taxAmountPaisa": "vars.tdsAmountPaisa",
+      "calculatedTaxUsd": {
+       "op": "FROM_PAISE",
+       "value": "vars.tdsAmountPaisa"
+      },
+      "isApplicable": "vars.isApplicable",
+      "isTdsApplicable": {
+       "op": "GT",
+       "left": "vars.tdsAmountPaisa",
+       "right": {
+        "op": "TO_PAISE",
+        "value": "0"
+       }
+      },
+      "effectiveRateBps": "vars.effectiveRateBps",
+      "tdsRatePercent": "vars.tdsRatePercent"
+     }
+    }
+   },
+   "attestationChecklist": [],
+   "rootCondition": {
+    "nodeType": "TRANSACTIONAL_WITHHOLDING",
+    "entityType": "ASSESSEE",
+    "priorTurnoverPrecondition": null,
+    "applicableExcessThreshold": null,
+    "applicableCliffThreshold": null,
+    "standardTaxRate": "6 percent",
+    "nonPanPenalRate": null,
+    "triggerPolicy": "EARLIER_OF",
+    "temporalCutover": null,
+    "temporalSunset": null
+   },
+   "deonticTuple": {
+    "subject_S": {
+     "entitySubject": "ASSESSEE",
+     "priorTurnoverPrecondition": null,
+     "regulatedObjectScope": [],
+     "qualifyingConditions": []
+    },
+    "preconditions_P": [],
+    "modality_M": {
+     "modalityType": "OBLIGATION",
+     "statutoryDuty": "Mandatory compliance obligation"
+    },
+    "actionOrFormula_A": {
+     "archetype": "DECLARATIVE_PIPELINE",
+     "thresholdPaisa": "0",
+     "standardRateBps": 600,
+     "pipeline": {
+      "steps": [
+       {
+        "assign": "currBasePaisa",
+        "expr": {
+         "op": "CONDITIONAL",
+         "test": {
+          "op": "GT",
+          "left": "facts.currentInvoicePaisa",
+          "right": {
+           "op": "TO_PAISE",
+           "value": "0"
+          }
+         },
+         "then": "facts.currentInvoicePaisa",
+         "else": "facts.primaryBasePaisa"
+        }
+       },
+       {
+        "assign": "taxableBasePaisa",
+        "expr": {
+         "op": "MAX",
+         "left": {
+          "op": "TO_PAISE",
+          "value": "0"
+         },
+         "right": "vars.currBasePaisa"
+        }
+       },
+       {
+        "assign": "isApplicable",
+        "expr": {
+         "op": "GT",
+         "left": "vars.taxableBasePaisa",
+         "right": {
+          "op": "TO_PAISE",
+          "value": "0"
+         }
+        }
+       },
+       {
+        "assign": "tdsAmountPaisa",
+        "expr": {
+         "op": "RATIONAL_MULTIPLY",
+         "base": "vars.taxableBasePaisa",
+         "rateBps": "rules.effectiveRateBps",
+         "denominator": 10000
+        }
+       },
+       {
+        "assign": "effectiveRateBps",
+        "expr": {
+         "op": "CONDITIONAL",
+         "test": "vars.isApplicable",
+         "then": "rules.effectiveRateBps",
+         "else": 0
+        }
+       },
+       {
+        "assign": "tdsRatePercent",
+        "expr": {
+         "op": "DIV",
+         "left": "vars.effectiveRateBps",
+         "right": 100
+        }
+       }
+      ],
+      "output": {
+       "taxableBasePaisa": "vars.taxableBasePaisa",
+       "tdsAmountPaisa": "vars.tdsAmountPaisa",
+       "taxAmountPaisa": "vars.tdsAmountPaisa",
+       "calculatedTaxUsd": {
+        "op": "FROM_PAISE",
+        "value": "vars.tdsAmountPaisa"
+       },
+       "isApplicable": "vars.isApplicable",
+       "isTdsApplicable": {
+        "op": "GT",
+        "left": "vars.tdsAmountPaisa",
+        "right": {
+         "op": "TO_PAISE",
+         "value": "0"
+        }
+       },
+       "effectiveRateBps": "vars.effectiveRateBps",
+       "tdsRatePercent": "vars.tdsRatePercent"
+      }
+     }
+    },
+    "carveouts_C": {
+     "safeHarbors": [],
+     "nonObstanteOverrides": []
+    },
+    "temporalClocks_T": {
+     "triggerPolicy": "EARLIER_OF",
+     "effectiveCutover": null,
+     "sunsetDate": null,
+     "prescriptionWindow": null,
+     "temporalStatus": "ACTIVE"
+    }
+   },
+   "compositionalBuildingBlocks": {
+    "applicabilityScope": {
+     "entitySubject": "ASSESSEE",
+     "priorTurnoverPrecondition": null,
+     "regulatedObjectScope": [],
+     "qualifyingConditions": []
+    },
+    "computationalExpression": {
+     "roundingRule": "PAISA_PRECISION",
+     "expressionType": "FLAT_RATE",
+     "formulaDescription": "TransactionAmount * StandardTaxRate (flat statutory rate with zero threshold)",
+     "standardRate": "6 percent",
+     "penalSurchargeRate": null
+    },
+    "deonticModality": {
+     "modalityType": "OBLIGATION",
+     "statutoryDuty": "Mandatory compliance obligation"
+    },
+    "carveoutsAndExceptions": {
+     "safeHarbors": [],
+     "nonObstanteOverrides": []
+    },
+    "temporalCrystallization": {
+     "triggerPolicy": "EARLIER_OF",
+     "effectiveCutover": null,
+     "sunsetDate": null,
+     "prescriptionWindow": null,
+     "temporalStatus": "ACTIVE"
+    },
+    "accountingDestination": {
+     "generalLedgerRoute": "STATUTORY_TAX_PAYABLE",
+     "requiresDualEntryVoucher": true
+    },
+    "statutoryInvariants": {
+     "isAuthorizedToDisburse": false,
+     "requiresHumanApprovalForOutcomes": true,
+     "controllershipAttestationRequired": true
+    },
+    "symbolLegend": {
+     "percent": {
+      "symbolId": "percent",
+      "rawText": "6 percent",
+      "role": "ROLE_STANDARD_STATUTORY_RATE",
+      "symbolType": "PERCENTAGE_RATE",
+      "dataType": "PERCENT",
+      "measurementUnit": "PERCENT",
+      "comparisonOperator": "EQ",
+      "targetThreshold": 6,
+      "sourceRelation": "STANDALONE_MODIFIER"
+     }
+    }
+   },
+   "symbolLegend": {
+    "percent": {
+     "symbolId": "percent",
+     "rawText": "6 percent",
+     "role": "ROLE_STANDARD_STATUTORY_RATE",
+     "symbolType": "PERCENTAGE_RATE",
+     "dataType": "PERCENT",
+     "measurementUnit": "PERCENT",
+     "comparisonOperator": "EQ",
+     "targetThreshold": 6,
+     "sourceRelation": "STANDALONE_MODIFIER"
+    }
+   }
+  }
+ },
+ "s194q": {
+  "clause": "Any person, being a buyer, who is responsible for paying any sum to any resident for purchase of goods of the value or aggregate of such value exceeding fifty lakh rupees in any previous year, shall deduct an amount equal to 0.1 per cent of such sum exceeding fifty lakh rupees as income-tax.",
+  "ast": {
+   "sectionId": "DRAFT_D73447DC",
+   "version": "0.1.0-draft",
+   "executionMode": "DEVELOPMENT",
+   "ruleDomain": "STATUTORY_FINANCE",
+   "predictedModality": "MODALITY_COMPUTATIONAL_EXCESS",
+   "modalityConfidence": 0.9674,
+   "clauseModalities": [
+    {
+     "clauseIdx": 0,
+     "tokenRange": [
+      0,
+      57
+     ],
+     "charRange": [
+      0,
+      292
+     ],
+     "modality": "MODALITY_COMPUTATIONAL_EXCESS",
+     "confidence": 0.9674
+    }
+   ],
+   "triggerPolicy": {
+    "type": "EARLIER_OF",
+    "events": [
+     "BOOK_CREDIT",
+     "PAYMENT_DISBURSEMENT"
+    ]
+   },
+   "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": true
+   },
+   "sourceLineage": {
+    "documentIdentifier": "STATUTORY_INSTRUMENT",
+    "issuingAuthority": "CBDT/CBIC",
+    "publicationDate": "UNKNOWN_DATE",
+    "referencedSections": []
+   },
+   "guards": [],
+   "computation": {
+    "archetype": "DECLARATIVE_PIPELINE",
+    "thresholdPaisa": "500000000",
+    "standardRateBps": 10,
+    "pipeline": {
+     "steps": [
+      {
+       "assign": "currBasePaisa",
+       "expr": {
+        "op": "CONDITIONAL",
+        "test": {
+         "op": "GT",
+         "left": "facts.currentInvoicePaisa",
+         "right": {
+          "op": "TO_PAISE",
+          "value": "0"
+         }
+        },
+        "then": "facts.currentInvoicePaisa",
+        "else": "facts.primaryBasePaisa"
+       }
+      },
+      {
+       "assign": "cumAfter",
+       "expr": {
+        "op": "ADD",
+        "left": "facts.priorPurchasesPaisa",
+        "right": "vars.currBasePaisa"
+       }
+      },
+      {
+       "assign": "rawExcess",
+       "expr": {
+        "op": "MAX",
+        "left": {
+         "op": "TO_PAISE",
+         "value": "0"
+        },
+        "right": {
+         "op": "SUB",
+         "left": "vars.cumAfter",
+         "right": "rules.thresholdPaisa"
+        }
+       }
+      },
+      {
+       "assign": "alreadyExcess",
+       "expr": {
+        "op": "MAX",
+        "left": {
+         "op": "TO_PAISE",
+         "value": "0"
+        },
+        "right": {
+         "op": "SUB",
+         "left": "facts.priorPurchasesPaisa",
+         "right": "rules.thresholdPaisa"
+        }
+       }
+      },
+      {
+       "assign": "taxableBasePaisa",
+       "expr": {
+        "op": "MIN",
+        "left": "vars.currBasePaisa",
+        "right": {
+         "op": "MAX",
+         "left": {
+          "op": "TO_PAISE",
+          "value": "0"
+         },
+         "right": {
+          "op": "SUB",
+          "left": "vars.rawExcess",
+          "right": "vars.alreadyExcess"
+         }
+        }
+       }
+      },
+      {
+       "assign": "isApplicable",
+       "expr": {
+        "op": "GT",
+        "left": "vars.taxableBasePaisa",
+        "right": {
+         "op": "TO_PAISE",
+         "value": "0"
+        }
+       }
+      },
+      {
+       "assign": "tdsAmountPaisa",
+       "expr": {
+        "op": "RATIONAL_MULTIPLY",
+        "base": "vars.taxableBasePaisa",
+        "rateBps": "rules.effectiveRateBps",
+        "denominator": 10000
+       }
+      },
+      {
+       "assign": "effectiveRateBps",
+       "expr": {
+        "op": "CONDITIONAL",
+        "test": "vars.isApplicable",
+        "then": "rules.effectiveRateBps",
+        "else": 0
+       }
+      },
+      {
+       "assign": "tdsRatePercent",
+       "expr": {
+        "op": "DIV",
+        "left": "vars.effectiveRateBps",
+        "right": 100
+       }
+      }
+     ],
+     "output": {
+      "taxableBasePaisa": "vars.taxableBasePaisa",
+      "tdsAmountPaisa": "vars.tdsAmountPaisa",
+      "taxAmountPaisa": "vars.tdsAmountPaisa",
+      "isApplicable": "vars.isApplicable",
+      "isTdsApplicable": {
+       "op": "GT",
+       "left": "vars.tdsAmountPaisa",
+       "right": {
+        "op": "TO_PAISE",
+        "value": "0"
+       }
+      },
+      "effectiveRateBps": "vars.effectiveRateBps",
+      "tdsRatePercent": "vars.tdsRatePercent"
+     }
+    }
+   },
+   "attestationChecklist": [],
+   "rootCondition": {
+    "nodeType": "TRANSACTIONAL_WITHHOLDING",
+    "entityType": "DEDUCTOR",
+    "priorTurnoverPrecondition": null,
+    "applicableExcessThreshold": "exceeding fifty lakh rupees",
+    "applicableCliffThreshold": null,
+    "standardTaxRate": "0.1 per cent",
+    "nonPanPenalRate": null,
+    "triggerPolicy": "EARLIER_OF",
+    "temporalCutover": null,
+    "temporalSunset": null,
+    "exceptionCarveouts": []
+   },
+   "deonticTuple": {
+    "subject_S": {
+     "entitySubject": "DEDUCTOR",
+     "priorTurnoverPrecondition": null,
+     "regulatedObjectScope": [],
+     "qualifyingConditions": []
+    },
+    "preconditions_P": [],
+    "modality_M": {
+     "modalityType": "OBLIGATION",
+     "statutoryDuty": "Mandatory compliance obligation"
+    },
+    "actionOrFormula_A": {
+     "archetype": "DECLARATIVE_PIPELINE",
+     "thresholdPaisa": "500000000",
+     "standardRateBps": 10,
+     "pipeline": {
+      "steps": [
+       {
+        "assign": "currBasePaisa",
+        "expr": {
+         "op": "CONDITIONAL",
+         "test": {
+          "op": "GT",
+          "left": "facts.currentInvoicePaisa",
+          "right": {
+           "op": "TO_PAISE",
+           "value": "0"
+          }
+         },
+         "then": "facts.currentInvoicePaisa",
+         "else": "facts.primaryBasePaisa"
+        }
+       },
+       {
+        "assign": "cumAfter",
+        "expr": {
+         "op": "ADD",
+         "left": "facts.priorPurchasesPaisa",
+         "right": "vars.currBasePaisa"
+        }
+       },
+       {
+        "assign": "rawExcess",
+        "expr": {
+         "op": "MAX",
+         "left": {
+          "op": "TO_PAISE",
+          "value": "0"
+         },
+         "right": {
+          "op": "SUB",
+          "left": "vars.cumAfter",
+          "right": "rules.thresholdPaisa"
+         }
+        }
+       },
+       {
+        "assign": "alreadyExcess",
+        "expr": {
+         "op": "MAX",
+         "left": {
+          "op": "TO_PAISE",
+          "value": "0"
+         },
+         "right": {
+          "op": "SUB",
+          "left": "facts.priorPurchasesPaisa",
+          "right": "rules.thresholdPaisa"
+         }
+        }
+       },
+       {
+        "assign": "taxableBasePaisa",
+        "expr": {
+         "op": "MIN",
+         "left": "vars.currBasePaisa",
+         "right": {
+          "op": "MAX",
+          "left": {
+           "op": "TO_PAISE",
+           "value": "0"
+          },
+          "right": {
+           "op": "SUB",
+           "left": "vars.rawExcess",
+           "right": "vars.alreadyExcess"
+          }
+         }
+        }
+       },
+       {
+        "assign": "isApplicable",
+        "expr": {
+         "op": "GT",
+         "left": "vars.taxableBasePaisa",
+         "right": {
+          "op": "TO_PAISE",
+          "value": "0"
+         }
+        }
+       },
+       {
+        "assign": "tdsAmountPaisa",
+        "expr": {
+         "op": "RATIONAL_MULTIPLY",
+         "base": "vars.taxableBasePaisa",
+         "rateBps": "rules.effectiveRateBps",
+         "denominator": 10000
+        }
+       },
+       {
+        "assign": "effectiveRateBps",
+        "expr": {
+         "op": "CONDITIONAL",
+         "test": "vars.isApplicable",
+         "then": "rules.effectiveRateBps",
+         "else": 0
+        }
+       },
+       {
+        "assign": "tdsRatePercent",
+        "expr": {
+         "op": "DIV",
+         "left": "vars.effectiveRateBps",
+         "right": 100
+        }
+       }
+      ],
+      "output": {
+       "taxableBasePaisa": "vars.taxableBasePaisa",
+       "tdsAmountPaisa": "vars.tdsAmountPaisa",
+       "taxAmountPaisa": "vars.tdsAmountPaisa",
+       "isApplicable": "vars.isApplicable",
+       "isTdsApplicable": {
+        "op": "GT",
+        "left": "vars.tdsAmountPaisa",
+        "right": {
+         "op": "TO_PAISE",
+         "value": "0"
+        }
+       },
+       "effectiveRateBps": "vars.effectiveRateBps",
+       "tdsRatePercent": "vars.tdsRatePercent"
+      }
+     }
+    },
+    "carveouts_C": {
+     "safeHarbors": [],
+     "nonObstanteOverrides": []
+    },
+    "temporalClocks_T": {
+     "triggerPolicy": "EARLIER_OF",
+     "effectiveCutover": null,
+     "sunsetDate": null,
+     "prescriptionWindow": null,
+     "temporalStatus": "ACTIVE"
+    }
+   },
+   "compositionalBuildingBlocks": {
+    "applicabilityScope": {
+     "entitySubject": "DEDUCTOR",
+     "priorTurnoverPrecondition": null,
+     "regulatedObjectScope": [],
+     "qualifyingConditions": []
+    },
+    "computationalExpression": {
+     "roundingRule": "PAISA_PRECISION",
+     "expressionType": "EXCESS_OVER_THRESHOLD",
+     "formulaDescription": "max(0, min(CurrentInvoice, PriorAggregate + CurrentInvoice - ExcessThreshold)) * StandardTaxRate",
+     "excessThreshold": "exceeding fifty lakh rupees",
+     "standardRate": "0.1 per cent",
+     "penalSurchargeRate": null
+    },
+    "deonticModality": {
+     "modalityType": "OBLIGATION",
+     "statutoryDuty": "Mandatory compliance obligation"
+    },
+    "carveoutsAndExceptions": {
+     "safeHarbors": [],
+     "nonObstanteOverrides": []
+    },
+    "temporalCrystallization": {
+     "triggerPolicy": "EARLIER_OF",
+     "effectiveCutover": null,
+     "sunsetDate": null,
+     "prescriptionWindow": null,
+     "temporalStatus": "ACTIVE"
+    },
+    "accountingDestination": {
+     "generalLedgerRoute": "STATUTORY_TAX_PAYABLE",
+     "requiresDualEntryVoucher": true
+    },
+    "statutoryInvariants": {
+     "isAuthorizedToDisburse": false,
+     "requiresHumanApprovalForOutcomes": true,
+     "controllershipAttestationRequired": true
+    },
+    "symbolLegend": {
+     "exceeding_fifty_lakh_rupees": {
+      "symbolId": "exceeding_fifty_lakh_rupees",
+      "rawText": "exceeding fifty lakh rupees",
+      "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_PAISA",
+      "measurementUnit": "INR",
+      "comparisonOperator": "GT",
+      "targetThreshold": 5000000,
+      "sourceRelation": "STANDALONE_MODIFIER",
+      "currencyCode": "INR",
+      "minorUnitScale": 100,
+      "targetThresholdMinorUnits": 500000000,
+      "factKey": "aggregateFifty",
+      "targetThresholdInr": 5000000,
+      "targetThresholdPaisa": 500000000
+     },
+     "per_cent": {
+      "symbolId": "per_cent",
+      "rawText": "0.1 per cent",
+      "role": "ROLE_STANDARD_STATUTORY_RATE",
+      "symbolType": "PERCENTAGE_RATE",
+      "dataType": "PERCENT",
+      "measurementUnit": "PERCENT",
+      "comparisonOperator": "EQ",
+      "targetThreshold": 0.1,
+      "sourceRelation": "STANDALONE_MODIFIER"
+     }
+    }
+   },
+   "symbolLegend": {
+    "exceeding_fifty_lakh_rupees": {
+     "symbolId": "exceeding_fifty_lakh_rupees",
+     "rawText": "exceeding fifty lakh rupees",
+     "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD",
+     "symbolType": "MONETARY_QUANTUM",
+     "dataType": "CURRENCY_PAISA",
+     "measurementUnit": "INR",
+     "comparisonOperator": "GT",
+     "targetThreshold": 5000000,
+     "sourceRelation": "STANDALONE_MODIFIER",
+     "currencyCode": "INR",
+     "minorUnitScale": 100,
+     "targetThresholdMinorUnits": 500000000,
+     "factKey": "aggregateFifty",
+     "targetThresholdInr": 5000000,
+     "targetThresholdPaisa": 500000000
+    },
+    "per_cent": {
+     "symbolId": "per_cent",
+     "rawText": "0.1 per cent",
+     "role": "ROLE_STANDARD_STATUTORY_RATE",
+     "symbolType": "PERCENTAGE_RATE",
+     "dataType": "PERCENT",
+     "measurementUnit": "PERCENT",
+     "comparisonOperator": "EQ",
+     "targetThreshold": 0.1,
+     "sourceRelation": "STANDALONE_MODIFIER"
+    }
+   }
+  }
+ },
+ "gst51": {
+  "clause": "The Government shall deduct tax at the rate of two per cent from the payment made or credited to the supplier of taxable goods or services or both, where the total value of such supply, under a contract, exceeds two lakh and fifty thousand rupees.",
+  "ast": {
+   "sectionId": "DRAFT_42785DB2",
+   "version": "0.1.0-draft",
+   "executionMode": "DEVELOPMENT",
+   "ruleDomain": "STATUTORY_FINANCE",
+   "predictedModality": "MODALITY_COMPUTATIONAL_CLIFF",
+   "modalityConfidence": 0.8433,
+   "clauseModalities": [
+    {
+     "clauseIdx": 0,
+     "tokenRange": [
+      0,
+      47
+     ],
+     "charRange": [
+      0,
+      247
+     ],
+     "modality": "MODALITY_COMPUTATIONAL_CLIFF",
+     "confidence": 0.8433
+    }
+   ],
+   "triggerPolicy": {
+    "type": "EARLIER_OF",
+    "events": [
+     "BOOK_CREDIT",
+     "PAYMENT_DISBURSEMENT"
+    ]
+   },
+   "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": true
+   },
+   "sourceLineage": {
+    "documentIdentifier": "STATUTORY_INSTRUMENT",
+    "issuingAuthority": "CBDT/CBIC",
+    "publicationDate": "UNKNOWN_DATE",
+    "referencedSections": []
+   },
+   "guards": [],
+   "computation": {
+    "archetype": "DECLARATIVE_PIPELINE",
+    "thresholdPaisa": "25000000",
+    "standardRateBps": 200,
+    "pipeline": {
+     "steps": [
+      {
+       "assign": "currBasePaisa",
+       "expr": {
+        "op": "CONDITIONAL",
+        "test": {
+         "op": "GT",
+         "left": "facts.currentInvoicePaisa",
+         "right": {
+          "op": "TO_PAISE",
+          "value": "0"
+         }
+        },
+        "then": "facts.currentInvoicePaisa",
+        "else": "facts.primaryBasePaisa"
+       }
+      },
+      {
+       "assign": "cumAfter",
+       "expr": {
+        "op": "ADD",
+        "left": "facts.priorPurchasesPaisa",
+        "right": "vars.currBasePaisa"
+       }
+      },
+      {
+       "assign": "breached",
+       "expr": {
+        "op": "OR",
+        "left": {
+         "op": "GT",
+         "left": "vars.currBasePaisa",
+         "right": "rules.thresholdPaisa"
+        },
+        "right": {
+         "op": "GT",
+         "left": "vars.cumAfter",
+         "right": "rules.thresholdPaisa"
+        }
+       }
+      },
+      {
+       "assign": "taxableBasePaisa",
+       "expr": {
+        "op": "CONDITIONAL",
+        "test": "vars.breached",
+        "then": "vars.currBasePaisa",
+        "else": {
+         "op": "TO_PAISE",
+         "value": "0"
+        }
+       }
+      },
+      {
+       "assign": "tdsAmountPaisa",
+       "expr": {
+        "op": "RATIONAL_MULTIPLY",
+        "base": "vars.taxableBasePaisa",
+        "rateBps": "rules.effectiveRateBps",
+        "denominator": 10000
+       }
+      },
+      {
+       "assign": "effectiveRateBps",
+       "expr": {
+        "op": "CONDITIONAL",
+        "test": "vars.breached",
+        "then": "rules.effectiveRateBps",
+        "else": 0
+       }
+      },
+      {
+       "assign": "tdsRatePercent",
+       "expr": {
+        "op": "DIV",
+        "left": "vars.effectiveRateBps",
+        "right": 100
+       }
+      }
+     ],
+     "output": {
+      "taxableBasePaisa": "vars.taxableBasePaisa",
+      "tdsAmountPaisa": "vars.tdsAmountPaisa",
+      "taxAmountPaisa": "vars.tdsAmountPaisa",
+      "isApplicable": "vars.breached",
+      "isTdsApplicable": {
+       "op": "GT",
+       "left": "vars.tdsAmountPaisa",
+       "right": {
+        "op": "TO_PAISE",
+        "value": "0"
+       }
+      },
+      "effectiveRateBps": "vars.effectiveRateBps",
+      "tdsRatePercent": "vars.tdsRatePercent"
+     }
+    }
+   },
+   "attestationChecklist": [],
+   "rootCondition": {
+    "nodeType": "TRANSACTIONAL_WITHHOLDING",
+    "entityType": "BUYER",
+    "priorTurnoverPrecondition": "total",
+    "applicableExcessThreshold": null,
+    "applicableCliffThreshold": "exceeds two lakh and fifty thousand rupees",
+    "standardTaxRate": "two per cent",
+    "nonPanPenalRate": null,
+    "triggerPolicy": "EARLIER_OF",
+    "temporalCutover": null,
+    "temporalSunset": null,
+    "exceptionCarveouts": []
+   },
+   "deonticTuple": {
+    "subject_S": {
+     "entitySubject": "BUYER",
+     "priorTurnoverPrecondition": "total",
+     "regulatedObjectScope": [
+      "credited"
+     ],
+     "qualifyingConditions": []
+    },
+    "preconditions_P": [],
+    "modality_M": {
+     "modalityType": "OBLIGATION",
+     "statutoryDuty": "Mandatory compliance obligation"
+    },
+    "actionOrFormula_A": {
+     "archetype": "DECLARATIVE_PIPELINE",
+     "thresholdPaisa": "25000000",
+     "standardRateBps": 200,
+     "pipeline": {
+      "steps": [
+       {
+        "assign": "currBasePaisa",
+        "expr": {
+         "op": "CONDITIONAL",
+         "test": {
+          "op": "GT",
+          "left": "facts.currentInvoicePaisa",
+          "right": {
+           "op": "TO_PAISE",
+           "value": "0"
+          }
+         },
+         "then": "facts.currentInvoicePaisa",
+         "else": "facts.primaryBasePaisa"
+        }
+       },
+       {
+        "assign": "cumAfter",
+        "expr": {
+         "op": "ADD",
+         "left": "facts.priorPurchasesPaisa",
+         "right": "vars.currBasePaisa"
+        }
+       },
+       {
+        "assign": "breached",
+        "expr": {
+         "op": "OR",
+         "left": {
+          "op": "GT",
+          "left": "vars.currBasePaisa",
+          "right": "rules.thresholdPaisa"
+         },
+         "right": {
+          "op": "GT",
+          "left": "vars.cumAfter",
+          "right": "rules.thresholdPaisa"
+         }
+        }
+       },
+       {
+        "assign": "taxableBasePaisa",
+        "expr": {
+         "op": "CONDITIONAL",
+         "test": "vars.breached",
+         "then": "vars.currBasePaisa",
+         "else": {
+          "op": "TO_PAISE",
+          "value": "0"
+         }
+        }
+       },
+       {
+        "assign": "tdsAmountPaisa",
+        "expr": {
+         "op": "RATIONAL_MULTIPLY",
+         "base": "vars.taxableBasePaisa",
+         "rateBps": "rules.effectiveRateBps",
+         "denominator": 10000
+        }
+       },
+       {
+        "assign": "effectiveRateBps",
+        "expr": {
+         "op": "CONDITIONAL",
+         "test": "vars.breached",
+         "then": "rules.effectiveRateBps",
+         "else": 0
+        }
+       },
+       {
+        "assign": "tdsRatePercent",
+        "expr": {
+         "op": "DIV",
+         "left": "vars.effectiveRateBps",
+         "right": 100
+        }
+       }
+      ],
+      "output": {
+       "taxableBasePaisa": "vars.taxableBasePaisa",
+       "tdsAmountPaisa": "vars.tdsAmountPaisa",
+       "taxAmountPaisa": "vars.tdsAmountPaisa",
+       "isApplicable": "vars.breached",
+       "isTdsApplicable": {
+        "op": "GT",
+        "left": "vars.tdsAmountPaisa",
+        "right": {
+         "op": "TO_PAISE",
+         "value": "0"
+        }
+       },
+       "effectiveRateBps": "vars.effectiveRateBps",
+       "tdsRatePercent": "vars.tdsRatePercent"
+      }
+     }
+    },
+    "carveouts_C": {
+     "safeHarbors": [],
+     "nonObstanteOverrides": []
+    },
+    "temporalClocks_T": {
+     "triggerPolicy": "EARLIER_OF",
+     "effectiveCutover": null,
+     "sunsetDate": null,
+     "prescriptionWindow": null,
+     "temporalStatus": "ACTIVE"
+    }
+   },
+   "compositionalBuildingBlocks": {
+    "applicabilityScope": {
+     "entitySubject": "BUYER",
+     "priorTurnoverPrecondition": "total",
+     "regulatedObjectScope": [
+      "credited"
+     ],
+     "qualifyingConditions": []
+    },
+    "computationalExpression": {
+     "roundingRule": "PAISA_PRECISION",
+     "expressionType": "CLIFF_THRESHOLD",
+     "formulaDescription": "if (TransactionAmountOrAggregate > CliffThreshold) then (TransactionAmountOrAggregate * StandardTaxRate) else 0",
+     "cliffThreshold": "exceeds two lakh and fifty thousand rupees",
+     "standardRate": "two per cent",
+     "penalSurchargeRate": null
+    },
+    "deonticModality": {
+     "modalityType": "OBLIGATION",
+     "statutoryDuty": "Mandatory compliance obligation"
+    },
+    "carveoutsAndExceptions": {
+     "safeHarbors": [],
+     "nonObstanteOverrides": []
+    },
+    "temporalCrystallization": {
+     "triggerPolicy": "EARLIER_OF",
+     "effectiveCutover": null,
+     "sunsetDate": null,
+     "prescriptionWindow": null,
+     "temporalStatus": "ACTIVE"
+    },
+    "accountingDestination": {
+     "generalLedgerRoute": "STATUTORY_TAX_PAYABLE",
+     "requiresDualEntryVoucher": true
+    },
+    "statutoryInvariants": {
+     "isAuthorizedToDisburse": false,
+     "requiresHumanApprovalForOutcomes": true,
+     "controllershipAttestationRequired": true
+    },
+    "symbolLegend": {
+     "credited": {
+      "symbolId": "credited",
+      "rawText": "credited",
+      "role": "ROLE_REGULATED_OBJECT_OR_STATUS_SCOPE",
+      "symbolType": "ENTITY_CLASSIFICATION",
+      "dataType": "CATEGORICAL_STRING",
+      "matchingRule": "SUBSTRING_OR_KYC_MATCH"
+     },
+     "total": {
+      "symbolId": "total",
+      "rawText": "total",
+      "role": "ROLE_AGENT_STATE_PRECONDITION",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_PAISA",
+      "measurementUnit": "INR",
+      "comparisonOperator": "GT",
+      "targetThreshold": 250000,
+      "sourceRelation": "SPATIAL_PROXIMITY",
+      "relatedSpan": "exceeds two lakh and fifty thousand rupees",
+      "currencyCode": "INR",
+      "minorUnitScale": 100,
+      "targetThresholdMinorUnits": 25000000,
+      "factKey": "total",
+      "targetThresholdInr": 250000,
+      "targetThresholdPaisa": 25000000
+     },
+     "two_per_cent": {
+      "symbolId": "two_per_cent",
+      "rawText": "two per cent",
+      "role": "ROLE_STANDARD_STATUTORY_RATE",
+      "symbolType": "PERCENTAGE_RATE",
+      "dataType": "PERCENT",
+      "measurementUnit": "PERCENT",
+      "comparisonOperator": "EQ",
+      "targetThreshold": 2,
+      "sourceRelation": "STANDALONE_MODIFIER"
+     },
+     "exceeds_two_lakh_fifty": {
+      "symbolId": "exceeds_two_lakh_fifty",
+      "rawText": "exceeds two lakh and fifty thousand rupees",
+      "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_PAISA",
+      "measurementUnit": "INR",
+      "comparisonOperator": "GT",
+      "targetThreshold": 250000,
+      "sourceRelation": "STANDALONE_MODIFIER",
+      "currencyCode": "INR",
+      "minorUnitScale": 100,
+      "targetThresholdMinorUnits": 25000000,
+      "factKey": "supplyContractTwo",
+      "targetThresholdInr": 250000,
+      "targetThresholdPaisa": 25000000
+     }
+    }
+   },
+   "symbolLegend": {
+    "credited": {
+     "symbolId": "credited",
+     "rawText": "credited",
+     "role": "ROLE_REGULATED_OBJECT_OR_STATUS_SCOPE",
+     "symbolType": "ENTITY_CLASSIFICATION",
+     "dataType": "CATEGORICAL_STRING",
+     "matchingRule": "SUBSTRING_OR_KYC_MATCH"
+    },
+    "total": {
+     "symbolId": "total",
+     "rawText": "total",
+     "role": "ROLE_AGENT_STATE_PRECONDITION",
+     "symbolType": "MONETARY_QUANTUM",
+     "dataType": "CURRENCY_PAISA",
+     "measurementUnit": "INR",
+     "comparisonOperator": "GT",
+     "targetThreshold": 250000,
+     "sourceRelation": "SPATIAL_PROXIMITY",
+     "relatedSpan": "exceeds two lakh and fifty thousand rupees",
+     "currencyCode": "INR",
+     "minorUnitScale": 100,
+     "targetThresholdMinorUnits": 25000000,
+     "factKey": "total",
+     "targetThresholdInr": 250000,
+     "targetThresholdPaisa": 25000000
+    },
+    "two_per_cent": {
+     "symbolId": "two_per_cent",
+     "rawText": "two per cent",
+     "role": "ROLE_STANDARD_STATUTORY_RATE",
+     "symbolType": "PERCENTAGE_RATE",
+     "dataType": "PERCENT",
+     "measurementUnit": "PERCENT",
+     "comparisonOperator": "EQ",
+     "targetThreshold": 2,
+     "sourceRelation": "STANDALONE_MODIFIER"
+    },
+    "exceeds_two_lakh_fifty": {
+     "symbolId": "exceeds_two_lakh_fifty",
+     "rawText": "exceeds two lakh and fifty thousand rupees",
+     "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD",
+     "symbolType": "MONETARY_QUANTUM",
+     "dataType": "CURRENCY_PAISA",
+     "measurementUnit": "INR",
+     "comparisonOperator": "GT",
+     "targetThreshold": 250000,
+     "sourceRelation": "STANDALONE_MODIFIER",
+     "currencyCode": "INR",
+     "minorUnitScale": 100,
+     "targetThresholdMinorUnits": 25000000,
+     "factKey": "supplyContractTwo",
+     "targetThresholdInr": 250000,
+     "targetThresholdPaisa": 25000000
+    }
+   }
+  }
+ }
+}

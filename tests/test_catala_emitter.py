@@ -1,188 +1,153 @@
 """
-Unit Tests for MudraForge AST-to-Catala Emitter Bridge
-======================================================
-Validates translation of Declarative OKF v0.2 ASTs into literate, idiomatic
-Catala (.catala_en) source code according to the ACM ICFP 2021 Catala specification.
+Unit tests for the canonical USVM -> Catala lowering.
+
+Fixtures in tests/fixtures/financial_pipeline_asts.json are genuine ASTs
+captured from DualStreamDecompilerInference (not hand-written schemas), so
+these tests exercise the same DECLARATIVE_PIPELINE shape the neural
+decompiler actually emits. Semantic equivalence against the official Catala
+compiler is verified in tests/test_financial_pipeline_integration.py.
 """
 
+import json
 import tempfile
 import unittest
+from fractions import Fraction
 from pathlib import Path
 
 from compiler.converters.catala_emitter import (
     CatalaEmitter,
-    emit_catala_code,
-    save_catala_file,
-    _format_currency,
+    CatalaLoweringError,
+    _money_literal,
     _to_pascal_case,
     _to_snake_case,
+    emit_catala_code,
+    save_catala_file,
+)
+
+FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "financial_pipeline_asts.json").read_text(encoding="utf-8")
 )
 
 
-class TestCatalaEmitter(unittest.TestCase):
-    def setUp(self):
-        self.emitter = CatalaEmitter(indent_size=2)
+def _facts(invoice, prior=0):
+    return {"current_invoice": invoice, "primary_base": invoice, "prior_purchases": prior}
 
+
+class TestNamingAndLiterals(unittest.TestCase):
     def test_naming_helpers(self):
         self.assertEqual(_to_snake_case("purchaseAmount"), "purchase_amount")
         self.assertEqual(_to_snake_case("Section 194Q Excess"), "section_194q_excess")
         self.assertEqual(_to_pascal_case("sec_194q_excess"), "Sec194qExcess")
         self.assertEqual(_to_pascal_case("irc_section_3301"), "IrcSection3301")
 
-    def test_format_currency(self):
-        self.assertEqual(_format_currency(50000, "USD"), "$50,000")
-        self.assertEqual(_format_currency(1000000, "INR"), "INR 1,000,000")
-        self.assertEqual(_format_currency(2500.50, "EUR"), "2,500.50 EUR")
-        self.assertEqual(_format_currency(0, "USD"), "$0")
+    def test_money_literals_are_exact_paise(self):
+        self.assertEqual(_money_literal(0), "$0.00")
+        self.assertEqual(_money_literal(5000000), "$5000000.00")
+        self.assertEqual(_money_literal(Fraction(1, 2)), "$0.50")
+        with self.assertRaises(CatalaLoweringError):
+            _money_literal(Fraction(1, 3))  # sub-paisa precision must fail closed
+        with self.assertRaises(CatalaLoweringError):
+            _money_literal(Fraction(1, 300))
 
-    def test_emit_excess_threshold_rule(self):
-        """
-        Tests Section 194Q archetype: tax imposed on purchase value exceeding 50,000.
-        """
-        ast = {
+
+class TestCanonicalPipelineLowering(unittest.TestCase):
+    def setUp(self):
+        self.emitter = CatalaEmitter(indent_size=2)
+
+    def test_flat_rate_payroll(self):
+        ast = FIXTURES["futa"]["ast"]
+        code = self.emitter.emit(ast, scenarios=[{"name": "Wages100k", "facts": _facts(100000)}])
+        self.assertIn("declaration scope Draft94dea82c:", code)
+        self.assertIn("data current_invoice content money", code)
+        self.assertIn("definition standard_rate_bps equals 600", code)
+        self.assertIn("definition threshold_paisa equals $0.00", code)
+        # 6% must be lowered from 600 bps, never fabricated as 0%.
+        self.assertIn("((decimal of standard_rate_bps) / 10000.0)", code)
+        self.assertNotIn("0.0%", code)
+        self.assertIn("declaration scope Wages100k:", code)
+        self.assertIn("output result scope Draft94dea82c", code)
+        self.assertIn("-- current_invoice: $100000.00", code)
+
+    def test_excess_threshold_194q(self):
+        ast = FIXTURES["s194q"]["ast"]
+        code = self.emitter.emit(ast)
+        self.assertIn("definition threshold_paisa equals $500000000.00", code)
+        self.assertIn("definition standard_rate_bps equals 10", code)
+        # Excess-over-threshold semantics: cumulative base minus threshold, floored at zero.
+        self.assertIn("cum_after", code)
+        self.assertIn("raw_excess", code)
+        self.assertIn("already_excess", code)
+        self.assertIn("taxable_base_paisa", code)
+
+    def test_cliff_threshold_gst51_compound_amount(self):
+        ast = FIXTURES["gst51"]["ast"]
+        code = self.emitter.emit(ast)
+        # "two lakh and fifty thousand rupees" = 2,50,000 -> 25,000,000 paise.
+        self.assertIn("definition threshold_paisa equals $25000000.00", code)
+        self.assertIn("definition standard_rate_bps equals 200", code)
+        self.assertIn("breached", code)
+
+    def test_full_decompiler_result_is_unwrapped(self):
+        ast = FIXTURES["futa"]["ast"]
+        code = emit_catala_code({"synthesizedAst": ast, "text": "provision text"})
+        self.assertIn("declaration scope Draft94dea82c:", code)
+        self.assertIn('> "provision text"', code)
+
+    def test_save_catala_file(self):
+        ast = FIXTURES["futa"]["ast"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = Path(tmpdir) / "futa.catala_en"
+            saved = save_catala_file(ast, out_file, title="IRC Section 3301 FUTA")
+            self.assertTrue(saved.exists())
+            content = saved.read_text(encoding="utf-8")
+            self.assertIn("# IRC Section 3301 FUTA", content)
+            self.assertIn("definition standard_rate_bps equals 600", content)
+
+
+class TestFailClosedLowering(unittest.TestCase):
+    def test_legacy_invented_schema_is_rejected(self):
+        legacy_ast = {
             "ruleId": "sec_194q_withholding",
             "predictedModality": "MODALITY_COMPUTATIONAL_EXCESS",
-            "rawText": "Any person paying to a resident sum for purchase of goods exceeding 50 Lakh rupees shall deduct 0.1 percent.",
             "computation": {
                 "archetype": "AST_EXCESS_THRESHOLD",
                 "base": "purchase_value",
                 "rate": 0.001,
                 "excessThreshold": 50000,
-                "currency": "USD",
-            },
-            "temporalScope": {
-                "cutoverDate": "2021-07-01",
-                "sunsetDate": "2026-03-31",
-            },
-            "symbolLegend": {
-                "buyer_turnover": {"type": "MONETARY_THRESHOLD"},
-                "is_resident_seller": {"type": "BOOLEAN_FLAG"},
             },
         }
+        with self.assertRaises(CatalaLoweringError):
+            emit_catala_code(legacy_ast)
 
-        catala_code = self.emitter.emit(ast, title="Section 194Q TDS Formalization")
+    def test_missing_computation_is_rejected(self):
+        with self.assertRaises(CatalaLoweringError):
+            emit_catala_code({"ruleId": "x", "predictedModality": "MODALITY_DEONTIC_PROHIBITION"})
 
-        self.assertIn("# Section 194Q TDS Formalization", catala_code)
-        self.assertIn("declaration structure Sec194qWithholdingInput:", catala_code)
-        self.assertIn("data purchase_value content money", catala_code)
-        self.assertIn("data transaction_date content date", catala_code)
-        self.assertIn("data buyer_turnover content money", catala_code)
-        self.assertIn("data is_resident_seller content boolean", catala_code)
+    def test_unsupported_operator_is_rejected(self):
+        ast = json.loads(json.dumps(FIXTURES["futa"]["ast"]))
+        ast["computation"]["pipeline"]["steps"][0]["expr"] = {"op": "COMPOUND_INTEREST", "principal": 1}
+        with self.assertRaises(CatalaLoweringError):
+            emit_catala_code(ast)
 
-        self.assertIn("declaration scope Sec194qWithholding:", catala_code)
-        self.assertIn("input input_data content Sec194qWithholdingInput", catala_code)
-        self.assertIn("output calculated_assessment content money", catala_code)
+    def test_unknown_fact_key_is_rejected(self):
+        ast = json.loads(json.dumps(FIXTURES["futa"]["ast"]))
+        ast["computation"]["pipeline"]["steps"][0]["expr"]["then"] = "facts.mysteryAmount"
+        with self.assertRaises(CatalaLoweringError):
+            emit_catala_code(ast)
 
-        self.assertIn("scope Sec194qWithholding:", catala_code)
-        self.assertIn("under condition input_data.transaction_date >= |2021-07-01| and input_data.transaction_date <= |2026-03-31|", catala_code)
-        self.assertIn("definition calculated_assessment equals", catala_code)
-        self.assertIn("if input_data.purchase_value > $50,000 then", catala_code)
-        self.assertIn("(input_data.purchase_value - $50,000) * 0.10%", catala_code)
-        self.assertIn("else", catala_code)
-        self.assertIn("$0", catala_code)
+    def test_unsupported_rounding_policy_is_rejected(self):
+        ast = json.loads(json.dumps(FIXTURES["futa"]["ast"]))
+        ast["computation"]["pipeline"]["steps"].append({
+            "assign": "roundedTax",
+            "expr": {"op": "ROUND", "value": "vars.tdsAmountPaisa", "policy": "SECTION_288B"},
+        })
+        with self.assertRaises(CatalaLoweringError):
+            emit_catala_code(ast)
 
-    def test_emit_cliff_threshold_rule(self):
-        """
-        Tests cliff threshold archetype: full amount subject to rate once cliff is breached.
-        """
-        ast = {
-            "ruleId": "sec_194c_contractor",
-            "predictedModality": "MODALITY_COMPUTATIONAL_CLIFF",
-            "computation": {
-                "archetype": "AST_CLIFF_THRESHOLD",
-                "base": "single_contract_payment",
-                "rate": 0.01,
-                "cliffThreshold": 30000,
-                "currency": "INR",
-            },
-            "temporalScope": {
-                "taxYear": 2026,
-            },
-        }
-
-        catala_code = emit_catala_code(ast)
-
-        self.assertIn("declaration structure Sec194cContractorInput:", catala_code)
-        self.assertIn("data single_contract_payment content money", catala_code)
-        self.assertIn("data taxable_year content integer", catala_code)
-        self.assertIn("under condition input_data.taxable_year = 2026", catala_code)
-        self.assertIn("if input_data.single_contract_payment >= INR 30,000 then", catala_code)
-        self.assertIn("input_data.single_contract_payment * 1.00%", catala_code)
-        self.assertIn("INR 0", catala_code)
-
-    def test_emit_progressive_slab_rule(self):
-        """
-        Tests multi-bracket progressive rate table.
-        """
-        ast = {
-            "ruleId": "progressive_tax_schedule",
-            "predictedModality": "MODALITY_COMPUTATIONAL_SLAB",
-            "computation": {
-                "archetype": "AST_PROGRESSIVE_SLAB",
-                "base": "taxable_income",
-                "currency": "USD",
-                "brackets": [
-                    {"cap": 11000, "rate": 0.10, "fixed": 0},
-                    {"cap": 44725, "rate": 0.12, "fixed": 1100},
-                    {"cap": None, "rate": 0.22, "fixed": 5147},
-                ],
-            },
-        }
-
-        catala_code = emit_catala_code(ast)
-
-        self.assertIn("if input_data.taxable_income <= $11,000 then", catala_code)
-        self.assertIn("input_data.taxable_income * 10.00%", catala_code)
-        self.assertIn("else if input_data.taxable_income <= $44,725 then", catala_code)
-        self.assertIn("$1,100 + (input_data.taxable_income - $11,000) * 12.00%", catala_code)
-        self.assertIn("else", catala_code)
-        self.assertIn("$5,147 + (input_data.taxable_income - $44,725) * 22.00%", catala_code)
-
-    def test_emit_deontic_permission_and_prohibition(self):
-        """
-        Tests boolean deontic verdicts (permission and prohibition).
-        """
-        perm_ast = {
-            "ruleId": "foreign_tax_credit_permission",
-            "predictedModality": "MODALITY_DEONTIC_PERMISSION",
-        }
-        perm_code = emit_catala_code(perm_ast)
-        self.assertIn("output is_permitted content boolean", perm_code)
-        self.assertIn("definition is_permitted equals", perm_code)
-        self.assertIn("input_data.is_resident", perm_code)
-
-        prohib_ast = {
-            "ruleId": "unauthorized_disbursement_prohibition",
-            "predictedModality": "MODALITY_DEONTIC_PROHIBITION",
-        }
-        prohib_code = emit_catala_code(prohib_ast)
-        self.assertIn("output is_prohibited content boolean", prohib_code)
-        self.assertIn("definition is_prohibited equals", prohib_code)
-        self.assertIn("true", prohib_code)
-
-    def test_save_catala_file(self):
-        """
-        Verifies exporting Catala source to a file path.
-        """
-        ast = {
-            "ruleId": "irc_section_3301_futa",
-            "predictedModality": "MODALITY_COMPUTATIONAL_SLAB",
-            "computation": {
-                "base": "total_wages",
-                "rate": 0.06,
-                "threshold": 7000,
-                "currency": "USD",
-            },
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_file = Path(tmpdir) / "futa_3301.catala_en"
-            saved_p = save_catala_file(ast, out_file, title="IRC Section 3301 FUTA")
-            self.assertTrue(saved_p.exists())
-            content = saved_p.read_text(encoding="utf-8")
-            self.assertIn("# IRC Section 3301 FUTA", content)
-            self.assertIn("let capped_base = min input_data.total_wages $7,000 in", content)
-            self.assertIn("capped_base * 6.00%", content)
+    def test_scenario_missing_fact_is_rejected(self):
+        ast = FIXTURES["futa"]["ast"]
+        with self.assertRaises(CatalaLoweringError):
+            emit_catala_code(ast, scenarios=[{"name": "Incomplete", "facts": {"current_invoice": 1}}])
 
 
 if __name__ == "__main__":
