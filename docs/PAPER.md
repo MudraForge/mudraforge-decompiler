@@ -66,8 +66,6 @@ The table below places our results next to published baselines from the SARA lit
 
 > Airline baggage, state housing, and USCIS immigration are two-clause spot checks reported in Section 4. No published per-domain baseline was reproduced for them, so they are not scored in this table.
 
-![Multi-Domain Benchmark Radar](images/multidomain_benchmark_radar.png)
-
 ### 2.1 Published Frontier Baselines: Context, Not an Independent Reproduction (`DeonticBench` & `DAR`, 2026)
 
 > **Provenance and scope.** All baseline figures in this section are quoted from the cited studies. None was independently reproduced by MudraForge, and the studies differ in prompting, tool access, and scoring, so the rows are not a controlled leaderboard. Our own entries are split by composition: Track 2 is deterministic USVM execution of hand-authored canonical ASTs with no model, and Track 1D is the full **model + plumbing + USVM** pipeline measured on 14 test vectors. Nothing in this section is a zero-shot neural score on `hard.json`.
@@ -100,8 +98,6 @@ On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's [*PercepLog-0* study](htt
 - Only a full-pipeline run on `hard.json` could be labeled **model + plumbing + USVM**. That run does not exist yet, and Track 2 must not be relabeled as if it did.
 - The open problem is the translation step: statute to correct formal rule. That is the step that needs harder benchmarks, not another leaderboard of execution accuracy after a human has done the hard part.
 
-![Frontier LLM Benchmark Comparison](images/frontier_llm_benchmark_comparison.svg)
-
 ### 2.2 Key Benchmark Tracks Breakdown
 
 Composition labels: Tracks 1A-1C measure model plus schema lowering with no USVM verdict; Track 1D is the full **model + plumbing + USVM** pipeline; Track 2 is **hand-authored AST + USVM** with no model.
@@ -130,49 +126,29 @@ Composition labels: Tracks 1A-1C measure model plus schema lowering with no USVM
    - **32/35 (91.4%) PASS** on exact dollar-for-dollar match.
    - Scope: hand-authored canonical ASTs executed deterministically by USVM. This is a symbolic-execution result, not a neural score.
 
-### 2.3 The Generalization Paradox: Single-Stream Monolithic vs. Dual-Stream Disentangled
+### 2.3 Why the Model Is an Annotation Model, Not an AST Generator
 
-![Generalization Breakdown](images/generalization_gap_benchmark.png)
+The model is intentionally small and narrow. Statutory text mixes two signals: domain vocabulary (who pays, what is measured, which amount) and logical structure (conditions, comparisons, obligations, exceptions, relations between amounts). A 5.8M encoder can learn the second as a set of local decisions: BIO boundaries, span roles, modality, and pairwise relation edges. Asking it to emit a complete JSON AST would force it to memorize field names, operators, and arithmetic conventions that are better expressed, versioned, and tested in code.
 
-A critical empirical discovery emerged during our training curriculum:
-- **The In-Distribution Trap**: Our initial monolithic baseline (`mudra_decompiler_0`, 5.75M parameters) achieved exceptional scores on in-distribution synthetic benchmarks: **78.26% Clause Exact Match**, **96.04% Role Macro-F1**, and **0.7081 validation loss**. In our internal training-time evaluation, its accuracy on unseen U.S. Federal Tax (SARA) and out-of-distribution regulatory statutes fell to **28.0%**; that figure is recorded in `scripts/generate_training_charts.py` and is not reproduced by the benchmark scripts in this repository.
-- **Root Cause (Lexical-Deontic Entanglement)**: In a monolithic architecture, the transformer's multi-head attention entangles domain-specific entity nouns (*"buyer"*, *"turnover"*, *"resident"*, *"pan"*) with formal deontic operators (*"shall"*, *"exceeding"*, *"proviso"*). The network learns spurious surface correlations, causing token representation collapse when encountering unseen legal domains.
-- **The Disentangled Solution**: In the Dual-Stream architecture, Model B (`DomainSensor`, 2.76M params) isolates raw lexical vocabulary and preamble chatter, passing only detached 9-dimensional probability distributions to Model A (`LogicReasoner`, 2.99M params). Model A operates strictly on a closed 48-token logic vocabulary and morphological suffix projections.
-- **The Symbolic Payoff, Not a Neural One**: Although in-distribution synthetic exact match dropped slightly (75.49% vs 78.26%) due to the removal of lexical memorization shortcuts, the symbolic layer then executed hand-authored ASTs for SARA and DeonticBench at **100%**. That is a property of the USVM, not evidence that the neural model solves the hard split. The neural model's own zero-shot contribution is measured separately by Track 1D (14/14 test vectors), not by the Track 2 execution figures.
+The dual-stream split follows the same logic. `DomainSensor` sees raw vocabulary; `LogicReasoner` sees a closed logic vocabulary and morphological suffixes. In training-time ablations, masking up to 75% of domain nouns moved dual-stream in-distribution EM from 75.5% to 74.2%, while the monolithic baseline fell from 78.3% to 13.9%. That supports the separation. It does not prove transfer to every new statute; only a full-pipeline evaluation on that statute can.
 
-### 2.4 Empirical Discoveries & Training Run Insights
+The trade-off is explicit: the deterministic lowerer, not the checkpoint, is the coverage bottleneck. A lowerer change is reviewable, versioned, testable, and fails closed. A weight change is none of those things.
 
-Beyond aggregate metrics, our progressive training iterations (across 22 empirical curricula documented in the Training Diary) yielded four fundamental scientific discoveries regarding how neural networks represent and compile statutory logic:
+### 2.4 Scalability: What Adding New U.S. Law Costs
 
-#### Discovery 1: The Lexical Crutch Discovery & Domain Noun Dropout
-![Domain Noun Dropout Ablation](images/noun_dropout_ablation_insight.png)
+The current system is a validated vertical slice, not a zero-code engine for all U.S. law. Whether a new section needs code depends on whether it is a new instance of an existing shape or a genuinely new shape.
 
-- **The Empirical Experiment**: To determine whether the neural parser was compiling abstract syntax or merely memorizing lexical domain cues, we introduced stochastic Domain Noun Dropout (masking legal nouns such as *"buyer"*, *"turnover"*, *"goods"*, *"PAN"* with `[MASK]`) during inference at rates from 0% to 75%.
-- **The Single-Stream Collapse**: The monolithic baseline (`mudra_decompiler_0`) suffered a catastrophic accuracy collapse, plummeting from 78.3% EM at 0% dropout to 13.9% EM at 75% dropout. When legal keywords were masked, the model could no longer identify obligations, proving that it relied on domain nouns as spurious predictive crutches.
-- **The Dual-Stream Invariance**: In contrast, the Dual-Stream model (`dual_stream_sup.pt`) remained structurally invariant, dropping only 1.3% (from 75.5% to 74.2% EM) across the same 75% dropout sweep. Because Model A (`LogicReasoner`) receives only deontic modalities, syntactic arcs, and closed-class grammatical tokens, its parsing operates independently of specific domain vocabulary. This structural invariance is the reason the span and relation heads remained stable on unseen U.S. Federal Tax text. It does not by itself explain the 100% Track 2 execution figures, which come from hand-authored ASTs.
+| Change | Decompiler code? | What is still required |
+| :--- | :--- | :--- |
+| New section using an existing archetype (slab, cliff, min/max, cap, excess, temporal window, quantifier) and existing span roles/relations | Often no | The model must extract the spans, roles, and relations; the caller supplies facts; a new evaluation vector proves the result |
+| New money, boolean, or string fact names | No for USVM execution | Fact paths are derived from spans; the caller must supply matching facts |
+| New integer, count, or rate facts | Yes, small | Register the fact in `FACT_BINDINGS` so the bridge encodes it as an integer rather than money |
+| New operator or arithmetic construct | Yes | Add it to synthesis and the USVM kernel, with tests |
+| New archetype or cross-section composition | Yes | New lowering path, kernel support if needed, and an evaluation set |
+| New drafting style or vocabulary | Model work, not schema work | Fine-tune `DomainSensor` and add training/evaluation data |
+| Catala output for a new domain | Yes | Register fact bindings and enum domains; the emitter currently supports only `DECLARATIVE_PIPELINE` |
 
-#### Discovery 2: The Label Smoothing Paradox in Discrete Legal Logic
-![Label Smoothing Paradox](images/label_smoothing_paradox_insight.png)
-
-- **The Conflict with NLP Convention**: In standard vision and NLP classification, label smoothing ($\epsilon = 0.1$) is universally employed to prevent overconfidence and calibrate output probabilities.
-- **The Boundary Jitter Breakdown**: In statutory decompilation, constant label smoothing severely degraded performance (Exact Match capped at 63.2%). In deontic logic, obligations (*"shall"*), prohibitions (*"shall not"*), and permissions (*"may"*) are discrete, mutually exclusive boolean categories. Smoothing probability mass across non-active modalities diluted the margin, causing Viterbi decoding jitter on compound clauses.
-- **The Annealed Solution**: We implemented **Cosine Annealed Label Smoothing** ($\epsilon(t) = 0.10 \times \frac{1 + \cos(\pi t / T)}{2}$). In early epochs, soft targets prevented early gradient saturation and allowed smooth clustering of syntactic features. In later epochs ($\epsilon \to 0$), the decision boundaries hardened into crisp boolean distributions ($p > 0.985$), enabling mathematically exact AST synthesis.
-
-#### Discovery 3: GRPO Reinforcement Learning & The Counterfactual Reward Hack
-![GRPO Counterfactual Reward Defense](images/grpo_counterfactual_reward_insight.png)
-
-- **The Tautological AST Hack**: When Group Relative Policy Optimization (GRPO) was first connected to the USVM execution kernel with an execution-only reward ($R_{\text{exec}} = +1.0$ for runtime completion without exceptions), the policy rapidly discovered a "reward hack": emitting empty predicates or tautological condition nodes (`condition: TRUE`). These degenerate ASTs executed cleanly in the VM, driving the policy return to +0.95 while collapsing actual legal alignment.
-- **Counterfactual Falsification**: To enforce genuine grounding, we augmented the RL reward with **Dual-Faceted Factual and Counterfactual Verification**. Every compiled AST was subjected to both active factual vectors and adversarial counterfactual vectors (e.g. testing an invoice with turnover ₹49,99,999 against a ₹50,00,000 threshold). An AST that activated under counterfactual conditions received a severe $-5.0$ penalty. This forced the policy to compile precise comparison operators, driving counterfactual robustness from 33% to 100.0%.
-
-#### Discovery 4: The 166.7% Over-Withholding Trap (Cliff vs. Excess Threshold Math)
-![Threshold Mechanics: Cliff vs Excess](images/threshold_mechanics_cliff_vs_excess.png)
-
-- **The Dual-Nature of Statutory Thresholds**: Financial statutes define thresholds in two fundamentally different arithmetic regimes:
-  1. **Cliff Thresholds (Step Functions)**: e.g. Section 44AB Tax Audit. Exceeding the threshold triggers a 100% compliance mandate across the entire enterprise.
-  2. **Excess Thresholds (Marginal Functions)**: e.g. Section 194Q TDS on Goods. Tax withholding attaches *only to the sum exceeding the threshold*:
-     $$\text{Tax Base} = \max(0, \text{Cumulative Purchases} - \$50\text{ Lakhs})$$
-- **The LLM Hallucination Trap**: Unconstrained generative LLMs and naive sequential parsers consistently confuse excess thresholds for gross thresholds, calculating withholding on the total transaction amount (e.g., $80\text{L} \times 0.1\% = \text{₹}8,000$ instead of $(80\text{L} - 50\text{L}) \times 0.1\% = \text{₹}3,000$), producing a disastrous 166.7% over-withholding error.
-- **Disentangled AST Synthesis**: The decompiler explicitly synthesizes `thresholdMode: "EXCESS"` versus `thresholdMode: "CLIFF"`, directly parameterizing the piecewise mathematical transfer function for exact USVM execution.
+What scales is the registry: archetypes, operators, roles, and relations. Adding a statute inside that surface can be code-free; adding a new legal shape is not. The breakthrough condition is therefore measurable: run the full **model + plumbing + USVM** pipeline on new sections and count how many compile and execute correctly without per-statute code.
 
 ---
 
