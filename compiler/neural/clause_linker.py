@@ -185,6 +185,12 @@ def ssa_name(clause_idx: int, semantic_name: str, version: int) -> str:
     return f"clause_{clause_idx}_{semantic_name}_v{version}"
 
 
+def _output_key_from_assign(assign: str) -> str:
+    """The exported name of an SSA value: ``clause_1_x_v2`` -> ``x``."""
+    key = re.sub(r"^clause_\d+_", "", assign or "")
+    return re.sub(r"_v\d+$", "", key)
+
+
 def input_id_from_phrase(phrase: str, currency_code: str | None = None) -> str:
     """Derives an input id from a surface phrase, with a deterministic fallback."""
     keys = build_operand_fact_keys(phrase, currency_code)
@@ -326,10 +332,20 @@ def attach_edges(
 
 # â”€â”€ Definition extraction (RFC-012 section 4.4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-_DEF_VERBS = r"means|shall\s+mean|is\s+defined\s+as|equals|is\s+equal\s+to|is|are"
-_ASSIGN_RE = re.compile(
-    r"(?:^|[.;:]\s+|,\s+)(?:the\s+|an?\s+)?(?P<term>[A-Za-z][A-Za-z0-9 ,\-]{2,60}?)\s+"
+_DEF_VERBS = r"means|shall\s+mean|is\s+defined\s+as"
+_ASSIGN_VERBS = r"equals|is\s+equal\s+to|is|are"
+# An explicit term definition ("X means Y", "X is defined as Y").
+_TERM_DEF_RE = re.compile(
+    r"(?:^|[.;:]\s+|,\s+)(?:the\s+term\s+)?(?P<term>[A-Za-z][A-Za-z0-9 ,\-]{2,60}?)\s+"
     r"(?P<verb>" + _DEF_VERBS + r")\s+(?P<value>[^.;]{1,90})",
+    re.IGNORECASE,
+)
+# An explicit assignment ("the X is <amount>", "the X equals <expr>"). The
+# determiner is required: "tax equals 28 percent" states a computation, it
+# does not define a term.
+_ASSIGN_RE = re.compile(
+    r"(?:^|[.;:]\s+|,\s+)(?:the\s+|an?\s+|such\s+)(?P<term>[A-Za-z][A-Za-z0-9 ,\-]{2,60}?)\s+"
+    r"(?P<verb>" + _ASSIGN_VERBS + r")\s+(?P<value>[^.;]{1,90})",
     re.IGNORECASE,
 )
 
@@ -345,10 +361,28 @@ _RATE_ROLES = {
     "ROLE_NON_PAN_OVERRIDE_RATE",
 }
 _DATE_ROLES = {"ROLE_TEMPORAL_CUTOVER_DATE", "ROLE_TEMPORAL_SUNSET_DATE"}
+#: Relations composed by the RFC-012 Step 3 topological walk.
+_WALKED_RELATIONS = {
+    "REL_RATE_TO_THRESHOLD",
+    "REL_CAP_CEILING",
+    "REL_SUBTRACTION_BASE",
+}
 _COMPARATIVE_RE = re.compile(
     r"\b(?:exceeding|exceeds|above|over|more\s+than|in\s+excess\s+of|greater\s+than)\b",
     re.IGNORECASE,
 )
+
+
+def _definition_semantic_type(value_text: str) -> str:
+    """The semantic type of a defined value."""
+    if parse_minor_units(value_text) is not None:
+        return "money"
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", value_text.strip()):
+        return "integer"
+    if parse_unit_and_type(value_text)[0] == "PERCENTAGE_RATE":
+        return "rate"
+    # A definition by reference to a threshold or to another term.
+    return "term"
 
 
 def extract_definitions(
@@ -364,45 +398,36 @@ def extract_definitions(
     matches: list[dict] = []
     seen_terms: set[str] = set()
 
-    for match in _ASSIGN_RE.finditer(clause_text or ""):
-        term = normalize_term(match.group("term"))
-        value_text = match.group("value").strip().rstrip(",")
-        if not term or len(term) < 3:
-            continue
-        minor = parse_minor_units(value_text)
-        if minor is not None:
-            semantic_type = "money"
-        elif re.fullmatch(r"-?\d+(?:\.\d+)?", value_text):
-            semantic_type = "integer"
-        elif parse_unit_and_type(value_text)[0] == "PERCENTAGE_RATE":
-            semantic_type = "rate"
-        else:
-            # A definition by reference to a threshold or to another term.
-            semantic_type = "term"
-        if term in seen_terms:
-            continue
-        seen_terms.add(term)
-        symbol = Symbol(
-            id=term,
-            kind="TERM",
-            semantic_type=semantic_type,
-            defined_in=scope.index,
-            name=camel_name(term),
-            aliases=[term],
-            value_expr=value_text,
-            origin="definition",
-            minor=minor,
-        )
-        symbols.append(symbol)
-        matches.append(
-            {
-                "symbol": symbol,
-                "term": term,
-                "value_text": value_text,
-                "minor": minor,
-                "span": (match.start(), match.end()),
-            }
-        )
+    for pattern in (_TERM_DEF_RE, _ASSIGN_RE):
+        for match in pattern.finditer(clause_text or ""):
+            term = normalize_term(match.group("term"))
+            value_text = match.group("value").strip().rstrip(",")
+            if not term or len(term) < 3:
+                continue
+            if term in seen_terms:
+                continue
+            seen_terms.add(term)
+            symbol = Symbol(
+                id=term,
+                kind="TERM",
+                semantic_type=_definition_semantic_type(value_text),
+                defined_in=scope.index,
+                name=camel_name(term),
+                aliases=[term],
+                value_expr=value_text,
+                origin="definition",
+                minor=parse_minor_units(value_text),
+            )
+            symbols.append(symbol)
+            matches.append(
+                {
+                    "symbol": symbol,
+                    "term": term,
+                    "value_text": value_text,
+                    "minor": symbol.minor,
+                    "span": (match.start(), match.end()),
+                }
+            )
     return symbols, matches
 
 
@@ -477,6 +502,7 @@ class _ClausePlan:
     steps: list[dict] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     rate_bps: int | None = None
+    handlers: list[str] = field(default_factory=list)
 
 
 def _operator_before(text: str, position: int) -> str | None:
@@ -903,7 +929,63 @@ def build_clause_scoped_computation(
             plan.steps.append({"assign": name, "expr": expr})
             assign_output(f"{override.name}Paisa", f"vars.{name}", override)
 
-        # 4d. rate clause
+        # 4d. arithmetic composition (RFC-012 Step 3): one topological walk
+        #     over the relation graph of this clause. The walk replaces the
+        #     "first matching archetype wins" chain whenever the clause has
+        #     composed relations.
+        from compiler.neural.ssa_walker import SsaEdge, SsaNode, compose_clause
+
+        arithmetic_edges = [
+            e for e in scope.edges if e.relation in _WALKED_RELATIONS
+        ]
+        if arithmetic_edges:
+            walker_nodes = [
+                SsaNode(
+                    index=s.span_idx,
+                    role=s.role,
+                    text=s.text,
+                    char_range=s.char_range,
+                )
+                for s in scope.spans
+            ]
+            walker_edges = [
+                SsaEdge(
+                    source=e.source.span_idx,
+                    target=e.target.span_idx,
+                    relation=e.relation,
+                )
+                for e in arithmetic_edges
+            ]
+            walker_steps, handlers, walker_diagnostics = compose_clause(
+                nodes=walker_nodes,
+                edges=walker_edges,
+                clause_text=plan.text,
+                clause_idx=scope.index,
+                currency_code=currency_code,
+                inputs=inputs,
+            )
+            if walker_diagnostics:
+                for diagnostic in walker_diagnostics:
+                    diagnostics.append(
+                        Diagnostic(
+                            code=diagnostic.code,
+                            severity="error",
+                            clause_idx=scope.index,
+                            detail=diagnostic.detail,
+                        )
+                    )
+                continue
+            for step in walker_steps:
+                steps.append(step)
+                plan.steps.append(step)
+            plan.handlers = handlers
+            if walker_steps:
+                final = walker_steps[-1]["assign"]
+                outputs[unique_output(_output_key_from_assign(final))] = f"vars.{final}"
+                plan.outputs.append(final)
+            continue
+
+        # 4e. a plain rate clause (no composed relation)
         rate_span = next(
             (
                 s for s in scope.spans
@@ -982,6 +1064,7 @@ def build_clause_scoped_computation(
                 "charRange": list(plan.scope.char_range),
                 "kind": plan.kind,
                 "standardRateBps": plan.rate_bps,
+                "handlers": list(plan.handlers),
                 "steps": [step["assign"] for step in plan.steps],
                 "outputs": list(plan.outputs),
                 "symbols": [

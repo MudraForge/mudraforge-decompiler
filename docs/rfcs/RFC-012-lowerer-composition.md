@@ -654,6 +654,31 @@ MUST NOT be silently dropped.
 7. Return one step list. Delete the `if computation is None` chain only after
    every branch's behavior is represented by a handler.
 
+### 5.3.1 Encoding rules (as built)
+
+- The walk lives in `compiler/neural/ssa_walker.py`. The relation registry is
+  a table: `REL_RATE_TO_THRESHOLD`, `REL_CAP_CEILING` and
+  `REL_SUBTRACTION_BASE` are registered; a relation without a handler is a
+  fail-closed `ERR_UNHANDLED_RELATION`, never a silent drop.
+- **A relation label does not decide the sense of an adjustment.** The neural
+  annotator labels both `capped at $10,000` and `reduced by a $500 credit` as
+  `REL_CAP_CEILING`. The statutory text decides: the handler reads the words
+  around the span and lowers a ceiling to `MIN` and a credit to `SUB`. This is
+  rule 6 of 5.3 in practice.
+- The default order of the composed pipeline is base arithmetic (the amount
+  above the threshold), the rate, the reductions, the caps, and the floor at
+  zero. Reductions come before caps because a credit reduces the liability
+  that the cap then bounds.
+- The walk takes over when a clause composes an adjustment
+  (`REL_CAP_CEILING` or `REL_SUBTRACTION_BASE`) next to its rate. A clause with
+  only a rate and a threshold keeps the current archetype, so the single
+  clause regression set is unchanged.
+- The `if computation is None` chain is **not** deleted yet. Rule 7 of 5.3
+  allows its removal only once every branch of the chain is represented by a
+  handler, and the chain still owns archetypes the registry does not cover
+  (slab schedules, combinators, aggregates, deontic gates). Until then the
+  chain stays and the walk owns the composed clauses of the v2 profile.
+
 ### 5.4 Acceptance tests
 
 - **A3.1 Composition.** Input: "Tax equals 28 percent of the excess of gross

@@ -3293,7 +3293,16 @@ def synthesize_usvm_ast(
         return out
 
     # ── Pipeline Archetype 0: Composed Multi-Node Arithmetic / Collection Aggregate DAG ──
-    if clause_scopes and len({int(s.get("clauseIdx", 0)) for s in indexed_spans}) > 1:
+    clause_count = len({int(s.get("clauseIdx", 0)) for s in indexed_spans})
+    has_composition = any(
+        e["relationType"] in ("REL_CAP_CEILING", "REL_SUBTRACTION_BASE")
+        for e in resolved_edges
+    )
+    use_clause_scoped = (
+        (clause_scopes and clause_count > 1)
+        or (has_composition and (typed_inputs or clause_scopes))
+    )
+    if use_clause_scoped:
         # RFC-012 Step 2: per-clause scopes with def-use symbol linking. The
         # linker owns this path, so the archetype chain below is skipped.
         from compiler.neural.clause_linker import (
@@ -3318,6 +3327,10 @@ def synthesize_usvm_ast(
         if scoped_comp is not None:
             computation = scoped_comp
             typed_inputs_block = scoped_inputs
+            # The v2 profile expresses every precondition inside the pipeline
+            # as an SSA step, so Catala and USVM evaluate the same conditions.
+            # The legacy top-level guards are therefore not emitted here.
+            guards = []
             comp_block["expressionType"] = "CLAUSE_SCOPED_PIPELINE"
             comp_block["formulaDescription"] = (
                 "Per-clause scoped pipeline with def-use linked values"
