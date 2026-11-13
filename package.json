@@ -27,7 +27,7 @@
     "test:all": "npm run test && npm run test:sara",
     "audit": "python scripts/security_audit.py"
   },
-  "author": "MudraForge Labs <engineering@mudraforge.in>",
+  "author": "Mondeep Engti <engineering@mudraforge.in> (https://mudraforge.in)",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.0.0"

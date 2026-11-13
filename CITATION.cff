@@ -2,9 +2,10 @@ cff-version: 1.2.0
 message: "If you use this software in your research or applications, please cite it as below."
 title: "MudraForge Decompiler: A 5.8M-Parameter Zero-Shot Neuro-Symbolic Decompiler for Computational Law and Statutory Reasoning"
 authors:
-  - name: "MudraForge Research Team"
+  - family-names: "Engti"
+    given-names: "Mondeep"
+    affiliation: "MudraForge"
     email: "engineering@mudraforge.in"
-    website: "https://mudraforge.in"
 version: 1.0.0
 date-released: 2026-11-11
 license: Apache-2.0

@@ -1,6 +1,6 @@
 # Security Policy
 
-MudraForge Research is committed to maintaining the highest security and formal correctness standards across the `mudraforge-decompiler` neuro-symbolic compiler pipeline.
+MudraForge (Mondeep Engti) is committed to maintaining the highest security and formal correctness standards across the `mudraforge-decompiler` neuro-symbolic compiler pipeline.
 
 Because this compiler generates intermediate Abstract Syntax Trees (ASTs) executed by deterministic legal and financial virtual machines, an AST generation flaw or parser exploit is treated with the highest severity.
 
@@ -29,7 +29,7 @@ Because this compiler generates intermediate Abstract Syntax Trees (ASTs) execut
 Please do **NOT** report security vulnerabilities via public GitHub issues.
 
 Send security reports to:
-- **Security Team**: [security@mudraforge.in](mailto:security@mudraforge.in)
+- **Security contact**: [security@mudraforge.in](mailto:security@mudraforge.in)
 - **Subject**: `[SECURITY VULNERABILITY] mudraforge-decompiler: <brief description>`
 
 ### What to Include:
