@@ -87,7 +87,7 @@ The table below contrasts our neuro-symbolic decompiler against published fronti
 | **`GPT-5.2` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **60.0%** | *DAR (Dou et al., 2026)* |
 | **`MudraForge Decompiler` + `USVM`** | **5.8M** | **Dual-Stream AST Compiler $\rightarrow$ Deterministic USVM** | **100.0% (35 / 35)** | *This Report* |
 
-On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's *PercepLog* study (EMNLP 2026, Oct 25, 2026) achieved ~90% accuracy only when hand-crafted formal logic rules were pre-supplied by human experts. In contrast, `mudraforge-decompiler` achieved **30 / 30 (100.0%)** zero-shot by compiling directly from raw natural language statutory text without human-in-the-loop formalization.
+On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's [*PercepLog-0* study](https://aclanthology.org/2026.findings-emnlp.2099/) (Kordjamshidi et al., EMNLP 2026) achieved ~90% accuracy only when hand-crafted formal logic rules were pre-supplied by human experts. In contrast, `mudraforge-decompiler` achieved **30 / 30 (100.0%)** zero-shot by compiling directly from raw natural language statutory text without human-in-the-loop formalization.
 
 ![Frontier LLM Benchmark Comparison](images/frontier_llm_benchmark_comparison.svg)
 
@@ -322,6 +322,8 @@ To maintain rigorous scientific and intellectual integrity, we explicitly deline
    The mathematical formulation of GRPO without critic/value networks originates from **Zhihong Shao, Peiyi Wang, et al.** ([DeepSeek-AI, arXiv:2402.03300, 2024](https://arxiv.org/abs/2402.03300)).
 7. **Constrained Viterbi Sequence Decoding**:
    The foundational principles of sequence tagging via transition-constrained Viterbi decoding build on **Andrew Viterbi** ([IEEE Transactions on Information Theory, 1967](https://doi.org/10.1109/TIT.1967.1054010)) and **John Lafferty, Andrew McCallum, and Fernando Pereira** ([ICML 2001](https://repository.upenn.edu/cis_papers/159/)).
+8. **LLM-Augmented Backward Chaining for Legal Reasoning (PercepLog)**:
+   The PercepLog-0 framework for combining classical backward chaining with LLM reasoning over statutory text is the work of **Parisa Kordjamshidi, Sai Amrit Bulusu, Samer Aslan, Madhavan Seshadri, Leslie Barrett, and Enrico Santus** (Bloomberg and Michigan State University, [EMNLP 2026 Findings](https://aclanthology.org/2026.findings-emnlp.2099/)). We do not claim authorship of PercepLog or its results.
 
 ### 7.2 The Decompiler-to-VM Pipeline: How the AST is Formed Before USVM Execution
 A central architectural principle of this system is that **neural inference and statutory arithmetic never mix**. The decompiler's sole responsibility is to translate raw natural language statutes into an intermediate representation:
@@ -353,6 +355,7 @@ We claim the following specific contributions:
 7. **Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Zhang, M., Li, Y. K., Wu, Y., & Guo, D. (2024)**. [*DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models*](https://arxiv.org/abs/2402.03300). arXiv preprint arXiv:2402.03300.
 8. **Lafferty, J., McCallum, A., & Pereira, F. (2001)**. [*Conditional Random Fields: Probabilistic Models for Segmenting and Labeling Sequence Data*](https://repository.upenn.edu/cis_papers/159/). In Proceedings of the Eighteenth International Conference on Machine Learning (ICML 2001), pages 282–289.
 9. **Engti, M. (2026)**. [*The Open Knowledge Format (OKF v0.2): A Formal Intermediate Representation for Computational Jurisprudence*](https://github.com/MudraForge/mudraforge-statutory/blob/main/docs/SPECIFICATION.md). MudraForge Technical Report RFC-009.
+10. **Kordjamshidi, P., Bulusu, S. A., Aslan, S., Seshadri, M., Barrett, L., & Santus, E. (2026)**. [*PercepLog-0: LLM-Augmented Backward Chaining for Legal Reasoning*](https://aclanthology.org/2026.findings-emnlp.2099/). Findings of the Association for Computational Linguistics: EMNLP 2026, pages 44688-44706.
 
 ---
 
