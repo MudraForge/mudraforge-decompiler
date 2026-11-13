@@ -5,9 +5,10 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![Node](https://img.shields.io/badge/node->=18.0.0-green)](https://nodejs.org/)
-[![Parameters](https://img.shields.io/badge/params-5.8M-orange)](#architecture)
+[![Parameters](https://img.shields.io/badge/params-7.9M%20total-orange)](#inside-the-dual-stream-model)
 [![SARA Track 1D](https://img.shields.io/badge/SARA_Track_1D-14%2F14-brightgreen)](#benchmark-evaluations)
-[![SARA Track 2](https://img.shields.io/badge/SARA_Track_2_symbolic-65%2F65-blue)](#benchmark-evaluations)
+[![SARA Track 2 Binary](https://img.shields.io/badge/SARA_Track_2_binary-30%2F30-blue)](#benchmark-evaluations)
+[![SARA Track 2 Numeric](https://img.shields.io/badge/SARA_Track_2_numeric-35%2F35_%28%C2%B11%29-blue)](#benchmark-evaluations)
 
 **Author and maintainer:** Mondeep Engti. MudraForge is an independent sole
 proprietorship owned and operated by Mondeep Engti.
@@ -16,7 +17,7 @@ proprietorship owned and operated by Mondeep Engti.
 
 ## Executive Summary
 
-`mudraforge-decompiler` is a 5.8-million-parameter dual-stream neuro-symbolic compiler. A neural annotation model identifies statutory spans, roles, modality, and relations; a deterministic schema lowerer turns those annotations into executable Abstract Syntax Trees (ASTs) conforming to the Open Knowledge Format (OKF v0.2); the USVM executes them.
+`mudraforge-decompiler` is a 7.9-million-parameter dual-stream neuro-symbolic compiler (2.08M in `DomainSensor` and 5.78M in `LogicReasoner`). A neural annotation model identifies statutory spans, roles, modality, and relations; a deterministic schema lowerer turns those annotations into executable Abstract Syntax Trees (ASTs) conforming to the Open Knowledge Format (OKF v0.2); the USVM executes them.
 
 Rather than delegating mathematical or legal deduction to stochastic next-token generation (which suffers from hallucinations and arithmetic rounding drift), the system decouples statutory reasoning into three tiers:
 
@@ -40,6 +41,110 @@ In statutory jurisprudence, the legislative process mirrors this exact computati
 2. **Statutes as "Compiled Binaries for Human Runtime"**: Far from being informal text, statutory prose is a dense, heavily optimized, and highly defensive serialized distribution format designed specifically for a human judicial runtime (courts, tax authorities, and legal counsel). To an automated machine, statutory prose behaves like a stripped binary: it is packed with conditional jumps (*"subject to paragraph (2)"*), pointer indirections (*"within the meaning of section 7703"*), implicit scope boundaries, and defeasible exceptions (*"shall not apply if..."*).
 3. **The Reverse-Engineering Operation (`mudraforge-decompiler`)**: Because the natural language statute is already an end-product compiled artifact, an AI system cannot "compile" it from source. Instead, `mudraforge-decompiler` acts as a **true statutory decompiler**: it ingests the compiled natural-language legal artifact, strips away the bureaucratic and linguistic assembly packaging, recovers the underlying typed variables (`symbolLegend`), and reconstructs the clean, declarative Abstract Syntax Tree (OKF v0.2 AST).
 4. **Execution in the Virtual Machine**: Once decompiled into a formal AST, the logic is executed deterministically by the Universal Statutory Virtual Machine (USVM) using exact BigInt rational arithmetic, restoring the original mathematical clarity of the legislative intent with zero hallucinations.
+
+---
+
+## Inside the Dual-Stream Model
+
+Before the lowerer sees anything, a 7.9M-parameter dual-stream encoder turns a statute sentence into a typed span graph. This section describes that model on its own terms: how the two streams divide the sentence, what each of the four heads predicts, what the raw output looks like, and how well the model does before any symbolic code runs.
+
+### Parameter accounting
+
+The released checkpoints (`checkpoints/dual_stream_sup.pt`, `checkpoints/dual_stream_rl.pt`) contain **7,862,518 trainable parameters**:
+
+| Stream | Structure | Parameters |
+| :--- | :--- | ---: |
+| `DomainSensor` | 4-layer, 192-d encoder over raw tokens + suffix embeddings; 9-class token head; binary abstain head | 2,081,387 |
+| `LogicReasoner` | 224-d token + 32-d suffix embeddings, 256-d encoder, 2 fusion layers, BIO/role/biaffine/modality heads | 5,781,131 |
+| **Total** | | **7,862,518** |
+
+> **Why some documents say 5.8M.** 5.8M is the `LogicReasoner` policy that GRPO tunes; the training diary's 2.76M + 2.99M split describes the pre-release 5.74M configuration. The counts above are measured directly from the shipped state dicts, so they are the numbers used throughout this README.
+
+### One sentence, two streams
+
+Consider a withholding clause:
+
+> *"Any person responsible for paying to a resident any sum for purchase of goods of an amount exceeding fifty lakh rupees shall deduct an amount equal to 0.1 percent of such sum as income-tax thereon."*
+
+Both streams read the same token sequence, but they do not see the same features:
+
+- **`DomainSensor` (lexical stream).** It embeds the raw word plus a morphological suffix embedding, runs four 192-d transformer layers, and predicts one of nine token classes (`DT_MONETARY_AMOUNT`, `DT_PERCENT_RATE`, `DT_STRUCTURAL_CONNECTIVE`, and so on) plus a sequence-level **abstain probability** (`domainAbstainProb`). Its job is to recognize domain vocabulary: money, rates, dates, parties, documents, and chatter.
+- **`LogicReasoner` (structural stream).** It never sees the raw token id. It sees a closed logic vocabulary (`shall`, `exceeding`, `except`, `notwithstanding`, comparatives, quantifiers) plus the same suffix embedding, so its input is mostly grammar rather than subject matter. This is what lets the model transfer to a new legal domain: the logic stream learns control flow, not tax nouns.
+- **Where the streams meet.** The two encoders exchange context through bidirectional cross-attention at mid-depth. `DomainSensor` cross-attends to the logic state, and `LogicReasoner` receives the detached nine-dimensional domain distribution as an extra input channel. Detaching the domain probabilities prevents the logic stream from learning to copy a domain label as a shortcut. During GRPO, `DomainSensor` is frozen so the reward signal cannot drift the lexical representation.
+
+Training applies balanced open-class slot dropout to both streams: nouns and verbs are replaced by `<LEGAL_NOUN>`/`<LEGAL_VERB>` at 8-30% per clause (raised to at least 28% for open-class slots), and the diary records runs at up to 35%. The point is to stop the logic stream from using a particular tax noun as a proxy for "this is a rule".
+
+### The four heads
+
+After fusion, `LogicReasoner` exposes four prediction heads. Each head answers one local question; none of them emits an AST.
+
+1. **Constrained Viterbi BIO span tagger.** A token-level classifier over 23 BIO tags (`B-GATE`, `I-THRESHOLD`, `B-RATE`, `B-ENTITY`, and so on). Decoding is a Viterbi pass with hard transition constraints: an `I-` tag cannot follow `O`, a span cannot switch type mid-token, and a `per` that is not followed by `cent`/`centum`/`%` cannot start a rate. The result is a set of non-overlapping spans such as `exceeding fifty lakh rupees` or `0.1 percent`.
+2. **Span Boundary Role classifier.** Each span is pooled into a 128-d vector from its start state, end state, their difference, and a mean-pooled interior. A classifier assigns one of 20 statutory roles, including `ROLE_TRANSACTION_EXCESS_THRESHOLD`, `ROLE_TRANSACTION_CLIFF_THRESHOLD`, `ROLE_STANDARD_STATUTORY_RATE`, `ROLE_PENALTY_OR_DEFAULT_OVERRIDE`, `ROLE_COMPUTATION_OPERAND`, and `ROLE_PROHIBITION_GATE`. This is where the model distinguishes a **cliff** (the whole base is taxed once the threshold is crossed) from an **excess** (only the amount above the threshold is taxed).
+3. **Deep biaffine relational head.** A scoring tensor over every ordered span pair, with 24 relation labels (`REL_RATE_TO_THRESHOLD`, `REL_THRESHOLD_TO_TRANSACTION`, `REL_COMBINATOR_MIN`, `REL_SUBTRACTION_BASE`, `REL_CONDITION_TO_GATE`, `REL_CAP_CEILING`, `REL_LOGICAL_OR`, and so on). The biaffine form scores a directed edge as a bilinear function of the source and target span vectors, which is why it can represent "this rate applies to that threshold" without a fixed window or a regex.
+4. **Rule-modality head.** A pooled-sequence classifier over eight labels: three computational shapes (`MODALITY_COMPUTATIONAL_EXCESS`, `MODALITY_COMPUTATIONAL_CLIFF`, `MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB`), four deontic/status families (`MODALITY_DEONTIC_PROHIBITION`, `MODALITY_DEONTIC_OBLIGATION_WINDOW`, `MODALITY_DEONTIC_STATUS_OR_EVIDENCE`, `MODALITY_DEONTIC_PERMISSION`), and `MODALITY_ABSTAIN_UNRESOLVED`. The abstain label is the fail-closed gate: when the model cannot place the clause in any operative family, the pipeline returns `UNRESOLVED_STATUTORY_AMBIGUITY` instead of guessing.
+
+### Worked example: raw neural output before lowering
+
+This is the actual output of `DualStreamDecompilerInference.decompile_text` on a U.S. IRC bracket clause, using `checkpoints/dual_stream_sup.pt`. Nothing below has been post-edited; only whitespace is trimmed. At this point `synthesize_usvm_ast` has not run.
+
+**Input (IRC § 1(a)(ii) bracket, verbatim):**
+
+> *"If taxable income is over $36,900 but not over $89,150, tax shall be $5,535, plus 28% of the excess over $36,900."*
+
+**Raw annotation output:**
+
+```json
+{
+  "predictedModality": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+  "modalityConfidence": 0.9757,
+  "domainAbstainProb": 0.0,
+  "classifiedSpans": [
+    {"span": "over $36,900",    "bioType": "THRESHOLD", "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "confidence": 0.9917, "spanIdx": 0},
+    {"span": "not over $89,150","bioType": "THRESHOLD", "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD",  "confidence": 0.9938, "spanIdx": 1},
+    {"span": "5,535",           "bioType": "RATE",      "role": "ROLE_COMPUTATION_OPERAND",          "confidence": 0.4654, "spanIdx": 2},
+    {"span": "28%",             "bioType": "RATE",      "role": "ROLE_STANDARD_STATUTORY_RATE",      "confidence": 0.9924, "spanIdx": 3}
+  ],
+  "relationalEdges": [
+    {"sourceSpan": "over $36,900", "targetSpan": "not over $89,150", "relationType": "REL_BRACKET_NEXT"},
+    {"sourceSpan": "28%",          "targetSpan": "over $36,900",     "relationType": "REL_RATE_TO_THRESHOLD"}
+  ]
+}
+```
+
+Read the annotation, not the JSON punctuation:
+
+- the BIO head proposed four spans and no overlapping tokens;
+- the role head marked the lower bound as an **excess** threshold, the upper bound as a **cliff** threshold, and `28%` as the standard rate;
+- the biaffine head linked the two thresholds into one bracket (`REL_BRACKET_NEXT`) and attached the rate to the lower bound (`REL_RATE_TO_THRESHOLD`);
+- the modality head called the shape `COMPOUND_OR_SLAB`, not a flat rate;
+- the one low-confidence role (`5,535` at 0.4654) is the fixed base amount, and the value is still correct; confidence is reported per span so a reviewer can see where the model is unsure.
+
+Only after this point does `synthesize_usvm_ast` apply the deterministic grammar: it turns the two thresholds into a bracket range, the `28%` plus `REL_RATE_TO_THRESHOLD` edge into a rational multiply on the excess, and the fixed amount into a base constant. The schema, the operators, and the money type are code, not weights.
+
+### What the model achieves on its own
+
+The neural tracks measure annotation and composition; only Track 1D adds the USVM verdict. These are the external benchmark results:
+
+| Track | Input and composition | Result |
+| :--- | :--- | :---: |
+| **1A: Verbatim operative clauses** | U.S. IRC text -> spans, roles, modality, edges; no USVM verdict | **10 / 10** |
+| **1B: Surface ablation** | Same clauses with `$` -> `rupees` and `%` -> `per cent`; no USVM verdict | **10 / 10** |
+| **1C: Multi-subsection statutes** | Raw statutes up to 6,984 characters; no USVM verdict | **9 / 9** |
+| **1D: End-to-end** | Raw text -> model -> lowerer -> USVM verdict | **14 / 14** |
+
+The model's internal validation metrics come from the training diary's 1,910-clause synthetic validation set, not from the external benchmark scripts:
+
+| Validation metric | Value |
+| :--- | ---: |
+| Domain token classification accuracy | 96.96% |
+| BIO span boundary accuracy | 88.88% |
+| Rule modality accuracy | 97.17% |
+| Semantic role macro-F1 | 94.48% |
+| Relational biaffine edge F1 | 88.14% |
+| Clause-level complete exact match | 75.49% |
+| Average validation NLL | 0.7694 |
+
+Two cautions belong next to these numbers. First, 75.49% clause-level EM is the model's *annotation* score; the lowerer can still recover a correct rule from an imperfect annotation, and the external Tracks 1A-1D are the evidence for that. Second, none of these rows is a score on the 65-case `hard.json` split. The full pipeline has not been run on that split, and Track 2 does not substitute for it.
 
 ---
 
@@ -112,7 +217,7 @@ What does not change is the checkpoint architecture, the schema contract, and th
 
 ### Why the Model Is an Annotation Model, Not an AST Generator
 
-The model is small and narrow on purpose. Statutory text carries two separable signals: domain vocabulary (who pays, what is measured, which amount) and logical structure (conditions, comparisons, obligations, exceptions, and relations between amounts). A 5.8M encoder can learn the second when it is trained on local decisions: BIO span boundaries, span roles, modality, and pairwise relation edges.
+The model is small and narrow on purpose. Statutory text carries two separable signals: domain vocabulary (who pays, what is measured, which amount) and logical structure (conditions, comparisons, obligations, exceptions, and relations between amounts). A 5.8M logic encoder can learn the second when it is trained on local decisions: BIO span boundaries, span roles, modality, and pairwise relation edges.
 
 Asking the same model to emit a complete JSON AST would force it to memorize field names, operators, and arithmetic conventions. Those are better expressed in code: they change on a different schedule, they must be type-checked, and an unsupported construct must fail closed rather than become a plausible-looking field.
 
@@ -185,7 +290,7 @@ Below is the comparative performance across published literature on that exact *
 | **`Claude Sonnet 4.5` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **54.0%** | *DAR (Dou et al., 2026)* |
 | **`GPT-5.2` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **60.0%** | *DAR (Dou et al., 2026)* |
 | **MudraForge USVM** (Track 2) | n/a (symbolic) | Hand-authored canonical ASTs -> deterministic USVM | **100.0% (35 / 35)** | *This Repository, Track 2* |
-| **MudraForge full pipeline** (Track 1D) | 5.8M | Model + plumbing + USVM, end-to-end | **14 / 14 test vectors** (not the hard split) | *This Repository, Track 1D* |
+| **MudraForge full pipeline** (Track 1D) | 7.9M total (5.8M logic) | Model + plumbing + USVM, end-to-end | **14 / 14 test vectors** (not the hard split) | *This Repository, Track 1D* |
 
 > **On `SARA-Binary (Hard)` (30 cases)**: Bloomberg AI's [*PercepLog-0* study](https://aclanthology.org/2026.findings-emnlp.2099/) (Kordjamshidi et al., EMNLP 2026) reports ~90% accuracy when ground-truth formal rules are supplied by human experts. That is the closest published setting to our Track 2 result (30 / 30 with hand-authored canonical ASTs), not to our full-pipeline track. The two results are still not directly comparable: different splits, harnesses, and definitions of a correct answer. The comparison does not establish model superiority. It shows that once a correct formalization exists, symbolic execution is no longer the bottleneck.
 
@@ -384,26 +489,37 @@ mudraforge-decompiler/
 ├── pyproject.toml                 # Standard PEP 517/621 packaging metadata
 ├── requirements.txt               # Python dependencies (torch, numpy, matplotlib, pypdf)
 ├── package.json                   # Node.js manifest with @mudraforge/statutory dependency
+├── package-lock.json              # Pinned Node dependency graph
+├── CITATION.cff                   # Citation metadata
+├── CONTRIBUTING.md                # Contribution and review rules
+├── SECURITY.md                    # Security disclosure policy
+├── NOTICE                         # Third-party notices
 ├── LICENSE                        # Apache 2.0 license
 ├── README.md                      # Architecture and documentation
 ├── checkpoints/                   # Pretrained weights (dual_stream_sup.pt, dual_stream_rl.pt)
 ├── data/                          # Cached benchmark corpora (DeonticBench SARA)
+├── examples/
+│   └── statute.txt                # Runnable sample clause used by the CLI quickstart
 ├── compiler/
 │   ├── converters/                # Target code emitters & formal legal DSL bridges
 │   │   ├── __init__.py
-│   │   └── catala_emitter.py      # Declarative AST -> Literate Catala (.catala_en)
-│   ├── neural/                    # 5.8M dual-stream transformer modules
+│   │   ├── archetype_strategies.py# Non-canonical AST shape -> canonical pipeline
+│   │   ├── catala_emitter.py      # Declarative AST -> literate Catala (.catala_en)
+│   │   ├── errors.py              # CatalaLoweringError and shared lowering errors
+│   │   └── fact_bindings.py       # Shared USVM fact -> Catala field/type registry
+│   ├── neural/                    # 7.9M dual-stream transformer modules
 │   │   ├── statutory_neural_parser.py
-│   │   ├── logic_reasoner.py
-│   │   ├── domain_sensor.py
+│   │   ├── logic_reasoner.py      # LogicReasoner stream and dual-stream fusion
+│   │   ├── domain_sensor.py       # DomainSensor stream, token classes, abstain head
 │   │   ├── tokenizer.py
-│   │   ├── inference.py
-│   │   └── dual_stream_inference.py
+│   │   ├── inference.py           # synthesize_usvm_ast: span graph -> canonical AST
+│   │   ├── dual_stream_inference.py
+│   │   └── pdf_ingestion.py
 │   ├── training/                  # Synthetic generation & GRPO alignment loops
 │   │   ├── dataset_generator.py   # Procedural statutory grammar generator
 │   │   ├── train_dual_stream.py   # Disentangled supervised + GRPO training
-│   │   └── usvm_rl_environment.py# USVM execution reward oracle
-│   └── vm/                        # USVM Execution Adapter (bridges to @mudraforge/statutory)
+│   │   └── usvm_rl_environment.py # USVM execution reward oracle
+│   └── vm/                        # USVM execution adapter (@mudraforge/statutory)
 │       ├── index.js               # Runtime barrel re-exporting @mudraforge/statutory/usvm
 │       ├── usvm_pipeline_adapter.js # Pipeline adapter & shadow validation
 │       ├── usvm_worker_stdio.js   # Fast persistent IPC bridge
@@ -411,14 +527,42 @@ mudraforge-decompiler/
 ├── benchmarks/                    # Formal evaluation suites
 │   ├── test_sara_benchmark.py
 │   └── test_crossdomain_deonticbench.py
-├── tests/                         # Unit tests
+├── scripts/
+│   ├── catala_interpreter.cjs      # Pinned Catala interpreter bundle (generated, 10 MB)
+│   ├── catala_verify.mjs          # Catala typecheck/interpret harness
+│   ├── emit_catala_fixtures.py    # Regenerate checked-in .catala_en golden files
+│   ├── fetch_catala_interpreter.mjs # Fetch + SHA-256 verify the interpreter bundle
+│   ├── generate_frontier_benchmark_art.py
+│   ├── generate_training_charts.py
+│   ├── run_all_benchmarks.py
+│   └── security_audit.py
+├── tests/                         # Unit, cross-engine, and compiler-verified tests
 │   ├── test_catala_emitter.py     # Catala emitter bridge unit tests
-│   └── test_decompiler_unit.py
+│   ├── test_decompiler_unit.py
+│   ├── test_financial_pipeline_integration.py
+│   ├── test_french_tax_catala_verified.py # Catala typecheck + ground-truth values
+│   ├── test_french_tax_cross_engine.py    # USVM == Catala, 19 scenarios
+│   └── fixtures/
+│       ├── financial_pipeline_asts.json
+│       └── french_tax_2026/       # 5 executable fixtures + section metadata
+│           ├── fr_direct_tax_irpp/
+│           ├── fr_corporate_tax_is/
+│           ├── fr_social_contributions/
+│           ├── fr_vat_tva/
+│           ├── fr_property_tax/
+│           └── fr_b2b_b2c_rules/  # Section/boundary fixture
+├── tools/
+│   ├── catala.lock.json           # Catala interpreter URL, mirrors, SHA-256, byte size
+│   └── README.md                  # Tool provenance and verification notes
 └── docs/                          # Detailed research papers and diaries
     ├── PAPER.md                   # Full research paper
     ├── COMPILER_TRAINING_DIARY.md # Comprehensive 22-entry training diary
-    └── DISTRIBUTION_KIT.md        # Publishing and release artifacts
+    ├── DISTRIBUTION_KIT.md        # Publishing and release artifacts
+    ├── training_dashboard.html    # Offline training telemetry dashboard
+    └── images/                    # Architecture, ablation, and benchmark figures
 ```
+
+The French 2026 fixtures are verified twice. `tests/test_french_tax_catala_verified.py` typechecks the emitted Catala and asserts statutory ground-truth values; `tests/test_french_tax_cross_engine.py` runs the same AST through USVM and Catala and requires field-by-field equality across **19 scenarios** covering IRPP, corporate tax, social contributions, VAT, and property tax. Run both with `npm run test:catala:verified` (the interpreter is fetched and hash-checked first).
 
 ---
 
@@ -464,7 +608,7 @@ A central architectural principle of this system is that **neural inference and 
 
 We claim the following specific contributions:
 
-1. **The Dual-Stream Transformer Architecture**: A compact 5.8-million-parameter encoder architecture (`DomainSensor` || `LogicReasoner`) fusing lexical semantic roles with deontic operator embeddings, achieving high parameter efficiency without large foundation model footprint.
+1. **The Dual-Stream Transformer Architecture**: A compact 7.9-million-parameter dual-stream architecture (`DomainSensor` || `LogicReasoner`, of which 5.8M is the logic policy) fusing lexical semantic roles with deontic operator embeddings, achieving high parameter efficiency without a large foundation model footprint.
 2. **Zero-Shot Neural-to-AST Compilation**: An automated pipeline that translates raw natural language statutory prose into strongly-typed Declarative ASTs (OKF v0.2). Neural span and role annotation is separated from a deterministic schema lowerer; the pipeline reduces, but does not eliminate, the work of formalizing statutes.
 3. **The Universal Statutory Virtual Machine (USVM)**: A sandboxed, domain-agnostic virtual machine operating in a JavaScript isolate with 43 universal ALU opcodes, bounded first-order collection quantifiers, 64-bit integer BigInt rational math (zero IEEE-754 drift), and an immutable non-disbursement invariant (`isAuthorizedToDisburse: false`), provided via `@mudraforge/statutory`.
 4. **Zero-Shot Cross-Jurisdiction Transfer**: Demonstrating that a neuro-symbolic decompiler trained exclusively on statutory drafting grammar and non-U.S. tax corpora can transfer its span and relation heads zero-shot to U.S. Internal Revenue Code text. The 100% execution figures belong to the symbolic layer and are reported separately.
@@ -494,7 +638,7 @@ We claim the following specific contributions:
    - Dual-Stream neural model checkpoints (`checkpoints/dual_stream_sup.pt` and `checkpoints/dual_stream_rl.pt`).
    - In-process USVM integration via `@mudraforge/statutory`.
 2. **Phase 2: Hugging Face Model Hub Release**:
-   - Model cards, tokenizer configurations, and safetensors weights published to `MudraForge/mudraforge-decompiler-5.8m`.
+   - Model cards, tokenizer configurations, and safetensors weights published to `MudraForge/mudraforge-decompiler-7.9m`.
    - Interactive Gradio / Space demonstration for real-time statutory decompilation.
 3. **Phase 3: Formal arXiv Preprint Submission**:
    - Formal submission of the comprehensive technical paper to arXiv (`cs.AI` / `cs.CL` / `cs.SE`).
@@ -509,7 +653,7 @@ If you use `mudraforge-decompiler` in your research or applications, please cite
 
 ```bibtex
 @software{mudraforge2026decompiler,
-  title={A 5.8M-Parameter Zero-Shot Neuro-Symbolic Decompiler for Computational Law and Statutory Reasoning},
+  title={A 7.9M-Parameter Zero-Shot Neuro-Symbolic Decompiler for Computational Law and Statutory Reasoning},
   author={Engti, Mondeep},
   year={2026},
   howpublished={\url{https://github.com/MudraForge/mudraforge-decompiler}},

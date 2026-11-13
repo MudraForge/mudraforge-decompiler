@@ -63,3 +63,6 @@ scripts/*.tmp
 
 # Local agent instructions (kept out of the published repository)
 .agents/
+
+# CLI quickstart output
+output/

@@ -10,9 +10,9 @@
 
 ## Abstract
 
-For over six years, statutory reasoning has remained an open challenge in artificial intelligence and legal informatics. Language models (including GPT-4 and Claude) fail at statutory arithmetic and rule hierarchies, peaking at **44.4% accuracy** on the hard quantitative split of the SARA (Statutory Reasoning Assessment) and DeonticBench datasets. Conversely, symbolic expert systems (such as Prolog) achieve 100% accuracy only when humans manually hand-code every rule and fact into formal logic predicates—a process that does not scale.
+Since 2020, statutory reasoning has remained an open challenge in artificial intelligence and legal informatics. Frontier language models (GPT-5.2, Claude Sonnet 4.5, Qwen3.5-35B) fail at statutory arithmetic and rule hierarchies, peaking at **44.4%** when paired with an external Prolog solver (and **60.0%** with agentic harnesses) on the hard quantitative split of the SARA (Statutory Reasoning Assessment) and DeonticBench datasets. Conversely, symbolic expert systems (such as Prolog) achieve 100% accuracy only when humans manually hand-code every rule and fact into formal logic predicates-a process that does not scale.
 
-This report documents a technical result: **MudraForge's Neuro-Symbolic Dual-Stream Decompiler** couples neural span and role extraction with a deterministic compiler that emits canonical ASTs for the **Canonical Universal Statutory Virtual Machine (USVM)**. The symbolic layer executes hand-authored canonical ASTs for the SARA and DeonticBench hard splits with 100% agreement, while the full pipeline (model + schema lowerer + USVM) compiles and executes 14 end-to-end test vectors at 100%. The model was never trained on the U.S. Internal Revenue Code (IRC) or the SARA dataset.
+This report documents a technical result: **MudraForge's Neuro-Symbolic Dual-Stream Decompiler** couples neural span and role extraction with a deterministic compiler that emits canonical ASTs for the **Canonical Universal Statutory Virtual Machine (USVM)**. The symbolic layer executes hand-authored canonical ASTs for the SARA and DeonticBench hard splits with 100% agreement, while the full pipeline (model + schema lowerer + USVM) compiles and executes 14 end-to-end test vectors at 100%. The model was never trained on verbatim U.S. Internal Revenue Code (IRC) text or on the SARA evaluation set; its corpus is generated from general statutory templates (`dataset_generator.py`) and non-U.S. statutory sources.
 
 > **Scope of the 100% figures.** The 30/30 and 35/35 results in Section 2 come from deterministic USVM execution of canonical ASTs hand-authored for the tested IRC sections (`benchmarks/test_sara_benchmark.py`, Track 2). They are not zero-shot neural scores on the hard split. The full **model + plumbing + USVM** pipeline is measured separately by Track 1D on 14 test vectors; the hard split has not been run through that full pipeline. Baseline figures from other studies are quoted, not reproduced, and were collected under different harnesses. Read the 100% figures as evidence about the symbolic execution layer, not as model superiority or as a solved benchmark. The translation step from statute to correct formal rule remains the hard problem, and current benchmarks do not isolate it well enough.
 
@@ -20,7 +20,7 @@ By strictly separating **linguistic decomposition** (the neural parser emitting 
 
 ---
 
-## 1. Background & The 6-Year AI & Law Bottleneck
+## 1. Background & The AI & Law Bottleneck Since 2020
 
 ### 1.1 The SARA and DeonticBench Benchmarks
 The foundation of modern statutory AI evaluation is rooted in three milestone publications:
@@ -87,7 +87,7 @@ The table below places published frontier results next to ours on the same nomin
 | **`Claude Sonnet 4.5` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **54.0%** | *DAR (Dou et al., 2026)* |
 | **`GPT-5.2` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **60.0%** | *DAR (Dou et al., 2026)* |
 | **MudraForge USVM** (Track 2) | n/a (symbolic) | Hand-authored canonical ASTs -> deterministic USVM (no model) | **100.0% (35 / 35)** | *This Report, Track 2* |
-| **MudraForge full pipeline** (Track 1D) | 5.8M | Model + plumbing + USVM, end-to-end | **14 / 14 test vectors** (not the hard split) | *This Report, Track 1D* |
+| **MudraForge full pipeline** (Track 1D) | 7.9M total (5.8M logic) | Model + plumbing + USVM, end-to-end | **14 / 14 test vectors** (not the hard split) | *This Report, Track 1D* |
 
 On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's [*PercepLog-0* study](https://aclanthology.org/2026.findings-emnlp.2099/) (Kordjamshidi et al., EMNLP 2026) reports ~90% accuracy when ground-truth formal rules are supplied by human experts. That is the closest published setting to our Track 2 result (30 / 30 with hand-authored canonical ASTs), not to our full-pipeline track. The two are not directly comparable: different splits, harnesses, and definitions of a correct answer. The comparison does not establish model superiority; it shows that once a correct formalization exists, symbolic execution is no longer the bottleneck.
 
@@ -128,7 +128,7 @@ Composition labels: Tracks 1A-1C measure model plus schema lowering with no USVM
 
 ### 2.3 Why the Model Is an Annotation Model, Not an AST Generator
 
-The model is intentionally small and narrow. Statutory text mixes two signals: domain vocabulary (who pays, what is measured, which amount) and logical structure (conditions, comparisons, obligations, exceptions, relations between amounts). A 5.8M encoder can learn the second as a set of local decisions: BIO boundaries, span roles, modality, and pairwise relation edges. Asking it to emit a complete JSON AST would force it to memorize field names, operators, and arithmetic conventions that are better expressed, versioned, and tested in code.
+The model is intentionally small and narrow. Statutory text mixes two signals: domain vocabulary (who pays, what is measured, which amount) and logical structure (conditions, comparisons, obligations, exceptions, relations between amounts). A 5.8M logic encoder can learn the second as a set of local decisions: BIO boundaries, span roles, modality, and pairwise relation edges. Asking it to emit a complete JSON AST would force it to memorize field names, operators, and arithmetic conventions that are better expressed, versioned, and tested in code.
 
 The dual-stream split follows the same logic. `DomainSensor` sees raw vocabulary; `LogicReasoner` sees a closed logic vocabulary and morphological suffixes. In training-time ablations, masking up to 75% of domain nouns moved dual-stream in-distribution EM from 75.5% to 74.2%, while the monolithic baseline fell from 78.3% to 13.9%. That supports the separation. It does not prove transfer to every new statute; only a full-pipeline evaluation on that statute can.
 
@@ -218,20 +218,33 @@ To evaluate out-of-domain transfer, we tested the production neural compiler zer
 
 ![Dual-Stream Disentangled Architecture](images/dual_stream_architecture.png)
 
+**Parameter accounting.** The released checkpoints contain **7,862,518** trainable parameters: 2,081,387 in `DomainSensor` and 5,781,131 in `LogicReasoner`, measured from the shipped state dicts. The **5.8M** figure used in this paper denotes the `LogicReasoner` policy that GRPO tunes. The 2.76M + 2.99M split in the training diary describes the earlier 5.74M configuration, before the final checkpoint's encoder expansion.
+
 ```
 +-----------------------------------------------------------------------------------+
 |                           NATURAL LANGUAGE STATUTE                                |
 |  "There is hereby imposed an excise tax equal to 6.0 percent of total wages..."   |
 +-----------------------------------------------------------------------------------+
                                           |
-                                          | Neural Parsing (Linguistic Stream)
+                                          | Neural parsing: BIO spans, roles,
+                                          | modality, biaffine relation edges
                                           v
 +-----------------------------------------------------------------------------------+
-|                      DECLARATIVE ABSTRACT SYNTAX TREE (AST)                       |
-|  { "modality": "SLAB", "rate": 0.06, "threshold": 7000, "base": "totalWages" }    |
+|                         TYPED STATUTORY SPAN GRAPH                                |
+|  spans:  6.0 percent [RATE] | total wages [ENTITY]                                |
+|  edges:  REL_RATE_TO_THRESHOLD                                                    |
+|  modality: MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB                                |
 +-----------------------------------------------------------------------------------+
                                           |
-                                          | Formal IR Lowering
+                                          | synthesize_usvm_ast (deterministic
+                                          | schema lowering; no learning here)
+                                          v
++-----------------------------------------------------------------------------------+
+|                      CANONICAL DECLARATIVE AST (OKF)                              |
+|  { "modality": "SLAB", "rateBps": 600, "base": "totalWages" }                      |
++-----------------------------------------------------------------------------------+
+                                          |
+                                          | Formal IR lowering
                                           v
 +-----------------------------------------------------------------------------------+
 |                  UNIVERSAL STATUTORY VIRTUAL MACHINE (USVM)                       |
@@ -240,7 +253,7 @@ To evaluate out-of-domain transfer, we tested the production neural compiler zer
 |    - Hard statutory invariant: isAuthorizedToDisburse: false                      |
 +-----------------------------------------------------------------------------------+
                                           |
-                                          | Deterministic Math
+                                          | Deterministic math
                                           v
 +-----------------------------------------------------------------------------------+
 |                        LEGALLY VERIFIABLE TAX LIABILITY                           |
@@ -252,7 +265,7 @@ To evaluate out-of-domain transfer, we tested the production neural compiler zer
 
 ![Syntactic-Semantic Span Graph](images/ast_span_dependency_graph.png)
 
-Our neural model was trained entirely on statutory provisions from Indian Direct Tax, Corporate Income Tax, GST, and synthetic legal grammar. It never saw U.S. tax code. Its span and relation heads transferred zero-shot to U.S. Federal Tax on the neural tracks, consistent with statutory drafting following universal common-law syntactic templates:
+Our neural model was trained entirely on general statutory templates and non-U.S. sources: `dataset_generator.py` synthesizes Indian Direct Tax, corporate income tax, GST, accounting-standard, and general regulatory clauses from procedural grammar. It never trains on verbatim U.S. IRC text or on the SARA evaluation set. Its span and relation heads transferred zero-shot to U.S. Federal Tax on the neural tracks, consistent with statutory drafting following universal common-law syntactic templates:
 - **Progressive Slab Template**: *"If X is over A but not over B, the tax is R% of excess plus C."* (Identical in US IRC § 1 and Indian Section 115BAC).
 - **Comparative Combinators**: *"The amount shall be the lesser of (A) or (B)."* (Identical in US IRC § 3301 and Indian Section 194Q / 80C).
 
@@ -333,7 +346,7 @@ The checkpoint is not a standalone decompiler. The model emits spans, roles, mod
 
 ### 7.3 Novel Contributions of MudraForge (`mudraforge-decompiler`)
 We claim the following specific contributions:
-1. **The Dual-Stream Transformer Architecture**: A compact 5.8-million-parameter encoder architecture (`DomainSensor` || `LogicReasoner`) fusing lexical semantic roles with deontic operator embeddings, achieving high parameter efficiency without large foundation model footprint.
+1. **The Dual-Stream Transformer Architecture**: A compact 7.9-million-parameter dual-stream architecture (`DomainSensor` || `LogicReasoner`, of which 5.8M is the logic policy) fusing lexical semantic roles with deontic operator embeddings, achieving high parameter efficiency without a large foundation model footprint.
 2. **Zero-Shot Neural-to-AST Compilation**: An automated pipeline that translates raw natural language statutory prose into strongly-typed Declarative ASTs (OKF v0.2). Neural span and role annotation is separated from a deterministic schema lowerer; the pipeline reduces, but does not eliminate, the work of formalizing statutes.
 3. **The Universal Statutory Virtual Machine (USVM)**: A sandboxed, domain-agnostic virtual machine operating in a JavaScript isolate with 43 universal ALU opcodes, bounded first-order collection quantifiers, 64-bit integer BigInt rational math (zero IEEE-754 drift), and an immutable non-disbursement invariant (`isAuthorizedToDisburse: false`).
 4. **Zero-Shot Cross-Jurisdiction Transfer**: Demonstrating that a neuro-symbolic decompiler trained exclusively on statutory drafting grammar and non-U.S. tax corpora can transfer its span and relation heads zero-shot to U.S. Internal Revenue Code text. The 100% execution figures belong to the symbolic layer and are reported separately.
