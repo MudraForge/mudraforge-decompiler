@@ -118,6 +118,121 @@ class TestCanonicalPipelineLowering(unittest.TestCase):
             self.assertIn("definition standard_rate_bps equals 600", content)
 
 
+class TestTypedInputProfile(unittest.TestCase):
+    """RFC-012 v2 profile: declared inputs, minor-unit casts, slab lowering."""
+
+    @staticmethod
+    def _typed_ast(steps, output=None, inputs=None):
+        default_output = {f"{steps[0]['assign']}": f"vars.{steps[0]['assign']}"}
+        return {
+            "sectionId": "TYPED",
+            "inputs": inputs if inputs is not None else {
+                "taxableIncome": {
+                    "type": "MONEY_MINOR",
+                    "currency": "USD",
+                    "scale": 100,
+                    "required": True,
+                }
+            },
+            "computation": {
+                "archetype": "DECLARATIVE_PIPELINE",
+                "pipeline": {
+                    "steps": steps,
+                    "output": output or default_output,
+                },
+            },
+        }
+
+    def test_declared_input_is_lowered_to_the_input_structure(self):
+        ast = self._typed_ast([
+            {"assign": "basePaisa", "expr": "inputs.taxableIncome"},
+        ])
+        code = emit_catala_code(ast)
+        self.assertIn("data taxable_income content money", code)
+        self.assertIn("definition base_paisa equals input_data.taxable_income", code)
+
+    def test_minor_unit_input_scenario_is_rendered_in_minor_units(self):
+        ast = self._typed_ast([
+            {"assign": "basePaisa", "expr": "inputs.taxableIncome"},
+        ])
+        code = emit_catala_code(
+            ast, scenarios=[{"name": "S", "facts": {"taxableIncome": 3000000}}]
+        )
+        self.assertIn("-- taxable_income: $30000.00", code)
+
+    def test_static_digit_string_to_paise_is_minor_units(self):
+        ast = self._typed_ast([
+            {"assign": "basePaisa", "expr": "inputs.taxableIncome"},
+            {"assign": "thresholdPaisa", "expr": {"op": "TO_PAISE", "value": "3690000"}},
+        ])
+        code = emit_catala_code(ast)
+        self.assertIn("$36900.00", code)
+        self.assertNotIn("$3690000.00", code)
+
+    def test_numeric_to_paise_keeps_the_legacy_major_unit_rendering(self):
+        ast = self._typed_ast([
+            {"assign": "basePaisa", "expr": "inputs.taxableIncome"},
+            {"assign": "thresholdPaisa", "expr": {"op": "TO_PAISE", "value": 3690000}},
+        ])
+        code = emit_catala_code(ast)
+        self.assertIn("$3690000.00", code)
+
+    def test_progressive_slabs_lower_to_a_piecewise_expression(self):
+        ast = self._typed_ast([
+            {"assign": "basePaisa", "expr": "inputs.taxableIncome"},
+            {
+                "assign": "rawSlabTaxPaisa",
+                "expr": {
+                    "op": "PROGRESSIVE_SLABS",
+                    "base": "vars.basePaisa",
+                    "slabs": [
+                        {
+                            "rateBps": 2800,
+                            "floor": {"op": "TO_PAISE", "value": "3690000"},
+                            "upTo": {"op": "TO_PAISE", "value": "8915000"},
+                            "baseTax": {"op": "TO_PAISE", "value": "553500"},
+                        }
+                    ],
+                },
+            },
+        ])
+        code = emit_catala_code(ast)
+        # The slab schedule is a bounded expression, never a flat multiple.
+        self.assertIn("let slab_0_previous_ceiling equals $0.00 in", code)
+        self.assertIn("let slab_0_effective_floor equals", code)
+        self.assertIn("let slab_0_bounded_base equals", code)
+        self.assertIn("$5535.00", code)
+        self.assertIn("$36900.00", code)
+        self.assertIn("$89150.00", code)
+        self.assertNotIn("$553500.00", code)
+
+    def test_undeclared_input_is_rejected(self):
+        ast = self._typed_ast([
+            {"assign": "basePaisa", "expr": "inputs.mysteryAmount"},
+        ])
+        with self.assertRaises(CatalaLoweringError) as ctx:
+            emit_catala_code(ast)
+        self.assertIn("ERR_UNDECLARED_INPUT", str(ctx.exception))
+
+    def test_mixing_input_namespaces_is_rejected(self):
+        ast = self._typed_ast([
+            {"assign": "basePaisa", "expr": "inputs.taxableIncome"},
+            {"assign": "legacyPaisa", "expr": "facts.primaryBasePaisa"},
+        ])
+        with self.assertRaises(CatalaLoweringError) as ctx:
+            emit_catala_code(ast)
+        self.assertIn("ERR_MIXED_INPUT_NAMESPACES", str(ctx.exception))
+
+    def test_unsupported_input_type_is_rejected(self):
+        ast = self._typed_ast(
+            [{"assign": "basePaisa", "expr": "inputs.taxableIncome"}],
+            inputs={"taxableIncome": {"type": "MONEY_FURLONGS"}},
+        )
+        with self.assertRaises(CatalaLoweringError) as ctx:
+            emit_catala_code(ast)
+        self.assertIn("ERR_UNSUPPORTED_INPUT_TYPE", str(ctx.exception))
+
+
 class TestFailClosedLowering(unittest.TestCase):
     def test_legacy_invented_schema_is_rejected(self):
         legacy_ast = {
@@ -162,6 +277,16 @@ class TestFailClosedLowering(unittest.TestCase):
         ast = FIXTURES["futa"]["ast"]
         with self.assertRaises(CatalaLoweringError):
             emit_catala_code(ast, scenarios=[{"name": "Incomplete", "facts": {"current_invoice": 1}}])
+
+    def test_null_expression_reports_the_step_and_the_path(self):
+        ast = json.loads(json.dumps(FIXTURES["futa"]["ast"]))
+        ast["computation"]["pipeline"]["steps"][0]["expr"]["test"] = None
+        with self.assertRaises(CatalaLoweringError) as ctx:
+            emit_catala_code(ast)
+        message = str(ctx.exception)
+        self.assertIn("ERR_NULL_EXPRESSION", message)
+        self.assertIn("currBasePaisa", message)
+        self.assertIn("expr.test", message)
 
 
 class TestFrenchTaxFixtures(unittest.TestCase):

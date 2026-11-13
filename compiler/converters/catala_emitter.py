@@ -209,6 +209,14 @@ class CatalaEmitter:
         self._vars: dict[str, str] = {}          # USVM var name -> catala type
         self._inputs: dict[str, str] = {}        # catala field name -> catala type
         self._output_types: dict[str, str] = {}  # catala output name -> catala type
+        # Typed-input signature (RFC-012 v2 profile). ``inputs.*`` references
+        # resolve against this map; ``_input_ids`` remembers the original id so
+        # scenario facts can be supplied under either the id or the field name.
+        self._input_specs: dict[str, dict[str, Any]] = ast.get("inputs") or {}
+        self._input_ids: dict[str, str] = {}
+        self._input_minor: set[str] = set()
+        self._saw_inputs = False
+        self._saw_facts = False
 
         # Type inference pass over steps, then output expressions.
         step_types = []
@@ -217,17 +225,33 @@ class CatalaEmitter:
             if not var:
                 raise CatalaLoweringError(f"Pipeline step without assign target: {step!r}")
             expr = step.get("expr")
+            null_path = self._find_null_path(expr)
+            if null_path is not None:
+                raise CatalaLoweringError(
+                    f"ERR_NULL_EXPRESSION: null expression in step {var!r} at {null_path}"
+                )
             typ = self._infer(expr)
             self._vars[var] = typ
             step_types.append((var, expr, typ))
         output_entries = []
         for key, expr in outputs.items():
+            null_path = self._find_null_path(expr)
+            if null_path is not None:
+                raise CatalaLoweringError(
+                    f"ERR_NULL_EXPRESSION: null expression in output {key!r} at {null_path}"
+                )
             name = _identifier(key)
             typ = self._infer(expr)
             if name in self._output_types and self._output_types[name] != typ:
                 raise CatalaLoweringError(f"Output name collision on {name!r}")
             self._output_types[name] = typ
             output_entries.append((name, expr, typ))
+        if self._saw_inputs and self._saw_facts:
+            raise CatalaLoweringError(
+                "ERR_MIXED_INPUT_NAMESPACES: a typed-input AST must reference only "
+                "inputs.*, never facts.*; the legacy fact registry is not consulted "
+                "for v2 ASTs"
+            )
         # A step variable re-exported under the same name is declared once, as
         # an output; Catala forbids duplicate variable declarations.
         internal_steps = []
@@ -351,22 +375,29 @@ class CatalaEmitter:
         lines.append(f"{self.indent}definition result.input_data equals {struct_name} {{")
         rendered_fields = []
         for field, typ in self._inputs.items():
-            if field not in facts:
+            source_key = self._input_ids.get(field)
+            if source_key is not None and source_key in facts:
+                value = facts[source_key]
+            elif field in facts:
+                value = facts[field]
+            else:
                 raise CatalaLoweringError(
                     f"Scenario {name!r} is missing fact {field!r} required by the pipeline"
                 )
             rendered_fields.append(
-                f"{self.indent}{self.indent}-- {field}: {self._render_fact_value(facts[field], typ)}"
+                f"{self.indent}{self.indent}-- {field}: "
+                f"{self._render_fact_value(value, typ, minor=field in self._input_minor)}"
             )
         lines.append("\n".join(rendered_fields))
         lines.append(f"{self.indent}}}")
         return lines
 
-    def _render_fact_value(self, value: Any, typ: str) -> str:
-        # Scenario facts are expressed in major currency units, matching the
-        # facts accepted by the USVM evaluation bridge.
+    def _render_fact_value(self, value: Any, typ: str, minor: bool = False) -> str:
+        # Legacy scenario facts are expressed in major currency units. A v2
+        # MONEY_MINOR input carries integer minor units instead, so it uses
+        # the minor-unit literal helper.
         if typ == "money":
-            return _money_literal(_number(value))
+            return _money_literal_minor(_number(value)) if minor else _money_literal(_number(value))
         if typ == "integer":
             frac = _number(value)
             if frac.denominator != 1:
@@ -388,9 +419,28 @@ class CatalaEmitter:
 
     # ── Type inference ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _find_null_path(node: Any, path: str = "expr") -> str | None:
+        """Returns the path of the first null expression, or None."""
+        if node is None:
+            return path
+        if isinstance(node, dict):
+            for key, value in node.items():
+                found = CatalaEmitter._find_null_path(value, f"{path}.{key}")
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                found = CatalaEmitter._find_null_path(value, f"{path}[{index}]")
+                if found is not None:
+                    return found
+        return None
+
     def _infer(self, node: Any) -> str:
         if node is None:
-            raise CatalaLoweringError("Null expression in pipeline")
+            raise CatalaLoweringError(
+                "ERR_NULL_EXPRESSION: null expression in pipeline"
+            )
         if isinstance(node, bool):
             return "boolean"
         if isinstance(node, (int, float)):
@@ -477,12 +527,30 @@ class CatalaEmitter:
                     f"ROUND policy {policy!r} has no faithful Catala lowering"
                 )
             return self._infer(node["value"])
+        if op == "PROGRESSIVE_SLABS":
+            return self._infer_progressive_slabs(node)
         raise CatalaLoweringError(f"Unsupported pipeline operator {op!r}")
 
     def _infer_reference(self, path: str) -> str:
         if re.fullmatch(r"-?\d+(?:\.\d+)?", path.strip()):
             return "integer" if "." not in path else "decimal"
+        if path.startswith("inputs."):
+            key = path[len("inputs."):]
+            if key not in self._input_specs:
+                raise CatalaLoweringError(
+                    f"ERR_UNDECLARED_INPUT: {key!r} is not declared in the inputs signature"
+                )
+            self._saw_inputs = True
+            spec = self._input_specs[key] or {}
+            typ = self._input_catala_type(key, spec)
+            field = _identifier(key)
+            self._inputs[field] = typ
+            self._input_ids[field] = key
+            if str(spec.get("type", "")).upper() == "MONEY_MINOR":
+                self._input_minor.add(field)
+            return typ
         if path.startswith("facts."):
+            self._saw_facts = True
             key = path[len("facts."):]
             if key not in _FACT_BINDINGS:
                 raise CatalaLoweringError(
@@ -519,6 +587,53 @@ class CatalaEmitter:
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", path.strip()):
             return "text"
         raise CatalaLoweringError(f"Unresolvable expression reference {path!r}")
+
+    def _input_catala_type(self, key: str, spec: dict[str, Any]) -> str:
+        """Maps a v2 input signature entry to a Catala type tag."""
+        raw = spec.get("type")
+        if not isinstance(raw, str) or not raw.strip():
+            raise CatalaLoweringError(
+                f"ERR_UNSUPPORTED_INPUT_TYPE: input {key!r} declares no type"
+            )
+        upper = raw.strip().upper()
+        if upper in ("MONEY_MINOR", "MONEY_MAJOR", "MONEY"):
+            return "money"
+        if upper in ("INTEGER", "INT"):
+            return "integer"
+        if upper in ("DECIMAL", "NUMBER"):
+            return "decimal"
+        if upper in ("BOOLEAN", "BOOL"):
+            return "boolean"
+        if upper.startswith("ENUM:"):
+            return "enum:" + raw.split(":", 1)[1]
+        raise CatalaLoweringError(
+            f"ERR_UNSUPPORTED_INPUT_TYPE: input {key!r} declares unsupported type {raw!r}"
+        )
+
+    def _infer_progressive_slabs(self, node: dict[str, Any]) -> str:
+        """Validates a PROGRESSIVE_SLABS node against the USVM contract."""
+        if self._infer(node["base"]) != "money":
+            raise CatalaLoweringError("PROGRESSIVE_SLABS base must be money")
+        slabs = node.get("slabs")
+        if not isinstance(slabs, list) or not slabs:
+            raise CatalaLoweringError("PROGRESSIVE_SLABS requires a non-empty slabs list")
+        for idx, slab in enumerate(slabs):
+            if not isinstance(slab, dict):
+                raise CatalaLoweringError(f"PROGRESSIVE_SLABS slab {idx} is not an object")
+            rate = slab.get("rateBps", slab.get("rate"))
+            if rate is None:
+                raise CatalaLoweringError(f"PROGRESSIVE_SLABS slab {idx} has no rateBps")
+            if self._infer(rate) != "integer":
+                raise CatalaLoweringError(
+                    f"PROGRESSIVE_SLABS slab {idx} rateBps must be an integer"
+                )
+            for key in ("floor", "upTo", "baseTax"):
+                child = slab.get(key)
+                if child is not None and self._infer(child) != "money":
+                    raise CatalaLoweringError(
+                        f"PROGRESSIVE_SLABS slab {idx} {key} must be money"
+                    )
+        return "money"
 
     @staticmethod
     def _unify_numeric(a: str, b: str, op: str) -> str:
@@ -621,6 +736,11 @@ class CatalaEmitter:
             operand = node.get("value", node.get("operand"))
             frac = self._static_number(operand)
             if frac is not None:
+                # RFC-012: a bare digit string is already minor units (the
+                # USVM `toPaise` contract); a JSON number is legacy major
+                # units. This is the single cast site for both profiles.
+                if self._is_minor_unit_literal(operand):
+                    return _money_literal_minor(frac)
                 return _money_literal(frac)
             # Dynamic money value: Catala money is stored in minor units
             # (cents/paise) internally, so a money operand is already
@@ -651,16 +771,114 @@ class CatalaEmitter:
             then_v = self._render(node.get("then", node.get("consequent")), typ)
             else_v = self._render(node.get("else", node.get("alternate")), typ)
             return f"(if {test} then {then_v} else {else_v})"
+        if op == "PROGRESSIVE_SLABS":
+            return self._render_progressive_slabs(node)
         if op == "ROUND":
             # COMMERCIAL_PAISA / NONE: Catala money arithmetic already quantizes
             # to the paisa with the same half-up rule as the USVM.
             return self._render(node["value"], typ)
         raise CatalaLoweringError(f"Unsupported pipeline operator {op!r}")
 
+    @classmethod
+    def _is_minor_unit_literal(cls, node: Any) -> bool:
+        """True when a static TO_PAISE operand uses the minor-unit convention."""
+        if isinstance(node, str):
+            return re.fullmatch(r"-?\d+", node.strip()) is not None
+        if isinstance(node, dict):
+            op = node.get("op") or node.get("operator")
+            if op == "LITERAL":
+                return cls._is_minor_unit_literal(node.get("value"))
+        return False
+
+    def _render_progressive_slabs(self, node: dict[str, Any]) -> str:
+        """Lowers PROGRESSIVE_SLABS to a nested-let Catala expression.
+
+        The expansion mirrors ``universal_evaluator.js`` (PROGRESSIVE_SLABS)
+        exactly: the effective floor is the greater of the slab floor and the
+        previous ceiling; the slab base is bounded by the slab ceiling; a
+        non-positive slab base contributes nothing (and in particular never
+        adds ``baseTax``); and an unbounded slab terminates the schedule.
+        """
+        slabs = node.get("slabs") or []
+        base = self._render(node["base"], "money")
+        zero = self._render_number(Fraction(0), "money")
+        bindings: list[tuple[str, str]] = []
+        tax_names: list[str] = []
+        previous_ceiling: str | None = None
+        for idx, slab in enumerate(slabs):
+            prefix = f"slab_{idx}"
+            ceiling_name = f"{prefix}_ceiling"
+            previous_name = f"{prefix}_previous_ceiling"
+            bindings.append(
+                (previous_name, zero if previous_ceiling is None else previous_ceiling)
+            )
+
+            floor = slab.get("floor")
+            if floor is not None:
+                floor_expr = self._render(floor, "money")
+                effective_floor = f"{prefix}_effective_floor"
+                bindings.append(
+                    (
+                        effective_floor,
+                        f"(if {floor_expr} > {previous_name} then {floor_expr} else {previous_name})",
+                    )
+                )
+            else:
+                effective_floor = previous_name
+
+            up_to = slab.get("upTo")
+            bindings.append(
+                (ceiling_name, self._render(up_to, "money") if up_to is not None else base)
+            )
+            bounded_base = f"{prefix}_bounded_base"
+            bindings.append(
+                (
+                    bounded_base,
+                    f"(if {base} < {ceiling_name} then {base} else {ceiling_name})",
+                )
+            )
+            slab_base = f"{prefix}_base"
+            bindings.append((slab_base, f"({bounded_base} - {effective_floor})"))
+
+            rate = slab.get("rateBps", slab.get("rate"))
+            rate_tax = f"({slab_base} * ({self._as_decimal(rate)} / 10000.0))"
+            base_tax = slab.get("baseTax")
+            contribution = (
+                f"({self._render(base_tax, 'money')} + {rate_tax})"
+                if base_tax is not None
+                else rate_tax
+            )
+            tax_name = f"{prefix}_tax"
+            bindings.append(
+                (tax_name, f"(if {slab_base} > {zero} then {contribution} else {zero})")
+            )
+            tax_names.append(tax_name)
+
+            if up_to is None:
+                # USVM breaks after the first unbounded slab.
+                break
+            previous_ceiling = ceiling_name
+
+        if not tax_names:
+            return zero
+        total = tax_names[0]
+        for name in tax_names[1:]:
+            total = f"({total} + {name})"
+        for name, expr in reversed(bindings):
+            total = f"(let {name} equals {expr} in {total})"
+        return total
+
     def _render_reference(self, path: str, typ: str) -> str:
         stripped = path.strip()
         if re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
             return self._render_number(Fraction(stripped), typ)
+        if path.startswith("inputs."):
+            key = path[len("inputs."):]
+            if key not in self._input_specs:
+                raise CatalaLoweringError(
+                    f"ERR_UNDECLARED_INPUT: {key!r} is not declared in the inputs signature"
+                )
+            return f"input_data.{_identifier(key)}"
         if path.startswith("facts."):
             field, _ = _FACT_BINDINGS[path[len("facts."):]]
             return f"input_data.{field}"

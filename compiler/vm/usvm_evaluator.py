@@ -358,6 +358,103 @@ class CanonicalUsvmEvaluator:
                 )
         return out
 
+    @staticmethod
+    def _encode_typed_input_value(input_id: str, type_tag: str, value):
+        """Encodes one v2 input into the representation the USVM expects.
+
+        ``MONEY_MINOR`` values are already integer minor units; the USVM
+        ``toPaise`` contract treats a bare digit string as minor units and a
+        JavaScript number as major units, so the bridge must inject a digit
+        string. ``INTEGER`` follows the same convention for the same reason.
+        """
+        tag = (type_tag or "").upper()
+        if tag in ("MONEY_MINOR", "INTEGER", "INT"):
+            if isinstance(value, bool):
+                raise RuntimeError(
+                    f"ERR_INPUT_TYPE: typed input {input_id!r} is {tag} but received a boolean"
+                )
+            if isinstance(value, int):
+                return str(value)
+            if isinstance(value, float):
+                if not value.is_integer():
+                    raise RuntimeError(
+                        f"ERR_INPUT_TYPE: typed input {input_id!r} is {tag} but received {value!r}"
+                    )
+                return str(int(value))
+            if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
+                return value.strip()
+            raise RuntimeError(
+                f"ERR_INPUT_TYPE: typed input {input_id!r} is {tag} but received {value!r}"
+            )
+        if tag in ("MONEY_MAJOR", "MONEY", "DECIMAL", "NUMBER", "BOOLEAN", "BOOL"):
+            return value
+        if tag.startswith("ENUM:"):
+            return value
+        raise RuntimeError(
+            f"ERR_UNSUPPORTED_INPUT_TYPE: typed input {input_id!r} declares {type_tag!r}"
+        )
+
+    @classmethod
+    def _rewrite_input_namespace(cls, node, declared: set[str]):
+        if isinstance(node, dict):
+            return {key: cls._rewrite_input_namespace(val, declared) for key, val in node.items()}
+        if isinstance(node, list):
+            return [cls._rewrite_input_namespace(val, declared) for val in node]
+        if isinstance(node, str) and node.startswith("inputs."):
+            key = node[len("inputs."):]
+            if key not in declared:
+                raise RuntimeError(
+                    f"ERR_UNDECLARED_INPUT: {key!r} is not declared in the inputs signature"
+                )
+            return f"facts.{key}"
+        return node
+
+    @staticmethod
+    def _walk_references(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                yield from CanonicalUsvmEvaluator._walk_references(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from CanonicalUsvmEvaluator._walk_references(value)
+        elif isinstance(node, str):
+            yield node
+
+    def _bind_typed_inputs_for_usvm(self, ast: dict, facts: dict) -> tuple[dict, dict]:
+        """Bridges a v2 ``inputs.*`` AST onto the legacy ``facts.*`` VM root.
+
+        The canonical USVM kernel resolves ``facts.``, ``rules.``, ``vars.``,
+        ``temporal.`` and ``output.`` only. A v2 AST declares its inputs in
+        the signature and references ``inputs.*``; this adapter rewrites those
+        references and injects the typed values. No alias probing occurs.
+        """
+        if not isinstance(ast, dict):
+            return ast, facts
+        inputs = ast.get("inputs")
+        if not isinstance(inputs, dict) or not inputs:
+            return ast, facts
+
+        computation = ast.get("computation") or {}
+        refs = list(self._walk_references(computation))
+        if any(ref.startswith("facts.") for ref in refs):
+            raise RuntimeError(
+                "ERR_MIXED_INPUT_NAMESPACES: a typed-input AST must not reference "
+                "facts.*; the legacy fact namespace is not consulted for v2 ASTs"
+            )
+
+        declared = set(inputs)
+        rewritten = self._rewrite_input_namespace(ast, declared)
+        normalized = dict(facts or {})
+        for input_id, spec in inputs.items():
+            if input_id not in normalized:
+                raise RuntimeError(
+                    f"ERR_MISSING_INPUT: typed input {input_id!r} was not supplied"
+                )
+            normalized[input_id] = self._encode_typed_input_value(
+                input_id, (spec or {}).get("type", ""), normalized[input_id]
+            )
+        return rewritten, normalized
+
     def _normalize_ast_for_js_bridge(self, ast: dict) -> dict:
         if not isinstance(ast, dict):
             return ast
@@ -740,6 +837,7 @@ class CanonicalUsvmEvaluator:
         return out
 
     def evaluate(self, ast: dict, facts: dict, options: dict | None = None) -> dict:
+        ast, facts = self._bind_typed_inputs_for_usvm(ast, facts)
         norm_ast = self._normalize_ast_for_js_bridge(ast)
         norm_facts = self._normalize_facts_for_js_bridge(facts)
         norm_facts = self._encode_scalar_facts_for_usvm(norm_facts)
@@ -772,8 +870,11 @@ class CanonicalUsvmEvaluator:
         for entry in items:
             raw_ast = entry.get("ast") or entry.get("ruleAst")
             raw_asts.append(raw_ast)
-            norm_ast = self._normalize_ast_for_js_bridge(raw_ast)
-            norm_facts = self._normalize_facts_for_js_bridge(entry.get("facts") or {})
+            bound_ast, bound_facts = self._bind_typed_inputs_for_usvm(
+                raw_ast, entry.get("facts") or {}
+            )
+            norm_ast = self._normalize_ast_for_js_bridge(bound_ast)
+            norm_facts = self._normalize_facts_for_js_bridge(bound_facts)
             norm_facts = self._encode_scalar_facts_for_usvm(norm_facts)
             item_opts = dict(entry.get("options") or default_opts)
             payload_items.append({
