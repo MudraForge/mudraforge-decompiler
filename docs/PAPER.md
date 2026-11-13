@@ -1,4 +1,4 @@
-# Neuro-Symbolic Statutory Decompilation: Zero-Shot 100% Generalization on SARA and DeonticBench
+# Neuro-Symbolic Statutory Decompilation: Compiler-Verified Execution and the Limits of Current Benchmarks
 
 **Date**: November 2026  
 **Author**: Mondeep Engti (MudraForge)  
@@ -12,7 +12,9 @@
 
 For over six years, statutory reasoning has remained an open challenge in artificial intelligence and legal informatics. Language models (including GPT-4 and Claude) fail at statutory arithmetic and rule hierarchies, peaking at **44.4% accuracy** on the hard quantitative split of the SARA (Statutory Reasoning Assessment) and DeonticBench datasets. Conversely, symbolic expert systems (such as Prolog) achieve 100% accuracy only when humans manually hand-code every rule and fact into formal logic predicates—a process that does not scale.
 
-This report documents a technical breakthrough: **MudraForge's Neuro-Symbolic Dual-Stream Decompiler** coupled with the **Canonical Universal Statutory Virtual Machine (USVM)** achieves **100% zero-shot accuracy** across the SARA and DeonticBench hard evaluation splits without ever having been trained on the U.S. Internal Revenue Code (IRC) or the SARA dataset. 
+This report documents a technical result: **MudraForge's Neuro-Symbolic Dual-Stream Decompiler** couples neural span and role extraction with a deterministic compiler that emits canonical ASTs for the **Canonical Universal Statutory Virtual Machine (USVM)**. The symbolic layer executes hand-authored canonical ASTs for the SARA and DeonticBench hard splits with 100% agreement, while the zero-shot neural path compiles 14 end-to-end test vectors at 100%. The model was never trained on the U.S. Internal Revenue Code (IRC) or the SARA dataset.
+
+> **Scope of the 100% figures.** The 30/30 and 35/35 results in Section 2 come from deterministic USVM execution of canonical ASTs hand-authored for the tested IRC sections (`benchmarks/test_sara_benchmark.py`, Track 2). They are not zero-shot neural scores on the hard split. The zero-shot neural path is measured separately by Track 1D on 14 test vectors. Baseline figures from other studies are quoted, not reproduced, and were collected under different harnesses. Read the 100% figures as evidence about the symbolic execution layer, not as model superiority or as a solved benchmark. The translation step from statute to correct formal rule remains the hard problem, and current benchmarks do not isolate it well enough.
 
 By strictly separating **linguistic decomposition** (the neural parser converting natural language law into a strongly-typed Declarative Abstract Syntax Tree) from **deterministic execution** (the USVM evaluating exact integer cents arithmetic and formal boolean logic in a V8 JavaScript isolate), the system eliminates the arithmetic hallucinations and context drifts that plague pure language models. Furthermore, the compiler generalizes zero-shot across non-tax regulatory domains, compiling airline tariff policies and state housing eviction statutes into valid ASTs while triggering fail-closed epistemic safety gates on qualitative immigration case law.
 
@@ -56,25 +58,27 @@ In computational law, the legislative process precisely mirrors this pipeline:
 
 The table below contrasts our results with the published baselines from the SARA literature (*Holzenberger et al., 2020*) and the DeonticBench evaluation (*Dou et al., 2026*):
 
-| Benchmark Track / Domain | Direct LLMs (GPT-4 / Claude CoT) | Hand-Coded Prolog Oracle | MudraForge Neuro-Symbolic (Dual-Stream + USVM) |
+| Benchmark Track / Domain | Direct LLMs (GPT-4 / Claude CoT) | Hand-Coded Prolog Oracle | MudraForge (layer noted) |
 | :--- | :--- | :--- | :--- |
-| **SARA Numeric (`hard.json`)** | **44.4%** | 100.0% *(manual human code)* | **100.0%** *(35/35 under official $\pm \$1$ tol)*<br>*(32/35 exact \$0 diff, 3 cases off by cents)* |
-| **SARA Binary (`hard.json`)** | ~73.0% | 100.0% *(manual human code)* | **100.0%** *(30/30 quantitative & kinship cases)* |
+| **SARA Numeric (`hard.json`)** | **44.4%** | 100.0% *(manual human code)* | **100.0%** *(35/35, hand-authored ASTs executed by USVM)*<br>*(32/35 exact \$0 diff, 3 cases off by cents)* |
+| **SARA Binary (`hard.json`)** | ~73.0% | 100.0% *(manual human code)* | **100.0%** *(30/30, hand-authored ASTs executed by USVM)* |
 | **SARA Track 1D (Zero-Shot E2E)**| ~28.0% | N/A *(no automated NLP parser)*| **100.0%** *(14/14 unguided neural compile $\to$ math)*|
-| **Airline Baggage AST Syntax** | ~61.0% | 100.0% *(manual human code)* | **100.0%** *(valid AST cliffs & compound slabs)* |
-| **Housing Law Deontic Modality**| ~65.0% | 100.0% *(manual human code)* | **100.0%** *(valid permission ASTs)* |
+| **Airline Baggage AST Syntax** | ~61.0% | 100.0% *(manual human code)* | **100.0%** *(hand-authored ASTs executed by USVM)* |
+| **Housing Law Deontic Modality**| ~65.0% | 100.0% *(manual human code)* | **100.0%** *(hand-authored ASTs executed by USVM)* |
 | **USCIS Immigration Safety** | Hallucinates verdicts | N/A *(manual human code)* | **100.0% Fail-Closed (`ABSTAIN`)** |
 
 ![Multi-Domain Benchmark Radar](images/multidomain_benchmark_radar.png)
 
-### 2.1 Comparative Breakdown vs. Published Frontier LLM Baselines (`DeonticBench` & `DAR`, 2026)
+### 2.1 Published Frontier Baselines: Context, Not an Independent Reproduction (`DeonticBench` & `DAR`, 2026)
+
+> **Provenance and scope.** All baseline figures in this section are quoted from the cited studies. None was independently reproduced by MudraForge, and the studies differ in prompting, tool access, and scoring, so the rows are not a controlled leaderboard. Our own entries are split by layer: Track 2 is deterministic USVM execution of hand-authored canonical ASTs, and Track 1D is the end-to-end neural path measured on 14 test vectors. Nothing in this section is a zero-shot neural score on `hard.json`.
 
 In the DeonticBench study (*Dou et al., arXiv:2604.04443, 2026*) and the follow-up *DAR* (*Deontic Reasoning with Agentic Harnesses*) evaluation, the authors specifically isolated the `hard.json` subset by omitting easier statutory tasks that standard models could solve:
 
 > *"The hard subset omits easier tasks identified by both model runs (GPT-5.2, o3, Claude Sonnet) and human review. The proportion of hard instances is 35 / 100 in SARA Numeric..."*  
 > — **Dou et al., Section 4**
 
-The table below contrasts our neuro-symbolic decompiler against published frontier models evaluated on that exact **`SARA-Numeric` (`hard.json`, 35 cases)** split:
+The table below places published frontier results next to ours on the same nominal split. Baseline entries are quoted, not re-run. The MudraForge entries are separated by layer:
 
 | Model / System | Parameter Scale | Reasoning Paradigm | Score on `SARA-Numeric (Hard)` | Citation / Source |
 | :--- | :---: | :--- | :---: | :--- |
@@ -85,9 +89,16 @@ The table below contrasts our neuro-symbolic decompiler against published fronti
 | **Best Model in `DeonticBench`**<br>*(GPT-5.2-Codex, o3, Qwen3-Coder-480B)* | Up to 480B | CoT / LLM $\rightarrow$ External SWI-Prolog | **44.4%** | *DeonticBench (arXiv:2604.04443)* |
 | **`Claude Sonnet 4.5` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **54.0%** | *DAR (Dou et al., 2026)* |
 | **`GPT-5.2` + `Terminus-KIRA`** | Frontier | Multi-Turn Agentic Harness | **60.0%** | *DAR (Dou et al., 2026)* |
-| **`MudraForge Decompiler` + `USVM`** | **5.8M** | **Dual-Stream AST Compiler $\rightarrow$ Deterministic USVM** | **100.0% (35 / 35)** | *This Report* |
+| **MudraForge USVM** (Track 2) | n/a (symbolic) | Deterministic execution of hand-authored canonical ASTs | **100.0% (35 / 35)** | *This Report, Track 2* |
+| **MudraForge Dual-Stream** (Track 1D) | 5.8M | Neural compilation $\rightarrow$ USVM, end-to-end | **14 / 14 test vectors** (not the hard split) | *This Report, Track 1D* |
 
-On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's [*PercepLog-0* study](https://aclanthology.org/2026.findings-emnlp.2099/) (Kordjamshidi et al., EMNLP 2026) achieved ~90% accuracy only when hand-crafted formal logic rules were pre-supplied by human experts. In contrast, `mudraforge-decompiler` achieved **30 / 30 (100.0%)** zero-shot by compiling directly from raw natural language statutory text without human-in-the-loop formalization.
+On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's [*PercepLog-0* study](https://aclanthology.org/2026.findings-emnlp.2099/) (Kordjamshidi et al., EMNLP 2026) reports ~90% accuracy when ground-truth formal rules are supplied by human experts. That is the closest published setting to our Track 2 result (30 / 30 with hand-authored canonical ASTs), not to our zero-shot neural track. The two are not directly comparable: different splits, harnesses, and definitions of a correct answer. The comparison does not establish model superiority; it shows that once a correct formalization exists, symbolic execution is no longer the bottleneck.
+
+**What this comparison does and does not show**
+
+- It does **not** show that the neural decompiler beats frontier LLMs on `hard.json`. The 35 / 35 and 30 / 30 rows execute hand-authored ASTs.
+- It **does** show that the USVM executes correct formalizations of the tested IRC sections consistently, and that the hard split remains far from saturated for direct LLM reasoning.
+- The open problem is the translation step: statute to correct formal rule. That is the step that needs harder benchmarks, not another leaderboard of execution accuracy after a human has done the hard part.
 
 ![Frontier LLM Benchmark Comparison](images/frontier_llm_benchmark_comparison.svg)
 
@@ -106,9 +117,11 @@ On **`SARA-Binary (Hard)` (30 cases)**, Bloomberg AI's [*PercepLog-0* study](htt
    - **14/14 (100.0%) PASS** on `dual_stream_sup.pt`! Raw natural language clauses compiled directly into declarative ASTs and executed against taxpayer facts with zero manual intervention.
 5. **Track 2 Binary (`sara_binary/hard.json`)**:
    - **30/30 (100.0%) PASS** across progressive bracket eligibility, qualifying child/relative dependency, and marital status determination.
+   - Scope: hand-authored canonical ASTs executed deterministically by USVM. This is a symbolic-execution result, not a neural score.
 6. **Track 2 Numeric (`sara_numeric/hard.json`)**:
    - **35/35 (100.0%) PASS** under the official DeonticBench $\pm \$1$ tolerance standard.
    - **32/35 (91.4%) PASS** on exact dollar-for-dollar match.
+   - Scope: hand-authored canonical ASTs executed deterministically by USVM. This is a symbolic-execution result, not a neural score.
 
 ### 2.3 The Generalization Paradox: Single-Stream Monolithic vs. Dual-Stream Disentangled
 
@@ -118,7 +131,7 @@ A critical empirical discovery emerged during our training curriculum:
 - **The In-Distribution Trap**: Our initial monolithic baseline (`mudra_decompiler_0`, 5.75M parameters) achieved exceptional scores on in-distribution synthetic benchmarks: **78.26% Clause Exact Match**, **96.04% Role Macro-F1**, and **0.7081 validation loss**. However, when tested on unseen U.S. Federal Tax (SARA) and out-of-distribution regulatory statutes, its accuracy collapsed to **28.0%**.
 - **Root Cause (Lexical-Deontic Entanglement)**: In a monolithic architecture, the transformer's multi-head attention entangles domain-specific entity nouns (*"buyer"*, *"turnover"*, *"resident"*, *"pan"*) with formal deontic operators (*"shall"*, *"exceeding"*, *"proviso"*). The network learns spurious surface correlations, causing token representation collapse when encountering unseen legal domains.
 - **The Disentangled Solution**: In the Dual-Stream architecture, Model B (`DomainSensor`, 2.76M params) isolates raw lexical vocabulary and preamble chatter, passing only detached 9-dimensional probability distributions to Model A (`LogicReasoner`, 2.99M params). Model A operates strictly on a closed 48-token logic vocabulary and morphological suffix projections.
-- **The Generalization Payoff**: Although in-distribution synthetic exact match dropped slightly (75.49% vs 78.26%) due to the removal of lexical memorization shortcuts, out-of-distribution generalization surged to **100.0% zero-shot across SARA and DeonticBench**.
+- **The Generalization Payoff**: Although in-distribution synthetic exact match dropped slightly (75.49% vs 78.26%) due to the removal of lexical memorization shortcuts, the symbolic layer then executed hand-authored ASTs for SARA and DeonticBench at **100%**. The neural model's own zero-shot contribution is measured separately by Track 1D (14/14 test vectors), not by the Track 2 execution figures.
 
 ### 2.4 Empirical Discoveries & Training Run Insights
 
@@ -129,7 +142,7 @@ Beyond aggregate metrics, our progressive training iterations (across 22 empiric
 
 - **The Empirical Experiment**: To determine whether the neural parser was compiling abstract syntax or merely memorizing lexical domain cues, we introduced stochastic Domain Noun Dropout (masking legal nouns such as *"buyer"*, *"turnover"*, *"goods"*, *"PAN"* with `[MASK]`) during inference at rates from 0% to 75%.
 - **The Single-Stream Collapse**: The monolithic baseline (`mudra_decompiler_0`) suffered a catastrophic accuracy collapse, plummeting from 78.3% EM at 0% dropout to 13.9% EM at 75% dropout. When legal keywords were masked, the model could no longer identify obligations, proving that it relied on domain nouns as spurious predictive crutches.
-- **The Dual-Stream Invariance**: In contrast, the Dual-Stream model (`dual_stream_sup.pt`) remained structurally invariant, dropping only 1.3% (from 75.5% to 74.2% EM) across the same 75% dropout sweep. Because Model A (`LogicReasoner`) receives only deontic modalities, syntactic arcs, and closed-class grammatical tokens, its parsing operates independently of specific domain vocabulary. This structural invariance is the direct reason why the model achieved 100% zero-shot accuracy on unseen U.S. Federal Tax statutes.
+- **The Dual-Stream Invariance**: In contrast, the Dual-Stream model (`dual_stream_sup.pt`) remained structurally invariant, dropping only 1.3% (from 75.5% to 74.2% EM) across the same 75% dropout sweep. Because Model A (`LogicReasoner`) receives only deontic modalities, syntactic arcs, and closed-class grammatical tokens, its parsing operates independently of specific domain vocabulary. This structural invariance is the reason the span and relation heads remained stable on unseen U.S. Federal Tax text. It does not by itself explain the 100% Track 2 execution figures, which come from hand-authored ASTs.
 
 #### Discovery 2: The Label Smoothing Paradox in Discrete Legal Logic
 ![Label Smoothing Paradox](images/label_smoothing_paradox_insight.png)
@@ -256,7 +269,7 @@ To evaluate out-of-domain transfer, we tested the production neural compiler zer
 
 ![Syntactic-Semantic Span Graph](images/ast_span_dependency_graph.png)
 
-Our neural model was trained entirely on statutory provisions from Indian Direct Tax, Corporate Income Tax, GST, and synthetic legal grammar. It never saw U.S. tax code. It generalized zero-shot to U.S. Federal Tax because statutory drafting follows universal common-law syntactic templates:
+Our neural model was trained entirely on statutory provisions from Indian Direct Tax, Corporate Income Tax, GST, and synthetic legal grammar. It never saw U.S. tax code. Its span and relation heads transferred zero-shot to U.S. Federal Tax on the neural tracks, consistent with statutory drafting following universal common-law syntactic templates:
 - **Progressive Slab Template**: *"If X is over A but not over B, the tax is R% of excess plus C."* (Identical in US IRC § 1 and Indian Section 115BAC).
 - **Comparative Combinators**: *"The amount shall be the lesser of (A) or (B)."* (Identical in US IRC § 3301 and Indian Section 194Q / 80C).
 
@@ -280,7 +293,7 @@ The DeonticBench authors achieved 100% using manual Prolog files executed via an
 
 ## 6. Reproducibility & Verification Protocol
 
-The full benchmark pipeline is deterministic and reproducible via the standalone repository:
+The full benchmark pipeline is deterministic and reproducible via the standalone repository. Baseline figures quoted from other studies in Section 2.1 are not reproduced here:
 
 ```bash
 # 1. Run unit and invariant integration tests
@@ -294,9 +307,9 @@ python benchmarks/test_sara_benchmark.py
 ```
 
 ### Verification Checklist Baseline
-- [x] SARA Numeric Hard: **35/35 (100.0%)** under official DeonticBench $\pm \$1$ tolerance (32/35 exact $0 diff).
-- [x] SARA Binary Hard: **30/30 (100.0%)** pass rate.
-- [x] SARA Track 1D E2E: **14/14 (100.0%)** unguided neural compilation pass rate.
+- [x] SARA Numeric Hard (Track 2, hand-authored ASTs executed by USVM): **35/35 (100.0%)** under official DeonticBench $\pm \$1$ tolerance (32/35 exact $0 diff).
+- [x] SARA Binary Hard (Track 2, hand-authored ASTs executed by USVM): **30/30 (100.0%)** pass rate.
+- [x] SARA Track 1D E2E (neural compilation, 14 vectors): **14/14 (100.0%)** pass rate.
 - [x] Cross-domain generalization: 100% on airline baggage & state housing; fail-closed on USCIS immigration.
 - [x] Zero hardcoded tokens, labels, or test shortcuts in training or inference.
 - [x] Strict controllership invariant enforced: `isAuthorizedToDisburse: false`.
@@ -331,16 +344,16 @@ A central architectural principle of this system is that **neural inference and 
 2. **Relational Arc Resolution**: A biaffine span head predicts dependency arcs connecting arguments (`REL_TAX_BASE_OF`, `REL_APPLIES_TO`, `REL_TEMPORAL_WINDOW`, `REL_PROVISO_TO_EXCEPTION`).
 3. **AST Synthesis**: The parser aggregates these extracted parameters into a strongly-typed **Declarative Abstract Syntax Tree (AST)** conforming to the Open Knowledge Format (OKF v0.2). This AST explicitly records threshold modes (`"CLIFF"` vs. `"EXCESS"`), rate fractions, base formulas, and exception carveout gates.
 4. **Deterministic USVM Execution**: Only after the AST is completely validated does the **Universal Statutory Virtual Machine (USVM)** in `@mudraforge/statutory` receive it. The USVM executes the AST over the taxpayer's factual profile using exact 64-bit integer BigInt rational math, returning an auditable verdict while enforcing `isAuthorizedToDisburse: false`.
-5. **Target Code Lowering & Formal Catala Bridge**: Beyond direct in-memory USVM execution, the decompiler incorporates an automated code emitter (`compiler.converters.catala_emitter`) that lowers synthesized ASTs into literate Catala source code (`.catala_en`). This establishes the first automated bridge connecting natural language legislation with Inria's certified Catala toolchain, enabling formal verification, interactive theorem proving, and interoperability across European and U.S. computational law systems.
+5. **Target Code Lowering & Formal Catala Bridge**: Beyond direct in-memory USVM execution, the decompiler incorporates an automated lowerer (`compiler.converters.catala_emitter`) that turns canonical ASTs into literate Catala source code (`.catala_en`). This is an automated bridge between the canonical USVM AST and Inria's Catala toolchain, with compiler typechecking and cross-engine equality tests currently covering five French 2026 rules. It does not yet cover general Catala constructs such as defeasible rules, multi-scope composition, collections, or date arithmetic.
 
 ### 7.3 Novel Contributions of MudraForge (`mudraforge-decompiler`)
 We claim the following specific contributions:
 1. **The Dual-Stream Transformer Architecture**: A compact 5.8-million-parameter encoder architecture (`DomainSensor` || `LogicReasoner`) fusing lexical semantic roles with deontic operator embeddings, achieving high parameter efficiency without large foundation model footprint.
-2. **Zero-Shot Neural-to-AST Compilation**: An automated pipeline that translates raw natural language statutory prose directly into strongly-typed Declarative Abstract Syntax Trees (ASTs) conforming to the Open Knowledge Format (OKF v0.2), eliminating the need for human experts to manually hand-author formal Prolog or Datalog rules.
+2. **Zero-Shot Neural-to-AST Compilation**: An automated pipeline that translates raw natural language statutory prose into strongly-typed Declarative ASTs (OKF v0.2). Neural span and role annotation is separated from a deterministic schema lowerer; the pipeline reduces, but does not eliminate, the work of formalizing statutes.
 3. **The Universal Statutory Virtual Machine (USVM)**: A sandboxed, domain-agnostic virtual machine operating in a JavaScript isolate with 43 universal ALU opcodes, bounded first-order collection quantifiers, 64-bit integer BigInt rational math (zero IEEE-754 drift), and an immutable non-disbursement invariant (`isAuthorizedToDisburse: false`).
-4. **Zero-Shot Cross-Jurisdiction Generalization**: Demonstrating for the first time that a neuro-symbolic decompiler trained exclusively on statutory drafting grammar and non-U.S. tax corpora can generalize zero-shot to 100% precision on the U.S. Internal Revenue Code.
+4. **Zero-Shot Cross-Jurisdiction Transfer**: Demonstrating that a neuro-symbolic decompiler trained exclusively on statutory drafting grammar and non-U.S. tax corpora can transfer its span and relation heads zero-shot to U.S. Internal Revenue Code text. The 100% execution figures belong to the symbolic layer and are reported separately.
 5. **Cent-Level Forensic Resolution**: Resolving the long-standing discrepancy on the 3 out-of-bounds cases in SARA numeric by mathematically demonstrating the ground-truth integer truncation artifact ($0.74, $0.32, $0.94).
-6. **Automated Catala Code Generation**: The first automated compiler translating natural language statutes into literate Catala source code (`.catala_en`), replacing the labor-intensive pair programming traditionally required between lawyers and software engineers.
+6. **Automated Catala Code Generation**: An automated lowering from canonical ASTs to literate Catala source (`.catala_en`), compiler-verified against USVM on five French 2026 rules. This is a verified narrow slice, not a general natural-language-to-Catala compiler.
 
 ---
 
@@ -361,4 +374,4 @@ We claim the following specific contributions:
 
 ## 9. Conclusion
 
-The results achieved across SARA and DeonticBench demonstrate that **statutory reasoning cannot be solved by scaling autoregressive language models alone**. By treating legal text as code to be compiled into an intermediate declarative AST and executed on a deterministic virtual machine, MudraForge resolves the 6-year bottleneck in computational law, delivering 100% accuracy, zero-shot cross-statute transfer, and enterprise audit defensibility.
+The results achieved across SARA and DeonticBench demonstrate that **statutory reasoning cannot be solved by scaling autoregressive language models alone**. By treating legal text as code to be compiled into an intermediate declarative AST and executed on a deterministic virtual machine, MudraForge makes the symbolic layer exact and auditable. What the current results do not show is that the translation layer is solved. The 100% execution figures come from hand-authored ASTs, and the neural path is measured end-to-end on 14 vectors. That gap is the honest state of the art here, and it is the reason the field needs harder, translation-focused benchmarks rather than another saturated execution leaderboard.
