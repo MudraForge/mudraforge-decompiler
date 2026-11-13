@@ -2532,6 +2532,7 @@ def synthesize_usvm_ast(
     clause_modalities: list[dict] = None,
     rule_domain: str = "AUTO",
     typed_inputs: bool = False,
+    clause_scopes: bool = False,
 ) -> dict:
     """
     Canonical stateless Unified 6-Tuple USVM AST synthesizer used identically
@@ -2540,6 +2541,11 @@ def synthesize_usvm_ast(
     ``typed_inputs`` opts into the RFC-012 v2 profile: a bracket clause emits
     one declared ``inputs.*`` value, with no alias-probe chain and no null test.
     The legacy profile remains the default.
+
+    ``clause_scopes`` opts into the RFC-012 Step 2 profile: a multi-clause
+    statute is compiled into one clause-scoped pipeline whose values carry SSA
+    names and whose cross-clause references are linked by the def-use linker.
+    A single-clause statute keeps the current computation unchanged.
     """
     meta = source_metadata or {}
     text_low = (text or "").lower()
@@ -3287,6 +3293,36 @@ def synthesize_usvm_ast(
         return out
 
     # ── Pipeline Archetype 0: Composed Multi-Node Arithmetic / Collection Aggregate DAG ──
+    if clause_scopes and len({int(s.get("clauseIdx", 0)) for s in indexed_spans}) > 1:
+        # RFC-012 Step 2: per-clause scopes with def-use symbol linking. The
+        # linker owns this path, so the archetype chain below is skipped.
+        from compiler.neural.clause_linker import (
+            ClauseLinkingError,
+            build_clause_scoped_computation,
+        )
+        clause_ranges = [
+            (int(cm["charRange"][0]), int(cm["charRange"][1]))
+            for cm in (clause_modalities or [])
+            if cm.get("charRange")
+        ]
+        scoped_comp, scoped_inputs, scoped_diagnostics = build_clause_scoped_computation(
+            text=text,
+            spans=indexed_spans,
+            edges=resolved_edges,
+            clause_ranges=clause_ranges or None,
+            currency_code=currency_code,
+        )
+        link_errors = [d for d in scoped_diagnostics if d.severity == "error"]
+        if link_errors:
+            raise ClauseLinkingError(link_errors[0].code, scoped_diagnostics)
+        if scoped_comp is not None:
+            computation = scoped_comp
+            typed_inputs_block = scoped_inputs
+            comp_block["expressionType"] = "CLAUSE_SCOPED_PIPELINE"
+            comp_block["formulaDescription"] = (
+                "Per-clause scoped pipeline with def-use linked values"
+            )
+
     composed_comp, composed_desc, composed_etype = compile_composed_arithmetic_pipeline(
         text=text,
         indexed_spans=indexed_spans,
@@ -3306,7 +3342,7 @@ def synthesize_usvm_ast(
         cliff_threshold=cliff_threshold,
         rate_bps=rate_bps,
     )
-    if composed_comp is not None:
+    if composed_comp is not None and computation is None:
         computation = composed_comp
         comp_block["expressionType"] = composed_etype or "DECLARATIVE_PIPELINE"
         comp_block["formulaDescription"] = composed_desc or "Composed declarative arithmetic pipeline"

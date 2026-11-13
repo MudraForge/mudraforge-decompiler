@@ -4,7 +4,8 @@
 - **Date:** 2026-11-14
 - **Depends on:** RFC-011 typed-input semantics. RFC-011 is a separate draft and
   is not part of this change. The field name and gate for that contract are
-  deliberately left open (OQ-1). This RFC does not assign an OKF version.
+  fixed by this RFC (OQ-1, closed: `inputs`, gated by `typed_inputs`). This
+  RFC does not assign an OKF version.
 - **Does not change:** the OKF version (remains 0.2), USVM opcodes, checkpoints,
   or the behavior of legacy ASTs.
 - **Normative language:** MUST, MUST NOT, SHOULD, MAY (RFC 2119).
@@ -235,9 +236,8 @@ Arithmetic for S4: `100 * 2800 / 10000 = 28`; `553,500 + 28 = 553,528`.
 
 ### 3.4 Required AST shape
 
-The exact field name for the input map is OQ-1. The examples below use `inputs`
-as a placeholder; the gate is the presence of a typed, declared input, not the
-spelling.
+The input map is named `inputs` and the opt-in gate is the `typed_inputs`
+flag (OQ-1, closed). The gate is the presence of a typed, declared input.
 
 The enclosing OKF bundle, if any, continues to declare `okf_version: "0.2"`.
 The JSON AST is an internal executable profile, not an OKF schema; its opt-in
@@ -518,7 +518,6 @@ AST.
 - An exported output is `clause_<i>.<semanticName>` and refers to the highest
   version.
 - A substitution (`$18,000 shall be substituted for $4,400`) emits:
-
   ```text
   clause_1.inWindow = AND(GT(year, 2017), LT(year, 2026))
   clause_1.standardDeductionPaisa_v2 =
@@ -532,6 +531,23 @@ AST.
   resolved by Step 4.
 - Clause order MUST NOT be inferred from span order. It comes from `clauseIdx`
   or character ranges.
+
+### 4.6.1 Encoding rules (as built)
+
+The dotted form above is the *logical* symbol id. The AST MUST encode it so
+that both engines can resolve it:
+
+- The USVM resolves `vars.<name>` through a dotted property lookup, so a dot
+  inside a variable name would be read as a path segment. The AST therefore
+  writes the same identity with an underscore separator:
+  `clause_<i>_<semanticName>_v<k>`. The dotted id stays the logical symbol
+  id, recorded in the clause scopes.
+- The exported output key is the semantic name of the highest version
+  (`standardDeductionPaisa`), and its value is the SSA reference of that
+  version. A statutory override replaces the export of the term it overrides.
+- The clause-scoped profile is opt-in through `clause_scopes=True` on
+  `synthesize_usvm_ast` and `decompile_text`. A single-clause statute keeps
+  the current computation unchanged.
 
 ### 4.7 Acceptance tests
 
@@ -771,9 +787,10 @@ Rules:
 
 ## 10. Open questions
 
-- **OQ-1. Typed-input field name and gate.** The examples use `inputs`, but the
-  field name and opt-in gate are not decided. This is an internal contract, not
-  an OKF version. OKF remains 0.2.
+- **OQ-1. Typed-input field name and gate. CLOSED.** The field name is
+  `inputs` and the opt-in gate is the `typed_inputs` flag (Step 1) and the
+  `clause_scopes` flag (Step 2). This is an internal compiler contract, not an
+  OKF version. OKF remains 0.2.
 - **OQ-2. `TO_PAISE` in v2.** Step 1 keeps it as a typed cast for compatibility.
   A later RFC may replace it with a dedicated minor-money literal.
 - **OQ-3. Preemption priority.** Whether priority is textual
