@@ -114,7 +114,7 @@ def print_pretty_result(res: dict, eval_res: dict = None):
         print("-" * 80)
         comp = ast.get("computation", {})
         print(f"  Archetype: {comp.get('archetype')}")
-        steps = comp.get("steps", [])
+        steps = comp.get("steps") or (comp.get("pipeline") or {}).get("steps", [])
         print(f"  Steps:     {len(steps)} pipeline operations")
         for idx, step in enumerate(steps[:5]):
             print(f"    Step {idx + 1}: assign [{step.get('assign')}] = {json.dumps(step.get('expr'))}")

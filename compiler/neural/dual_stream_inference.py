@@ -131,7 +131,13 @@ class DualStreamDecompilerInference:
         path.reverse()
         return path
 
-    def decompile_text(self, text: str, source_metadata: dict = None, rule_domain: str = "AUTO") -> dict:
+    def decompile_text(
+        self,
+        text: str,
+        source_metadata: dict = None,
+        rule_domain: str = "AUTO",
+        typed_inputs: bool = False,
+    ) -> dict:
         req_domain = str(rule_domain or "AUTO").strip().upper()
         if req_domain not in ALLOWED_RULE_DOMAINS:
             raise ValueError(f"Unsupported rule_domain '{rule_domain}'")
@@ -339,6 +345,7 @@ class DualStreamDecompilerInference:
             modality_conf=modality_conf,
             clause_modalities=clause_modalities,
             rule_domain=req_domain,
+            typed_inputs=typed_inputs,
         )
 
         fn_words = {"in", "of", "to", "for", "by", "on", "at", "from", "the", "a", "an", "and", "or", "be", "that", "with", "as", "whether", "has", "been"}

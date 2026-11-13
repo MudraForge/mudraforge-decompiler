@@ -687,6 +687,46 @@ def build_operand_fact_keys(span_text: str, currency_code: str | None) -> list[s
     return dedup[:5]
 
 
+_V2_CLAUSE_LEAD_RE = re.compile(
+    r"^\s*(?:if|where|when|whenever|in\s+the\s+case\s+of|in\s+case|provided\s+that|"
+    r"for\s+the\s+purposes\s+of\s+(?:this\s+)?(?:section|paragraph|subparagraph|clause|subsection))\b\s*",
+    re.IGNORECASE,
+)
+
+_V2_COPULA_TAIL_RE = re.compile(
+    r"\s+(?:is|are|was|were|equals?|exceeds?|amounts?\s+to|is\s+equal\s+to|"
+    r"does\s+not\s+exceed|is\s+over|is\s+above|is\s+below|is\s+under)\s*$",
+    re.IGNORECASE,
+)
+
+
+def resolve_v2_input_id(text: str, threshold_char_start: int, currency_code: str | None) -> str:
+    """Derives the single typed input id for a v2 bracket clause.
+
+    Step 1 only needs a deterministic single-clause resolver: the subject of
+    the threshold comparison is the noun phrase immediately before the first
+    bracket bound. It never probes aliases; an underivable subject fails closed.
+    """
+    prefix = (text or "")[: max(0, int(threshold_char_start))]
+    # Restrict to the current sentence/clause before stripping connectors.
+    prefix = re.split(r"[.;]\s+", prefix)[-1]
+    previous = None
+    while previous != prefix:
+        previous = prefix
+        prefix = _V2_CLAUSE_LEAD_RE.sub("", prefix, count=1)
+    previous = None
+    while previous != prefix:
+        previous = prefix
+        prefix = _V2_COPULA_TAIL_RE.sub("", prefix, count=1)
+    phrase = prefix.strip(" \t\n,;:")
+    keys = build_operand_fact_keys(phrase, currency_code)
+    if not keys:
+        raise ValueError(
+            f"ERR_UNRESOLVED_INPUT: cannot derive a typed input from {phrase!r}"
+        )
+    return keys[0]
+
+
 def finite_number_test(fpath: str) -> dict:
     return {
         "op": "AND",
@@ -2491,10 +2531,15 @@ def synthesize_usvm_ast(
     modality_conf: float = 0.9,
     clause_modalities: list[dict] = None,
     rule_domain: str = "AUTO",
+    typed_inputs: bool = False,
 ) -> dict:
     """
     Canonical stateless Unified 6-Tuple USVM AST synthesizer used identically
     by production inference, CLI verification, and GRPO RL reward evaluation.
+
+    ``typed_inputs`` opts into the RFC-012 v2 profile: a bracket clause emits
+    one declared ``inputs.*`` value, with no alias-probe chain and no null test.
+    The legacy profile remains the default.
     """
     meta = source_metadata or {}
     text_low = (text or "").lower()
@@ -3211,6 +3256,7 @@ def synthesize_usvm_ast(
             })
 
     computation = None
+    typed_inputs_block = None
     deontic_gate = None
     node_type = root_condition.get("nodeType")
     expr_type = comp_block.get("expressionType")
@@ -3337,54 +3383,123 @@ def synthesize_usvm_ast(
                     slab_obj["baseTax"] = {"op": "TO_PAISE", "value": str(bt_m)}
                 slabs_ast.append(slab_obj)
 
-            steps = []
-            primary_keys = build_operand_fact_keys(operand_items[0]["span"], currency_code) if operand_items else ["taxableIncome", "taxableIncomeUsd"]
-            base_ref = emit_operand_resolution_steps(steps, "primaryBasePaisa", primary_keys, fallback_to_primary=True)
-            steps.append({
-                "assign": "rawSlabTaxPaisa",
-                "expr": {"op": "PROGRESSIVE_SLABS", "base": base_ref, "slabs": slabs_ast}
-            })
-            if len(slabs_ast) == 1 and raw_slabs[0][0] > 0 and raw_slabs[0][1] is not None:
-                steps.append({
-                    "assign": "inBracketRange",
-                    "expr": {
-                        "op": "AND",
-                        "left": {"op": "GT", "left": base_ref, "right": {"op": "TO_PAISE", "value": str(raw_slabs[0][0])}},
-                        "right": {"op": "LTE", "left": base_ref, "right": {"op": "TO_PAISE", "value": str(raw_slabs[0][1])}}
-                    }
-                })
-                steps.append({
-                    "assign": "taxAmountPaisa",
-                    "expr": {
-                        "op": "CONDITIONAL",
-                        "test": "vars.inBracketRange",
-                        "then": "vars.rawSlabTaxPaisa",
-                        "else": {"op": "TO_PAISE", "value": "0"}
-                    }
-                })
-                is_app_ref = "vars.inBracketRange"
-            else:
-                steps.append({"assign": "taxAmountPaisa", "expr": "vars.rawSlabTaxPaisa"})
-                steps.append({"assign": "isApplicable", "expr": {"op": "GT", "left": "vars.taxAmountPaisa", "right": {"op": "TO_PAISE", "value": "0"}}})
-                is_app_ref = "vars.isApplicable"
+            single_bracket = (
+                len(slabs_ast) == 1
+                and raw_slabs[0][0] > 0
+                and raw_slabs[0][1] is not None
+            )
 
-            comp_block["expressionType"] = "PROGRESSIVE_SLAB"
-            comp_block["formulaDescription"] = "Piecewise progressive tax schedule across bracket slabs"
-            computation = {
-                "archetype": "DECLARATIVE_PIPELINE",
-                "thresholdPaisa": str(raw_slabs[0][0]),
-                "standardRateBps": raw_slabs[-1][2],
-                "pipeline": {
-                    "steps": steps,
-                    "output": {
+            if typed_inputs:
+                # RFC-012 v2: one declared input, no alias probing, no null test.
+                endpoint_indices = {
+                    be["sourceIdx"] for be in active_bracket_edges
+                } | {be["targetIdx"] for be in active_bracket_edges}
+                lowest_idx = min(
+                    (i for i in endpoint_indices if parse_minor_units(span_by_idx[i]["span"]) is not None),
+                    key=lambda i: parse_minor_units(span_by_idx[i]["span"]),
+                )
+                threshold_cr = span_by_idx[lowest_idx].get("charRange") or [0, 0]
+                input_id = resolve_v2_input_id(text, threshold_cr[0], currency_code)
+                steps = [{"assign": "basePaisa", "expr": f"inputs.{input_id}"}]
+                base_ref = "vars.basePaisa"
+                steps.append({
+                    "assign": "rawSlabTaxPaisa",
+                    "expr": {"op": "PROGRESSIVE_SLABS", "base": base_ref, "slabs": slabs_ast}
+                })
+                if single_bracket:
+                    steps.append({
+                        "assign": "inBracketRange",
+                        "expr": {
+                            "op": "AND",
+                            "left": {"op": "GT", "left": base_ref, "right": {"op": "TO_PAISE", "value": str(raw_slabs[0][0])}},
+                            "right": {"op": "LTE", "left": base_ref, "right": {"op": "TO_PAISE", "value": str(raw_slabs[0][1])}}
+                        }
+                    })
+                    steps.append({
+                        "assign": "taxAmountPaisa",
+                        "expr": {
+                            "op": "CONDITIONAL",
+                            "test": "vars.inBracketRange",
+                            "then": "vars.rawSlabTaxPaisa",
+                            "else": {"op": "TO_PAISE", "value": "0"}
+                        }
+                    })
+                    output_map = {
                         "taxAmountPaisa": "vars.taxAmountPaisa",
-                        "tdsAmountPaisa": "vars.taxAmountPaisa",
-                        "calculatedTaxInr": {"op": "FROM_PAISE", "value": "vars.taxAmountPaisa"},
                         "calculatedTaxUsd": {"op": "FROM_PAISE", "value": "vars.taxAmountPaisa"},
-                        "isApplicable": is_app_ref
+                    }
+                else:
+                    steps.append({"assign": "taxAmountPaisa", "expr": "vars.rawSlabTaxPaisa"})
+                    steps.append({
+                        "assign": "isApplicable",
+                        "expr": {"op": "GT", "left": "vars.taxAmountPaisa", "right": {"op": "TO_PAISE", "value": "0"}}
+                    })
+                    output_map = {
+                        "taxAmountPaisa": "vars.taxAmountPaisa",
+                        "calculatedTaxUsd": {"op": "FROM_PAISE", "value": "vars.taxAmountPaisa"},
+                        "isApplicable": "vars.isApplicable",
+                    }
+                typed_inputs_block = {
+                    input_id: {
+                        "type": "MONEY_MINOR",
+                        "currency": currency_code or "USD",
+                        "scale": 100,
+                        "required": True,
                     }
                 }
-            }
+                computation = {
+                    "archetype": "DECLARATIVE_PIPELINE",
+                    "pipeline": {"steps": steps, "output": output_map},
+                }
+            else:
+                steps = []
+                primary_keys = build_operand_fact_keys(operand_items[0]["span"], currency_code) if operand_items else ["taxableIncome", "taxableIncomeUsd"]
+                base_ref = emit_operand_resolution_steps(steps, "primaryBasePaisa", primary_keys, fallback_to_primary=True)
+                steps.append({
+                    "assign": "rawSlabTaxPaisa",
+                    "expr": {"op": "PROGRESSIVE_SLABS", "base": base_ref, "slabs": slabs_ast}
+                })
+                if single_bracket:
+                    steps.append({
+                        "assign": "inBracketRange",
+                        "expr": {
+                            "op": "AND",
+                            "left": {"op": "GT", "left": base_ref, "right": {"op": "TO_PAISE", "value": str(raw_slabs[0][0])}},
+                            "right": {"op": "LTE", "left": base_ref, "right": {"op": "TO_PAISE", "value": str(raw_slabs[0][1])}}
+                        }
+                    })
+                    steps.append({
+                        "assign": "taxAmountPaisa",
+                        "expr": {
+                            "op": "CONDITIONAL",
+                            "test": "vars.inBracketRange",
+                            "then": "vars.rawSlabTaxPaisa",
+                            "else": {"op": "TO_PAISE", "value": "0"}
+                        }
+                    })
+                    is_app_ref = "vars.inBracketRange"
+                else:
+                    steps.append({"assign": "taxAmountPaisa", "expr": "vars.rawSlabTaxPaisa"})
+                    steps.append({"assign": "isApplicable", "expr": {"op": "GT", "left": "vars.taxAmountPaisa", "right": {"op": "TO_PAISE", "value": "0"}}})
+                    is_app_ref = "vars.isApplicable"
+
+                comp_block["expressionType"] = "PROGRESSIVE_SLAB"
+                comp_block["formulaDescription"] = "Piecewise progressive tax schedule across bracket slabs"
+                computation = {
+                    "archetype": "DECLARATIVE_PIPELINE",
+                    "thresholdPaisa": str(raw_slabs[0][0]),
+                    "standardRateBps": raw_slabs[-1][2],
+                    "pipeline": {
+                        "steps": steps,
+                        "output": {
+                            "taxAmountPaisa": "vars.taxAmountPaisa",
+                            "tdsAmountPaisa": "vars.taxAmountPaisa",
+                            "calculatedTaxInr": {"op": "FROM_PAISE", "value": "vars.taxAmountPaisa"},
+                            "calculatedTaxUsd": {"op": "FROM_PAISE", "value": "vars.taxAmountPaisa"},
+                            "isApplicable": is_app_ref
+                        }
+                    }
+                }
 
     # ── Pipeline Archetype 2: MIN / MAX Combinator (REL_COMBINATOR_MIN / MAX) ──
     if computation is None and (comb_min_edges or comb_max_edges):
@@ -4018,6 +4133,12 @@ def synthesize_usvm_ast(
             "deonticGate": deontic_gate
         }
 
+    if typed_inputs and typed_inputs_block is None:
+        raise ValueError(
+            "ERR_TYPED_INPUTS_UNSUPPORTED_ARCHETYPE: the v2 typed-input profile "
+            "currently lowers only single-clause progressive bracket rules"
+        )
+
     deontic_tuple = {
         "subject_S": blocks["applicabilityScope"],
         "preconditions_P": guards or blocks["applicabilityScope"].get("qualifyingConditions", []),
@@ -4047,6 +4168,7 @@ def synthesize_usvm_ast(
             "referencedSections": meta.get("referencedSections", [])
         },
         "guards": guards,
+        **({"inputs": typed_inputs_block} if typed_inputs_block else {}),
         "computation": computation,
         **({"deonticGate": deontic_gate} if deontic_gate else {}),
         "attestationChecklist": evidence_checklist,
