@@ -1,0 +1,77 @@
+{
+  "sectionId": "FR-TVA-2026",
+  "version": "1.0.0",
+  "executionMode": "PRODUCTION",
+  "ruleDomain": "STATUTORY_FINANCE",
+  "jurisdiction": "FR",
+  "lawName": "Taxe sur la valeur ajoutée (TVA)",
+  "lawYear": 2026,
+  "sourceLaw": "Code général des impôts (CGI) - Articles 278 et suivants; Directive TVA 2006/112/CE",
+  "predictedModality": "MODALITY_COMPUTATIONAL_RATE_LOOKUP",
+  "modalityConfidence": 0.99,
+  "clauseModalities": [
+    {
+      "clauseIdx": 0,
+      "modality": "MODALITY_COMPUTATIONAL_RATE_LOOKUP",
+      "confidence": 0.99
+    }
+  ],
+  "triggerPolicy": {
+    "type": "TRANSACTION",
+    "events": ["SALE_OF_GOODS", "PROVISION_OF_SERVICE"]
+  },
+  "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": false
+  },
+  "sourceLineage": {
+    "documentIdentifier": "CGI-TVA-278",
+    "issuingAuthority": "Direction générale des Finances publiques (DGFiP)",
+    "publicationDate": "2026-01-01",
+    "referencedSections": ["EU-VAT-DIRECTIVE-2006-112"]
+  },
+  "guards": [],
+  "computation": {
+    "archetype": "VAT_RATE_LOOKUP_AND_COMPUTE",
+    "currencyCode": "EUR",
+    "minorUnitScale": 100,
+    "unit": "cents",
+    "rates": {
+      "standard": 2000,
+      "intermediate": 1000,
+      "reduced": 550,
+      "superReduced": 210,
+      "zero": 0
+    },
+    "euDistanceSellingThresholdEur": 10000,
+    "customerCountries": ["FRANCE", "EU", "NON_EU"],
+    "reverseChargeB2B": true,
+    "output": {
+      "vatRateBps": "vars.vatRateBps",
+      "vatAmountCents": "vars.vatAmountCents",
+      "totalAmountCents": "vars.totalAmountCents",
+      "isReverseCharge": "vars.isReverseCharge",
+      "isExport": "vars.isExport"
+    }
+  },
+  "symbolLegend": {
+    "vatRate": {
+      "symbolId": "vatRate",
+      "rawText": "taux de TVA",
+      "role": "ROLE_STANDARD_STATUTORY_RATE",
+      "symbolType": "PERCENTAGE_RATE",
+      "dataType": "PERCENT",
+      "measurementUnit": "PERCENT"
+    },
+    "transactionAmount": {
+      "symbolId": "transactionAmount",
+      "rawText": "montant HT de la transaction",
+      "role": "ROLE_MONETARY_BASE",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    }
+  }
+}

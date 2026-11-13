@@ -1,0 +1,36 @@
+# FR-IS-2026
+
+```catala
+declaration structure FrIs2026Input:
+  data taxable_profit content money
+  data is_sme_eligible content boolean
+
+declaration scope FrIs2026:
+  input input_data content FrIs2026Input
+  internal taxable_profit_cents content money
+  internal is_sme_eligible content boolean
+  internal sme_base_cents content money
+  internal above_sme_threshold_cents content money
+  internal sme_tax_cents content money
+  internal normal_rate_base_cents content money
+  internal normal_tax_cents content money
+  internal corporate_tax_cents content money
+  internal applicable_rate_bps content integer
+  output taxable_profit_eur content money
+  output corporate_tax_eur content money
+  output applicable_rate_percent content decimal
+
+scope FrIs2026:
+  definition taxable_profit_cents equals input_data.taxable_profit
+  definition is_sme_eligible equals input_data.is_sme_eligible
+  definition sme_base_cents equals (if taxable_profit_cents < $42500.00 then taxable_profit_cents else $42500.00)
+  definition above_sme_threshold_cents equals (if $0.00 > (taxable_profit_cents - $42500.00) then $0.00 else (taxable_profit_cents - $42500.00))
+  definition sme_tax_cents equals (if is_sme_eligible then (sme_base_cents * ((decimal of 1500) / 10000.0)) else $0.00)
+  definition normal_rate_base_cents equals (if is_sme_eligible then above_sme_threshold_cents else taxable_profit_cents)
+  definition normal_tax_cents equals (normal_rate_base_cents * ((decimal of 2500) / 10000.0))
+  definition corporate_tax_cents equals (sme_tax_cents + normal_tax_cents)
+  definition applicable_rate_bps equals (if (is_sme_eligible and (taxable_profit_cents <= $42500.00)) then 1500 else 2500)
+  definition taxable_profit_eur equals taxable_profit_cents
+  definition corporate_tax_eur equals corporate_tax_cents
+  definition applicable_rate_percent equals ((decimal of applicable_rate_bps) / (decimal of 100))
+```

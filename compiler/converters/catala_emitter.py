@@ -28,9 +28,9 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-
-class CatalaLoweringError(ValueError):
-    """Raised when an AST construct has no faithful Catala translation."""
+from compiler.converters.errors import CatalaLoweringError
+from compiler.converters.archetype_strategies import normalize_ast
+from compiler.converters.fact_bindings import FACT_BINDINGS as _FACT_BINDINGS
 
 
 # Catala reserved words that must never be used as identifiers.
@@ -43,16 +43,22 @@ match pattern external module alias as nil among such that exists for
 all we have an the input output internal context data content
 """.split())
 
-# Canonical runtime fact bindings injected by evaluation_vm.js for pipelines.
-# Each maps a USVM fact path to (catala_field, catala_type). All are exact
-# money amounts: the runtime derives them from the primary invoice/base fact
-# and prior cumulative purchases, expressed in paise.
-_FACT_BINDINGS = {
-    "currentInvoicePaisa": ("current_invoice", "money"),
-    "invoiceAmountPaisa": ("current_invoice", "money"),
-    "primaryBasePaisa": ("primary_base", "money"),
-    "priorPurchasesPaisa": ("prior_purchases", "money"),
-    "invoiceAmountInr": ("current_invoice", "money"),
+# Catala has no string type. Statutory text facts (customer type, country,
+# goods category) are modelled as enumerations whose cases are documented by
+# the statutory source (see tests/fixtures/french_tax_2026/*/circulars).
+# Maps enum type name -> {IR literal value: Catala constructor name}.
+_ENUM_DOMAINS: dict[str, dict[str, str]] = {
+    "CustomerType": {"B2B": "B2B", "B2C": "B2C"},
+    # FRANCE is distinct from EU: domestic B2B is not a reverse charge and
+    # domestic B2C is not an export.
+    "CustomerCountry": {"FRANCE": "France", "EU": "EU", "NON_EU": "NonEu"},
+    "GoodsCategory": {
+        "standard": "Standard",
+        "intermediate": "Intermediate",
+        "reduced": "Reduced",
+        "superReduced": "SuperReduced",
+        "zero": "Zero",
+    },
 }
 
 _SUPPORTED_ARCHETYPES = frozenset({"DECLARATIVE_PIPELINE"})
@@ -74,6 +80,14 @@ def _to_pascal_case(name: str) -> str:
     return "".join(w.capitalize() for w in words if w) or "StatutoryScope"
 
 
+def _scope_identifier(name: str) -> str:
+    """Returns a valid Catala scope name for an arbitrary rule/scenario name."""
+    scope = _to_pascal_case(name)
+    if not re.match(r"^[A-Z]", scope):
+        scope = f"S{scope}"
+    return scope
+
+
 def _identifier(name: str) -> str:
     ident = _to_snake_case(name)
     if ident in _CATALA_KEYWORDS:
@@ -83,8 +97,36 @@ def _identifier(name: str) -> str:
     return ident
 
 
+def _catala_type(typ: str) -> str:
+    """Maps an internal type tag to a Catala type name."""
+    if typ.startswith("enum:"):
+        return typ[len("enum:"):]
+    return typ
+
+
+def _enum_constructor(enum_name: str, literal: str) -> str:
+    """Maps an IR literal to its declared Catala enumeration constructor."""
+    domain = _ENUM_DOMAINS.get(enum_name)
+    if domain is None:
+        raise CatalaLoweringError(f"Unknown enumeration {enum_name!r}")
+    constructor = domain.get(literal)
+    if constructor is None:
+        raise CatalaLoweringError(
+            f"{literal!r} is not a case of enumeration {enum_name}; "
+            f"expected one of {sorted(domain)}"
+        )
+    return constructor
+
+
 def _money_literal(value: Fraction | int | str) -> str:
-    frac = Fraction(str(value))
+    """Render a major-unit amount as a Catala money literal.
+
+    Catala money literals are written in major units: ``$1.23`` denotes 1
+    major unit and 23 minor units, and ``decimal of $1.00`` evaluates to 1.0.
+    Therefore a value expressed in minor units (paise/cents) must first be
+    divided by 100 -- use :func:`_money_literal_minor`.
+    """
+    frac = value if isinstance(value, Fraction) else Fraction(str(value))
     sign = "-" if frac < 0 else ""
     frac = abs(frac)
     paise_num, rem = divmod(frac.numerator * 100, frac.denominator)
@@ -94,6 +136,12 @@ def _money_literal(value: Fraction | int | str) -> str:
         )
     whole, cents = divmod(paise_num, 100)
     return f"{sign}${whole}.{cents:02d}"
+
+
+def _money_literal_minor(value: Fraction | int | str) -> str:
+    """Render an amount expressed in minor units (paise/cents) as Catala money."""
+    frac = value if isinstance(value, Fraction) else Fraction(str(value))
+    return _money_literal(frac / 100)
 
 
 def _decimal_literal(value: Fraction | int | float | str) -> str:
@@ -138,6 +186,10 @@ class CatalaEmitter:
         scenarios: list[dict[str, Any]] | None = None,
     ) -> str:
         ast = ast_or_result.get("synthesizedAst", ast_or_result)
+        # Normalize non-canonical archetype layouts (e.g. French tax 2026
+        # fixtures) into DECLARATIVE_PIPELINE before lowering. Canonical ASTs
+        # pass through unchanged.
+        ast = normalize_ast(ast)
         computation = ast.get("computation") or {}
         archetype = computation.get("archetype")
         if archetype not in _SUPPORTED_ARCHETYPES:
@@ -190,12 +242,14 @@ class CatalaEmitter:
             internal_steps.append((var, expr, typ))
 
         rule_id = ast.get("sectionId") or ast.get("ruleId") or "StatutoryRule"
-        scope_name = _to_pascal_case(rule_id)
-        if not re.match(r"^[A-Z]", scope_name):
-            scope_name = f"S{scope_name}"
+        scope_name = _scope_identifier(rule_id)
         struct_name = f"{scope_name}Input"
         raw_text = ast.get("rawText") or ast_or_result.get("text") or ""
 
+        # Canonical statutory constants are optional: archetypes without a
+        # single threshold or flat rate must not emit misleading placeholders.
+        has_threshold = "thresholdPaisa" in computation
+        has_rate = "standardRateBps" in computation
         threshold = _number(computation.get("thresholdPaisa", 0))
         rate_bps = _number(computation.get("standardRateBps", 0))
         if rate_bps.denominator != 1:
@@ -212,31 +266,51 @@ class CatalaEmitter:
             lines.append("")
         lines.append("```catala")
 
+        # Enumerations for text-valued facts. Catala has no string type, so
+        # statutory categories are declared as enumerations before use.
+        used_types = set(self._inputs.values()) | set(self._vars.values()) | set(
+            self._output_types.values()
+        )
+        enum_names = sorted(
+            typ[len("enum:"):] for typ in used_types if typ.startswith("enum:")
+        )
+        for enum_name in enum_names:
+            lines.append(f"declaration enumeration {enum_name}:")
+            for constructor in _ENUM_DOMAINS[enum_name].values():
+                lines.append(f"{self.indent}-- {constructor}")
+            lines.append("")
+
         # Input structure: only facts the executable pipeline actually reads.
         lines.append(f"declaration structure {struct_name}:")
         if not self._inputs:
             raise CatalaLoweringError("Pipeline reads no facts; nothing to lower")
         for field, typ in self._inputs.items():
-            lines.append(f"{self.indent}data {field} content {typ}")
+            lines.append(f"{self.indent}data {field} content {_catala_type(typ)}")
         lines.append("")
 
         # Scope declaration.
         lines.append(f"declaration scope {scope_name}:")
         lines.append(f"{self.indent}input input_data content {struct_name}")
-        lines.append(f"{self.indent}internal threshold_paisa content money")
-        lines.append(f"{self.indent}internal standard_rate_bps content integer")
+        if has_threshold:
+            lines.append(f"{self.indent}internal threshold_paisa content money")
+        if has_rate:
+            lines.append(f"{self.indent}internal standard_rate_bps content integer")
         for var, _, typ in internal_steps:
-            lines.append(f"{self.indent}internal {_identifier(var)} content {typ}")
+            lines.append(f"{self.indent}internal {_identifier(var)} content {_catala_type(typ)}")
         for name, _, typ in output_entries:
-            lines.append(f"{self.indent}output {name} content {typ}")
+            lines.append(f"{self.indent}output {name} content {_catala_type(typ)}")
         lines.append("")
 
         # Scope body: statutory constants, sequential steps, output map.
         lines.append(f"scope {scope_name}:")
-        lines.append(
-            f"{self.indent}definition threshold_paisa equals {_money_literal(threshold)}"
-        )
-        lines.append(f"{self.indent}definition standard_rate_bps equals {int(rate_bps)}")
+        if has_threshold:
+            # `thresholdPaisa` is expressed in minor units (paise/cents), so it
+            # is converted to major units before becoming a Catala money literal.
+            lines.append(
+                f"{self.indent}definition threshold_paisa equals {_money_literal_minor(threshold)}"
+            )
+        if has_rate:
+            lines.append(f"{self.indent}definition standard_rate_bps equals {int(rate_bps)}")
         defined_names = {_identifier(var) for var, _, _ in step_types}
         for var, expr, typ in step_types:
             rendered = self._render(expr, typ)
@@ -270,9 +344,7 @@ class CatalaEmitter:
         struct_name: str,
         output_entries: list[tuple[str, Any, str]],
     ) -> list[str]:
-        name = _to_pascal_case(scenario.get("name") or f"Scenario{idx}")
-        if not re.match(r"^[A-Z]", name):
-            name = f"S{name}"
+        name = _scope_identifier(scenario.get("name") or f"Scenario{idx}")
         facts = scenario.get("facts") or {}
         lines = [f"declaration scope {name}:", f"{self.indent}output result scope {scope_name}", ""]
         lines.append(f"scope {name}:")
@@ -306,6 +378,12 @@ class CatalaEmitter:
             if not isinstance(value, bool):
                 raise CatalaLoweringError(f"Boolean fact with non-boolean value: {value!r}")
             return "true" if value else "false"
+        if typ.startswith("enum:"):
+            if not isinstance(value, str):
+                raise CatalaLoweringError(
+                    f"Enumeration fact of type {typ} requires a string value, got {value!r}"
+                )
+            return _enum_constructor(typ[len("enum:"):], value)
         raise CatalaLoweringError(f"Unsupported fact type {typ!r}")
 
     # ── Type inference ───────────────────────────────────────────────────────
@@ -328,15 +406,38 @@ class CatalaEmitter:
         if op in ("VARIABLE",) or (op is None and ("var" in node or "path" in node)):
             return self._infer_reference(node.get("var") or node.get("path"))
 
-        if op in _COMPARISON_OPS or op in ("AND", "OR", "NOT", "XOR", "IMPLIES"):
+        if op in _COMPARISON_OPS:
+            # Traverse both operands: this registers every fact they read and
+            # rejects undefined references or mismatched types before any
+            # Catala is written. Returning early left condition-only facts
+            # undeclared in the input structure.
+            self._comparison_operand_type(node["left"], node["right"])
+            return "boolean"
+        if op in ("AND", "OR", "XOR", "IMPLIES"):
+            left, right = self._binary_operands(node)
+            for operand in (left, right):
+                operand_t = self._infer(operand)
+                if operand_t != "boolean":
+                    raise CatalaLoweringError(
+                        f"{op} operand must be boolean, got {operand_t}"
+                    )
+            return "boolean"
+        if op == "NOT":
+            operand = node.get("operand", node.get("value"))
+            if self._infer(operand) != "boolean":
+                raise CatalaLoweringError("NOT operand must be boolean")
             return "boolean"
         if op in ("ADD", "SUB"):
             return self._unify_numeric(self._infer(node["left"]), self._infer(node["right"]), op)
         if op == "MUL":
             return self._unify_numeric(self._infer(node["left"]), self._infer(node["right"]), op)
         if op == "DIV":
-            self._infer(node["left"])
-            self._infer(node["right"])
+            lt = self._infer(node["left"])
+            rt = self._infer(node["right"])
+            # Dividing money (integer minor units) by an integer stays in
+            # minor units — there are no fractional paisa/cents.
+            if lt == "money" and rt == "integer":
+                return "money"
             return "decimal"
         if op in ("MIN", "MAX"):
             left, right = self._binary_operands(node)
@@ -347,7 +448,11 @@ class CatalaEmitter:
                 raise CatalaLoweringError(f"ABS on non-numeric type {typ}")
             return typ
         if op == "TO_PAISE":
-            self._infer(node.get("value", node.get("operand")))
+            operand_t = self._infer(node.get("value", node.get("operand")))
+            if operand_t not in ("integer", "decimal", "money"):
+                raise CatalaLoweringError(
+                    f"TO_PAISE operand must be numeric, got {operand_t}"
+                )
             return "money"
         if op == "FROM_PAISE":
             if self._infer(node.get("value", node.get("operand"))) != "money":
@@ -390,8 +495,16 @@ class CatalaEmitter:
         if path.startswith("rules."):
             key = path[len("rules."):]
             if key == "thresholdPaisa":
+                if "thresholdPaisa" not in self._computation:
+                    raise CatalaLoweringError(
+                        "Pipeline reads rules.thresholdPaisa but the AST declares no threshold"
+                    )
                 return "money"
             if key in ("standardRateBps", "effectiveRateBps"):
+                if "standardRateBps" not in self._computation:
+                    raise CatalaLoweringError(
+                        f"Pipeline reads rules.{key} but the AST declares no standard rate"
+                    )
                 return "integer"
             raise CatalaLoweringError(f"Rule constant {key!r} has no canonical Catala binding")
         if path.startswith("vars."):
@@ -401,6 +514,10 @@ class CatalaEmitter:
             return self._vars[key]
         if path in self._vars:
             return self._vars[path]
+        # Bare text literal (e.g. "B2B", "standard") — not a reference path.
+        # Checked last so variable names in self._vars take priority.
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", path.strip()):
+            return "text"
         raise CatalaLoweringError(f"Unresolvable expression reference {path!r}")
 
     @staticmethod
@@ -471,10 +588,19 @@ class CatalaEmitter:
             if op == "MUL" and result_t == "money":
                 money_side, rate_side = (left, right) if lt == "money" else (right, left)
                 return (
-                    f"({self._render(money_side, 'money')} * {self._render(rate_side, 'decimal')})"
+                    f"({self._render(money_side, 'money')} * {self._as_decimal(rate_side)})"
                 )
             return f"({self._render(left, result_t)} {symbol} {self._render(right, result_t)})"
         if op == "DIV":
+            lt = self._infer(node["left"])
+            rt = self._infer(node["right"])
+            # Money divided by an integer stays money: Catala divides the
+            # major-unit amount and keeps the money type.
+            if lt == "money" and rt == "integer":
+                return (
+                    f"({self._render(node['left'], 'money')} / "
+                    f"{self._render(node['right'], 'integer')})"
+                )
             lhs = self._as_decimal(node["left"])
             rhs = self._as_decimal(node["right"])
             return f"({lhs} / {rhs})"
@@ -494,12 +620,21 @@ class CatalaEmitter:
         if op == "TO_PAISE":
             operand = node.get("value", node.get("operand"))
             frac = self._static_number(operand)
-            if frac is None:
-                raise CatalaLoweringError("TO_PAISE of a dynamic value has no money-preserving lowering")
-            return _money_literal(frac)
+            if frac is not None:
+                return _money_literal(frac)
+            # Dynamic money value: Catala money is stored in minor units
+            # (cents/paise) internally, so a money operand is already
+            # minor-unit denominated. Render it as-is.
+            typ = self._infer(operand)
+            if typ == "money":
+                return self._render(operand, "money")
+            raise CatalaLoweringError(f"TO_PAISE of non-money dynamic value {typ}")
         if op == "FROM_PAISE":
             operand = node.get("value", node.get("operand"))
-            return f"($1.00 * ({self._as_decimal(operand)} / 100.0))"
+            # IR money values are already represented as Catala money, whose
+            # `decimal of` view is the major-unit amount. Converting away from
+            # minor units is therefore the identity here.
+            return self._render(operand, "money")
         if op == "RATIONAL_MULTIPLY":
             base = self._render(node["base"], "money")
             rate = node.get("rateBps", node.get("rate"))
@@ -543,11 +678,17 @@ class CatalaEmitter:
             return _identifier(path[len("vars."):])
         if path in self._vars:
             return _identifier(path)
+        # Bare text literal. Catala has no string type: it is only valid as an
+        # enumeration case, resolved against the compared operand's enum type.
+        if typ.startswith("enum:") and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", stripped):
+            return _enum_constructor(typ[len("enum:"):], stripped)
         raise CatalaLoweringError(f"Unresolvable expression reference {path!r}")
 
     def _render_number(self, frac: Fraction, typ: str) -> str:
         if typ == "money":
-            return _money_literal(frac)
+            # Numeric money literals in the IR are minor units (paise/cents),
+            # matching the canonical `...Paisa` facts and `thresholdPaisa`.
+            return _money_literal_minor(frac)
         if typ == "integer":
             if frac.denominator != 1:
                 raise CatalaLoweringError(f"Fractional literal {frac} in integer position")
@@ -568,9 +709,24 @@ class CatalaEmitter:
         lt, rt = self._infer(left), self._infer(right)
         if lt == rt:
             return lt
+        # A bare text literal compared against an enum-typed operand adopts
+        # that enumeration's type. _render_reference validates the case name.
+        if lt.startswith("enum:") and self._is_text_literal(right):
+            return lt
+        if rt.startswith("enum:") and self._is_text_literal(left):
+            return rt
         if {lt, rt} <= {"money", "integer", "decimal"}:
             return self._unify_numeric(lt, rt, "comparison")
         raise CatalaLoweringError(f"Comparison of incompatible types {lt} and {rt}")
+
+    @staticmethod
+    def _is_text_literal(node: Any) -> bool:
+        if not isinstance(node, str):
+            return False
+        stripped = node.strip()
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
+            return False
+        return not stripped.startswith(("facts.", "vars.", "rules."))
 
     def _static_number(self, node: Any) -> Fraction | None:
         """Extracts a compile-time numeric constant, mirroring USVM toPaise()."""

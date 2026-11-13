@@ -1,0 +1,73 @@
+{
+  "sectionId": "FR-B2B-B2C-VAT-2026",
+  "version": "1.0.0",
+  "executionMode": "PRODUCTION",
+  "ruleDomain": "STATUTORY_FINANCE",
+  "jurisdiction": "FR",
+  "lawName": "Règles TVA B2B/B2C France - UE",
+  "lawYear": 2026,
+  "sourceLaw": "Directive TVA 2006/112/CE; CGI articles 258 à 294",
+  "predictedModality": "MODALITY_LOGICAL_CONDITIONAL",
+  "modalityConfidence": 0.99,
+  "clauseModalities": [
+    {
+      "clauseIdx": 0,
+      "modality": "MODALITY_LOGICAL_CONDITIONAL",
+      "confidence": 0.99
+    }
+  ],
+  "triggerPolicy": {
+    "type": "TRANSACTION",
+    "events": ["CROSS_BORDER_SALE", "DOMESTIC_SALE"]
+  },
+  "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": false
+  },
+  "sourceLineage": {
+    "documentIdentifier": "EU-VAT-2006-112",
+    "issuingAuthority": "European Union / DGFiP",
+    "publicationDate": "2026-01-01",
+    "referencedSections": ["FR-TVA-2026"]
+  },
+  "guards": [],
+  "computation": {
+    "archetype": "VAT_JURISDICTION_RULES",
+    "currencyCode": "EUR",
+    "minorUnitScale": 100,
+    "euDistanceSellingThresholdCents": 1000000,
+    "ossThresholdCents": 1000000,
+    "output": {
+      "appliesReverseCharge": "vars.appliesReverseCharge",
+      "appliesFrenchVat": "vars.appliesFrenchVat",
+      "vatRateBps": "vars.vatRateBps",
+      "ossRegistrationRequired": "vars.ossRegistrationRequired"
+    }
+  },
+  "symbolLegend": {
+    "customerType": {
+      "symbolId": "customerType",
+      "rawText": "type de client (B2B/B2C)",
+      "role": "ROLE_ENTITY_CLASSIFICATION",
+      "symbolType": "CATEGORICAL_STRING",
+      "dataType": "CATEGORICAL_STRING"
+    },
+    "customerCountry": {
+      "symbolId": "customerCountry",
+      "rawText": "pays du client",
+      "role": "ROLE_ENTITY_CLASSIFICATION",
+      "symbolType": "CATEGORICAL_STRING",
+      "dataType": "CATEGORICAL_STRING"
+    },
+    "annualDistanceSalesEur": {
+      "symbolId": "annualDistanceSales",
+      "rawText": "ventes à distance annuelles",
+      "role": "ROLE_MONETARY_BASE",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    }
+  }
+}

@@ -55,3 +55,8 @@ Thumbs.db
 # Generated datasets and temporary test checkpoints
 checkpoints/dataset.pt
 checkpoints/smoke_test_*.pt
+
+# Catala interpreter (generated artifact; fetch + SHA-256 verify with
+# scripts/fetch_catala_interpreter.mjs)
+scripts/catala_interpreter.cjs
+scripts/*.tmp

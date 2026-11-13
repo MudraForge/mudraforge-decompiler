@@ -1,0 +1,42 @@
+# FR-SOCIAL-2026
+
+```catala
+declaration structure FrSocial2026Input:
+  data gross_salary content money
+  data rgdu_relief content money
+
+declaration scope FrSocial2026:
+  input input_data content FrSocial2026Input
+  internal gross_salary_cents content money
+  internal rgdu_relief_cents content money
+  internal csg_base_cents content money
+  internal capped_pmss_cents content money
+  internal capped_uncapped_base_cents content money
+  internal employer_contributions_cents content money
+  internal employee_contributions_cents content money
+  internal employer_contributions_after_rgdu_cents content money
+  output gross_salary_eur content money
+  output employer_contributions_before_rgdu_eur content money
+  output rgdu_relief_eur content money
+  output employer_contributions_eur content money
+  output employee_contributions_eur content money
+  output net_salary_eur content money
+  output total_employer_cost_eur content money
+
+scope FrSocial2026:
+  definition gross_salary_cents equals input_data.gross_salary
+  definition rgdu_relief_cents equals input_data.rgdu_relief
+  definition csg_base_cents equals (((if gross_salary_cents < $192240.00 then gross_salary_cents else $192240.00) * ((decimal of 9825) / 10000.0)) + (if $0.00 > (gross_salary_cents - $192240.00) then $0.00 else (gross_salary_cents - $192240.00)))
+  definition capped_pmss_cents equals (if gross_salary_cents < $48060.00 then gross_salary_cents else $48060.00)
+  definition capped_uncapped_base_cents equals (if gross_salary_cents < $192240.00 then gross_salary_cents else $192240.00)
+  definition employer_contributions_cents equals ((gross_salary_cents * ((decimal of 1300) / 10000.0)) + ((gross_salary_cents * ((decimal of 211) / 10000.0)) + ((capped_pmss_cents * ((decimal of 855) / 10000.0)) + ((gross_salary_cents * ((decimal of 525) / 10000.0)) + ((capped_uncapped_base_cents * ((decimal of 400) / 10000.0)) + ((capped_uncapped_base_cents * ((decimal of 25) / 10000.0)) + ((gross_salary_cents * ((decimal of 30) / 10000.0)) + (gross_salary_cents * ((decimal of 10) / 10000.0)))))))))
+  definition employee_contributions_cents equals ((gross_salary_cents * ((decimal of 40) / 10000.0)) + ((capped_pmss_cents * ((decimal of 690) / 10000.0)) + ((csg_base_cents * ((decimal of 240) / 10000.0)) + ((csg_base_cents * ((decimal of 680) / 10000.0)) + (csg_base_cents * ((decimal of 50) / 10000.0))))))
+  definition employer_contributions_after_rgdu_cents equals (if $0.00 > (employer_contributions_cents - rgdu_relief_cents) then $0.00 else (employer_contributions_cents - rgdu_relief_cents))
+  definition gross_salary_eur equals gross_salary_cents
+  definition employer_contributions_before_rgdu_eur equals employer_contributions_cents
+  definition rgdu_relief_eur equals rgdu_relief_cents
+  definition employer_contributions_eur equals employer_contributions_after_rgdu_cents
+  definition employee_contributions_eur equals employee_contributions_cents
+  definition net_salary_eur equals (gross_salary_cents - employee_contributions_cents)
+  definition total_employer_cost_eur equals (gross_salary_cents + employer_contributions_after_rgdu_cents)
+```

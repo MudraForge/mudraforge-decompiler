@@ -21,6 +21,8 @@ import subprocess
 import threading
 from datetime import datetime
 
+from compiler.converters.fact_bindings import INTEGER_FACT_KEYS
+
 
 class SecurityError(Exception):
     pass
@@ -315,6 +317,46 @@ class CanonicalUsvmEvaluator:
             f["attestations"] = att
 
         return f
+
+    def _encode_scalar_facts_for_usvm(self, facts: dict) -> dict:
+        """Route typed scalar facts through the USVM's digit-string convention.
+
+        The USVM treats a JavaScript number as a *major-unit* amount and
+        multiplies it by 100 whenever an operator coerces it to paise. Counts
+        and basis-point rates are not money: they must stay raw integers. A
+        bare digit string is the only representation the VM treats as an
+        already-integer scalar, so integer facts declared in the shared
+        FACT_BINDINGS map are encoded here. This is type-driven, never a
+        fact-name heuristic, and it keeps USVM and Catala inputs in lockstep.
+        """
+        out = dict(facts)
+        for key in INTEGER_FACT_KEYS:
+            if key not in out:
+                continue
+            value = out[key]
+            if isinstance(value, bool) or value is None:
+                continue
+            if isinstance(value, int):
+                out[key] = str(value)
+            elif isinstance(value, float):
+                if not value.is_integer():
+                    raise RuntimeError(
+                        f"Fact {key!r} is declared as an integer but received {value!r}"
+                    )
+                out[key] = str(int(value))
+            elif isinstance(value, str):
+                text = value.strip()
+                if not re.fullmatch(r"-?\d+", text):
+                    raise RuntimeError(
+                        f"Fact {key!r} is declared as an integer but received {value!r}"
+                    )
+                out[key] = text
+            else:
+                raise RuntimeError(
+                    f"Fact {key!r} is declared as an integer but received "
+                    f"{type(value).__name__}"
+                )
+        return out
 
     def _normalize_ast_for_js_bridge(self, ast: dict) -> dict:
         if not isinstance(ast, dict):
@@ -700,6 +742,7 @@ class CanonicalUsvmEvaluator:
     def evaluate(self, ast: dict, facts: dict, options: dict | None = None) -> dict:
         norm_ast = self._normalize_ast_for_js_bridge(ast)
         norm_facts = self._normalize_facts_for_js_bridge(facts)
+        norm_facts = self._encode_scalar_facts_for_usvm(norm_facts)
         opts = dict(options or {})
         if "mode" not in opts:
             opts["mode"] = self.default_mode
@@ -731,6 +774,7 @@ class CanonicalUsvmEvaluator:
             raw_asts.append(raw_ast)
             norm_ast = self._normalize_ast_for_js_bridge(raw_ast)
             norm_facts = self._normalize_facts_for_js_bridge(entry.get("facts") or {})
+            norm_facts = self._encode_scalar_facts_for_usvm(norm_facts)
             item_opts = dict(entry.get("options") or default_opts)
             payload_items.append({
                 "ruleAst": norm_ast,

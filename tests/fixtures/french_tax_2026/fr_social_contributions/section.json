@@ -1,0 +1,98 @@
+{
+  "sectionId": "FR-SOCIAL-2026",
+  "version": "1.0.0",
+  "executionMode": "PRODUCTION",
+  "ruleDomain": "STATUTORY_FINANCE",
+  "jurisdiction": "FR",
+  "lawName": "Cotisations sociales",
+  "lawYear": 2026,
+  "sourceLaw": "Code de la sécurité sociale; Urssaf taux 2026",
+  "predictedModality": "MODALITY_COMPUTATIONAL_PERCENTAGE",
+  "modalityConfidence": 0.98,
+  "clauseModalities": [
+    {
+      "clauseIdx": 0,
+      "modality": "MODALITY_COMPUTATIONAL_PERCENTAGE",
+      "confidence": 0.98
+    }
+  ],
+  "triggerPolicy": {
+    "type": "PERIODIC",
+    "events": ["PAYROLL_RUN"]
+  },
+  "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": false
+  },
+  "sourceLineage": {
+    "documentIdentifier": "URSSAF-2026",
+    "issuingAuthority": "Urssaf / Direction de la Sécurité sociale",
+    "publicationDate": "2026-01-01",
+    "referencedSections": []
+  },
+  "guards": [],
+  "computation": {
+    "archetype": "PAYROLL_CONTRIBUTIONS",
+    "currencyCode": "EUR",
+    "minorUnitScale": 100,
+    "unit": "cents",
+    "pmssMonthlyEur": 4005,
+    "pmssAnnualEur": 48060,
+    "uncappedBaseLimitEur": 192240,
+    "employerRates": {
+      "healthBps": 1300,
+      "oldAgeTotalBps": 211,
+      "oldAgeWithinCeilingBps": 855,
+      "familyBps": 525,
+      "unemploymentBps": 400,
+      "agsBps": 25,
+      "csaBps": 30,
+      "fnalUnder50Bps": 10,
+      "fnalOver50Bps": 50
+    },
+    "rgdu": {
+      "thresholdSmicMultiple": 3,
+      "reliefInput": "facts.rgduReliefEur",
+      "note": "2026 LFSS abolished the reduced 7% health and 3.45% family rates; full 13% / 5.25% apply, less caller-supplied RGDU relief up to 3x SMIC."
+    },
+    "employeeRates": {
+      "oldAgeTotalBps": 40,
+      "oldAgeWithinCeilingBps": 690,
+      "csgImposableBps": 240,
+      "csgNonImposableBps": 680,
+      "crdsBps": 50,
+      "csgBaseFactor": 9825
+    },
+    "output": {
+      "grossSalaryEur": "vars.grossSalaryEur",
+      "employerContributionsBeforeRgduEur": "vars.employerContributionsBeforeRgduEur",
+      "rgduReliefEur": "vars.rgduReliefEur",
+      "employerContributionsEur": "vars.employerContributionsEur",
+      "employeeContributionsEur": "vars.employeeContributionsEur",
+      "totalEmployerCostEur": "vars.totalEmployerCostEur",
+      "netSalaryEur": "vars.netSalaryEur"
+    }
+  },
+  "symbolLegend": {
+    "grossSalary": {
+      "symbolId": "grossSalary",
+      "rawText": "salaire brut",
+      "role": "ROLE_MONETARY_BASE",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    },
+    "employerContributions": {
+      "symbolId": "employerContributions",
+      "rawText": "cotisations patronales",
+      "role": "ROLE_COMPUTED_TAX",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    }
+  }
+}

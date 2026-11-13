@@ -1,0 +1,42 @@
+# FR-IRPP-2026
+
+```catala
+declaration structure FrIrpp2026Input:
+  data taxable_income content money
+  data quotient_familial_parts content integer
+
+declaration scope FrIrpp2026:
+  input input_data content FrIrpp2026Input
+  internal taxable_income_cents content money
+  internal parts content integer
+  internal income_per_part_cents content money
+  internal slab_1_portion_cents content money
+  internal slab_1_tax_cents content money
+  internal slab_2_portion_cents content money
+  internal slab_2_tax_cents content money
+  internal slab_3_portion_cents content money
+  internal slab_3_tax_cents content money
+  internal slab_4_portion_cents content money
+  internal slab_4_tax_cents content money
+  internal tax_per_part_cents content money
+  output taxable_income_eur content money
+  output income_tax_eur content money
+  output income_tax_cents content money
+
+scope FrIrpp2026:
+  definition taxable_income_cents equals input_data.taxable_income
+  definition parts equals input_data.quotient_familial_parts
+  definition income_per_part_cents equals (taxable_income_cents / parts)
+  definition slab_1_portion_cents equals (if $0.00 > ((if income_per_part_cents < $29579.00 then income_per_part_cents else $29579.00) - $11600.00) then $0.00 else ((if income_per_part_cents < $29579.00 then income_per_part_cents else $29579.00) - $11600.00))
+  definition slab_1_tax_cents equals (slab_1_portion_cents * ((decimal of 1100) / 10000.0))
+  definition slab_2_portion_cents equals (if $0.00 > ((if income_per_part_cents < $84577.00 then income_per_part_cents else $84577.00) - $29579.00) then $0.00 else ((if income_per_part_cents < $84577.00 then income_per_part_cents else $84577.00) - $29579.00))
+  definition slab_2_tax_cents equals (slab_2_portion_cents * ((decimal of 3000) / 10000.0))
+  definition slab_3_portion_cents equals (if $0.00 > ((if income_per_part_cents < $181917.00 then income_per_part_cents else $181917.00) - $84577.00) then $0.00 else ((if income_per_part_cents < $181917.00 then income_per_part_cents else $181917.00) - $84577.00))
+  definition slab_3_tax_cents equals (slab_3_portion_cents * ((decimal of 4100) / 10000.0))
+  definition slab_4_portion_cents equals (if $0.00 > (income_per_part_cents - $181917.00) then $0.00 else (income_per_part_cents - $181917.00))
+  definition slab_4_tax_cents equals (slab_4_portion_cents * ((decimal of 4500) / 10000.0))
+  definition tax_per_part_cents equals (((slab_1_tax_cents + slab_2_tax_cents) + slab_3_tax_cents) + slab_4_tax_cents)
+  definition income_tax_cents equals (tax_per_part_cents * (decimal of parts))
+  definition income_tax_eur equals income_tax_cents
+  definition taxable_income_eur equals taxable_income_cents
+```

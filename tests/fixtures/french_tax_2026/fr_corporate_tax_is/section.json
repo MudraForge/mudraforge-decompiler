@@ -1,0 +1,74 @@
+{
+  "sectionId": "FR-IS-2026",
+  "version": "1.0.0",
+  "executionMode": "PRODUCTION",
+  "ruleDomain": "STATUTORY_FINANCE",
+  "jurisdiction": "FR",
+  "lawName": "Impôt sur les sociétés (IS)",
+  "lawYear": 2026,
+  "sourceLaw": "Code général des impôts (CGI) - Articles 209 et suivants",
+  "predictedModality": "MODALITY_COMPUTATIONAL_SLAB_TIERED",
+  "modalityConfidence": 0.99,
+  "clauseModalities": [
+    {
+      "clauseIdx": 0,
+      "modality": "MODALITY_COMPUTATIONAL_SLAB_TIERED",
+      "confidence": 0.99
+    }
+  ],
+  "triggerPolicy": {
+    "type": "ANNUAL",
+    "events": ["FISCAL_YEAR_END"]
+  },
+  "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": false
+  },
+  "sourceLineage": {
+    "documentIdentifier": "CGI-IS-209",
+    "issuingAuthority": "Direction générale des Finances publiques (DGFiP)",
+    "publicationDate": "2026-01-01",
+    "referencedSections": []
+  },
+  "guards": [],
+  "computation": {
+    "archetype": "TIERED_CORPORATE_TAX",
+    "currencyCode": "EUR",
+    "minorUnitScale": 100,
+    "unit": "cents",
+    "smeThresholdEur": 42500,
+    "smeRatePercent": 15.0,
+    "normalRatePercent": 25.0,
+    "smeConditions": {
+      "maxTurnoverEur": 10000000,
+      "minIndividualOwnershipPercent": 75.0
+    },
+    "output": {
+      "taxableProfitEur": "vars.taxableProfitEur",
+      "corporateTaxEur": "vars.corporateTaxEur",
+      "effectiveRatePercent": "vars.effectiveRatePercent"
+    }
+  },
+  "symbolLegend": {
+    "taxableProfit": {
+      "symbolId": "taxableProfit",
+      "rawText": "résultat fiscal imposable",
+      "role": "ROLE_MONETARY_BASE",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    },
+    "corporateTax": {
+      "symbolId": "corporateTax",
+      "rawText": "impôt sur les sociétés",
+      "role": "ROLE_COMPUTED_TAX",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    }
+  }
+}

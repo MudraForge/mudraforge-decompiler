@@ -1,0 +1,102 @@
+{
+  "sectionId": "FR-IS-2026",
+  "version": "1.0.0",
+  "archetype": "TIERED_CORPORATE_TAX",
+  "currencyCode": "EUR",
+  "minorUnitScale": 100,
+  "smeThresholdCents": 4250000,
+  "smeRateBps": 1500,
+  "normalRateBps": 2500,
+  "computationSteps": [
+    {
+      "assign": "taxableProfitCents",
+      "expr": { "op": "TO_CENTS", "value": "facts.taxableProfitEur" }
+    },
+    {
+      "assign": "isSmeEligible",
+      "expr": { "op": "VAR", "value": "facts.isSmeEligible" }
+    },
+    {
+      "assign": "smeBaseCents",
+      "expr": {
+        "op": "MIN",
+        "left": "vars.taxableProfitCents",
+        "right": "4250000"
+      }
+    },
+    {
+      "assign": "aboveSmeThresholdCents",
+      "expr": {
+        "op": "MAX",
+        "left": "0",
+        "right": {
+          "op": "SUB",
+          "left": "vars.taxableProfitCents",
+          "right": "4250000"
+        }
+      }
+    },
+    {
+      "assign": "smeTaxCents",
+      "expr": {
+        "op": "CONDITIONAL",
+        "test": "vars.isSmeEligible",
+        "then": {
+          "op": "RATIONAL_MULTIPLY",
+          "base": "vars.smeBaseCents",
+          "rateBps": 1500,
+          "denominator": 10000
+        },
+        "else": 0
+      }
+    },
+    {
+      "assign": "normalRateBaseCents",
+      "expr": {
+        "op": "CONDITIONAL",
+        "test": "vars.isSmeEligible",
+        "then": "vars.aboveSmeThresholdCents",
+        "else": "vars.taxableProfitCents"
+      }
+    },
+    {
+      "assign": "normalTaxCents",
+      "expr": {
+        "op": "RATIONAL_MULTIPLY",
+        "base": "vars.normalRateBaseCents",
+        "rateBps": 2500,
+        "denominator": 10000
+      }
+    },
+    {
+      "assign": "corporateTaxCents",
+      "expr": {
+        "op": "ADD",
+        "left": "vars.smeTaxCents",
+        "right": "vars.normalTaxCents"
+      }
+    },
+    {
+      "assign": "applicableRateBps",
+      "expr": {
+        "op": "CONDITIONAL",
+        "test": {
+          "op": "AND",
+          "left": "vars.isSmeEligible",
+          "right": {
+            "op": "LE",
+            "left": "vars.taxableProfitCents",
+            "right": "4250000"
+          }
+        },
+        "then": 1500,
+        "else": 2500
+      }
+    }
+  ],
+  "output": {
+    "taxableProfitEur": { "op": "FROM_CENTS", "value": "vars.taxableProfitCents" },
+    "corporateTaxEur": { "op": "FROM_CENTS", "value": "vars.corporateTaxCents" },
+    "applicableRatePercent": { "op": "DIV", "left": "vars.applicableRateBps", "right": 100 }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "sectionId": "FR-IRPP-2026",
+  "version": "1.0.0",
+  "executionMode": "PRODUCTION",
+  "ruleDomain": "STATUTORY_FINANCE",
+  "jurisdiction": "FR",
+  "lawName": "Impôt sur le revenu (IRPP)",
+  "lawYear": 2026,
+  "sourceLaw": "LOI n° 2026-103 du 19 février 2026 de finances pour 2026",
+  "predictedModality": "MODALITY_COMPUTATIONAL_SLAB_PROGRESSIVE",
+  "modalityConfidence": 0.99,
+  "clauseModalities": [
+    {
+      "clauseIdx": 0,
+      "modality": "MODALITY_COMPUTATIONAL_SLAB_PROGRESSIVE",
+      "confidence": 0.99
+    }
+  ],
+  "triggerPolicy": {
+    "type": "ANNUAL",
+    "events": ["INCOME_RECEIVED"]
+  },
+  "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": false
+  },
+  "sourceLineage": {
+    "documentIdentifier": "LOI-2026-103",
+    "issuingAuthority": "Direction générale des Finances publiques (DGFiP)",
+    "publicationDate": "2026-02-19",
+    "referencedSections": []
+  },
+  "guards": [],
+  "computation": {
+    "archetype": "PROGRESSIVE_SLAB_TAX",
+    "currencyCode": "EUR",
+    "minorUnitScale": 100,
+    "unit": "cents",
+    "slabsPerPart": [
+      { "lower": 0, "upper": 11600, "rateBps": 0 },
+      { "lower": 11600, "upper": 29579, "rateBps": 1100 },
+      { "lower": 29579, "upper": 84577, "rateBps": 3000 },
+      { "lower": 84577, "upper": 181917, "rateBps": 4100 },
+      { "lower": 181917, "upper": null, "rateBps": 4500 }
+    ],
+    "scopeLabel": "bareme_only",
+    "scopeNote": "Barème only: excludes the décote and the quotient-familial plafonnement.",
+    "quotientFamilial": {
+      "defaultParts": 1,
+      "description": "Number of parts depends on marital status and dependents"
+    },
+    "output": {
+      "taxableIncomeEur": "vars.taxableIncomeEur",
+      "incomeTaxEur": "vars.incomeTaxEur",
+      "effectiveRatePercent": "vars.effectiveRatePercent"
+    }
+  },
+  "symbolLegend": {
+    "taxableIncome": {
+      "symbolId": "taxableIncome",
+      "rawText": "revenu net imposable",
+      "role": "ROLE_MONETARY_BASE",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    },
+    "incomeTax": {
+      "symbolId": "incomeTax",
+      "rawText": "impôt sur le revenu",
+      "role": "ROLE_COMPUTED_TAX",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    }
+  }
+}

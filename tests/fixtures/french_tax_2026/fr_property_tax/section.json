@@ -1,0 +1,71 @@
+{
+  "sectionId": "FR-PROPERTY-2026",
+  "version": "1.0.0",
+  "executionMode": "PRODUCTION",
+  "ruleDomain": "STATUTORY_FINANCE",
+  "jurisdiction": "FR",
+  "lawName": "Taxe foncière et taxe d'habitation",
+  "lawYear": 2026,
+  "sourceLaw": "Code général des impôts (CGI) - Articles 1380 et suivants",
+  "predictedModality": "MODALITY_COMPUTATIONAL_AD_VALOREM",
+  "modalityConfidence": 0.95,
+  "clauseModalities": [
+    {
+      "clauseIdx": 0,
+      "modality": "MODALITY_COMPUTATIONAL_AD_VALOREM",
+      "confidence": 0.95
+    }
+  ],
+  "triggerPolicy": {
+    "type": "ANNUAL",
+    "events": ["PROPERTY_OWNERSHIP"]
+  },
+  "statutoryInvariants": {
+    "isAuthorizedToDisburse": false,
+    "requiresHumanApprovalForOutcomes": false
+  },
+  "sourceLineage": {
+    "documentIdentifier": "CGI-PROPERTY-1380",
+    "issuingAuthority": "Direction générale des Finances publiques (DGFiP)",
+    "publicationDate": "2026-01-01",
+    "referencedSections": []
+  },
+  "guards": [],
+  "computation": {
+    "archetype": "AD_VALOREM_PROPERTY_TAX",
+    "currencyCode": "EUR",
+    "minorUnitScale": 100,
+    "unit": "cents",
+    "builtPropertyAbatementPercent": 50.0,
+    "unbuiltPropertyAbatementPercent": 20.0,
+    "municipalRateRequired": true,
+    "scopeNote": "Built property only. The municipal rate is an explicit required input; the circular gives locality-dependent indicative ranges, never a national rate.",
+    "output": {
+      "cadastralValueEur": "vars.cadastralValueEur",
+      "taxableBaseEur": "vars.taxableBaseEur",
+      "propertyTaxEur": "vars.propertyTaxEur"
+    }
+  },
+  "symbolLegend": {
+    "cadastralValue": {
+      "symbolId": "cadastralValue",
+      "rawText": "valeur locative cadastrale",
+      "role": "ROLE_MONETARY_BASE",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    },
+    "propertyTax": {
+      "symbolId": "propertyTax",
+      "rawText": "taxe foncière",
+      "role": "ROLE_COMPUTED_TAX",
+      "symbolType": "MONETARY_QUANTUM",
+      "dataType": "CURRENCY_CENTS",
+      "measurementUnit": "EUR",
+      "minorUnitScale": 100,
+      "currencyCode": "EUR"
+    }
+  }
+}

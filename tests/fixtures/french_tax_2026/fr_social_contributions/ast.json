@@ -1,0 +1,223 @@
+{
+  "sectionId": "FR-SOCIAL-2026",
+  "version": "1.0.0",
+  "archetype": "PAYROLL_CONTRIBUTIONS",
+  "currencyCode": "EUR",
+  "minorUnitScale": 100,
+  "pmssAnnualCents": 4806000,
+  "uncappedBaseLimitCents": 19224000,
+  "csgBaseFactorBps": 9825,
+  "rgduNote": "2026 LFSS: reduced 7% health and 3.45% family rates are abolished; full 13% and 5.25% rates apply. The RGDU relief is a caller-supplied amount because its coefficient depends on the annual SMIC and employer-specific parameters.",
+  "computationSteps": [
+    {
+      "assign": "grossSalaryCents",
+      "expr": { "op": "TO_CENTS", "value": "facts.grossSalaryEur" }
+    },
+    {
+      "assign": "rgduReliefCents",
+      "expr": { "op": "TO_CENTS", "value": "facts.rgduReliefEur" }
+    },
+    {
+      "assign": "csgBaseCents",
+      "expr": {
+        "op": "ADD",
+        "left": {
+          "op": "RATIONAL_MULTIPLY",
+          "base": {
+            "op": "MIN",
+            "left": "vars.grossSalaryCents",
+            "right": "19224000"
+          },
+          "rateBps": 9825,
+          "denominator": 10000
+        },
+        "right": {
+          "op": "MAX",
+          "left": 0,
+          "right": {
+            "op": "SUB",
+            "left": "vars.grossSalaryCents",
+            "right": "19224000"
+          }
+        }
+      }
+    },
+    {
+      "assign": "cappedPmssCents",
+      "expr": {
+        "op": "MIN",
+        "left": "vars.grossSalaryCents",
+        "right": "4806000"
+      }
+    },
+    {
+      "assign": "cappedUncappedBaseCents",
+      "expr": {
+        "op": "MIN",
+        "left": "vars.grossSalaryCents",
+        "right": "19224000"
+      }
+    },
+    {
+      "assign": "employerContributionsCents",
+      "expr": {
+        "op": "ADD",
+        "left": {
+          "op": "RATIONAL_MULTIPLY",
+          "base": "vars.grossSalaryCents",
+          "rateBps": 1300,
+          "denominator": 10000
+        },
+        "right": {
+          "op": "ADD",
+          "left": {
+            "op": "RATIONAL_MULTIPLY",
+            "base": "vars.grossSalaryCents",
+            "rateBps": 211,
+            "denominator": 10000
+          },
+          "right": {
+            "op": "ADD",
+            "left": {
+              "op": "RATIONAL_MULTIPLY",
+              "base": "vars.cappedPmssCents",
+              "rateBps": 855,
+              "denominator": 10000
+            },
+            "right": {
+              "op": "ADD",
+              "left": {
+                "op": "RATIONAL_MULTIPLY",
+                "base": "vars.grossSalaryCents",
+                "rateBps": 525,
+                "denominator": 10000
+              },
+              "right": {
+                "op": "ADD",
+                "left": {
+                  "op": "RATIONAL_MULTIPLY",
+                  "base": "vars.cappedUncappedBaseCents",
+                  "rateBps": 400,
+                  "denominator": 10000
+                },
+                "right": {
+                  "op": "ADD",
+                  "left": {
+                    "op": "RATIONAL_MULTIPLY",
+                    "base": "vars.cappedUncappedBaseCents",
+                    "rateBps": 25,
+                    "denominator": 10000
+                  },
+                  "right": {
+                    "op": "ADD",
+                    "left": {
+                      "op": "RATIONAL_MULTIPLY",
+                      "base": "vars.grossSalaryCents",
+                      "rateBps": 30,
+                      "denominator": 10000
+                    },
+                    "right": {
+                      "op": "RATIONAL_MULTIPLY",
+                      "base": "vars.grossSalaryCents",
+                      "rateBps": 10,
+                      "denominator": 10000
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "assign": "employeeContributionsCents",
+      "expr": {
+        "op": "ADD",
+        "left": {
+          "op": "RATIONAL_MULTIPLY",
+          "base": "vars.grossSalaryCents",
+          "rateBps": 40,
+          "denominator": 10000
+        },
+        "right": {
+          "op": "ADD",
+          "left": {
+            "op": "RATIONAL_MULTIPLY",
+            "base": "vars.cappedPmssCents",
+            "rateBps": 690,
+            "denominator": 10000
+          },
+          "right": {
+            "op": "ADD",
+            "left": {
+              "op": "RATIONAL_MULTIPLY",
+              "base": "vars.csgBaseCents",
+              "rateBps": 240,
+              "denominator": 10000
+            },
+            "right": {
+              "op": "ADD",
+              "left": {
+                "op": "RATIONAL_MULTIPLY",
+                "base": "vars.csgBaseCents",
+                "rateBps": 680,
+                "denominator": 10000
+              },
+              "right": {
+                "op": "RATIONAL_MULTIPLY",
+                "base": "vars.csgBaseCents",
+                "rateBps": 50,
+                "denominator": 10000
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "assign": "employerContributionsAfterRgduCents",
+      "expr": {
+        "op": "MAX",
+        "left": 0,
+        "right": {
+          "op": "SUB",
+          "left": "vars.employerContributionsCents",
+          "right": "vars.rgduReliefCents"
+        }
+      }
+    }
+  ],
+  "output": {
+    "grossSalaryEur": { "op": "FROM_CENTS", "value": "vars.grossSalaryCents" },
+    "employerContributionsBeforeRgduEur": {
+      "op": "FROM_CENTS",
+      "value": "vars.employerContributionsCents"
+    },
+    "rgduReliefEur": { "op": "FROM_CENTS", "value": "vars.rgduReliefCents" },
+    "employerContributionsEur": {
+      "op": "FROM_CENTS",
+      "value": "vars.employerContributionsAfterRgduCents"
+    },
+    "employeeContributionsEur": {
+      "op": "FROM_CENTS",
+      "value": "vars.employeeContributionsCents"
+    },
+    "netSalaryEur": {
+      "op": "FROM_CENTS",
+      "value": {
+        "op": "SUB",
+        "left": "vars.grossSalaryCents",
+        "right": "vars.employeeContributionsCents"
+      }
+    },
+    "totalEmployerCostEur": {
+      "op": "FROM_CENTS",
+      "value": {
+        "op": "ADD",
+        "left": "vars.grossSalaryCents",
+        "right": "vars.employerContributionsAfterRgduCents"
+      }
+    }
+  }
+}

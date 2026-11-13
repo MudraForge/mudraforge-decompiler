@@ -7,9 +7,10 @@ checks three independent layers against statutory ground truth:
 1. The synthesized canonical AST (threshold in paise, rate in basis points).
 2. Numeric execution by the canonical Node USVM (@mudraforge/statutory).
 3. The emitted Catala source, compiled and interpreted by the official Catala
-   toolchain when CATALA_INTERPRETER_JS points at the official
-   catala_web_interpreter.js bundle (https://assets.catala-lang.org/catala_web_interpreter.js).
-   Without the bundle, layer 3 is skipped; layers 1-2 always run.
+   toolchain. Fetch and SHA-256-verify the interpreter bundle with
+   `node scripts/fetch_catala_interpreter.mjs`; CATALA_INTERPRETER_JS
+   overrides the default location. Set REQUIRE_CATALA=1 to fail instead of
+   skip when it is unavailable.
 
 Ground truth is derived from the statutes themselves, not from model output:
 - IRC 3301-style FUTA: 6% of total wages.
@@ -29,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from compiler.converters.catala_emitter import emit_catala_code
+from compiler.converters.catala_emitter import _identifier, _scope_identifier, emit_catala_code
 from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
 from compiler.vm.usvm_evaluator import CanonicalUsvmEvaluator
 
@@ -100,9 +101,19 @@ class TestFinancialPipelineEndToEnd(unittest.TestCase):
             raise unittest.SkipTest(f"Checkpoint not found at {cls.ckpt_path}")
         cls.decompiler = DualStreamDecompilerInference(str(cls.ckpt_path))
         cls.evaluator = CanonicalUsvmEvaluator()
-        cls.catala_js = os.environ.get("CATALA_INTERPRETER_JS")
-        if cls.catala_js and not Path(cls.catala_js).exists():
-            cls.catala_js = None
+        # Default to the pinned interpreter so Catala verification cannot be
+        # skipped silently; CATALA_INTERPRETER_JS still overrides it.
+        catala_js = os.environ.get("CATALA_INTERPRETER_JS")
+        if catala_js is None:
+            vendored = REPO_ROOT / "scripts" / "catala_interpreter.cjs"
+            catala_js = str(vendored) if vendored.exists() else None
+        elif not Path(catala_js).exists():
+            catala_js = None
+        if catala_js is None and os.environ.get("REQUIRE_CATALA") == "1":
+            raise AssertionError(
+                "Catala interpreter unavailable; run: node scripts/fetch_catala_interpreter.mjs"
+            )
+        cls.catala_js = catala_js
 
     @classmethod
     def tearDownClass(cls):
@@ -146,9 +157,15 @@ class TestFinancialPipelineEndToEnd(unittest.TestCase):
         code = emit_catala_code(ast, scenarios=scenarios)
 
         if not self.catala_js:
-            return
+            self.skipTest(
+                "Catala interpreter unavailable; run: node scripts/fetch_catala_interpreter.mjs"
+            )
         harness = REPO_ROOT / "scripts" / "catala_verify.mjs"
-        request = {"id": key, "source": code, "scopes": [name for name, _, _, _, _ in cases]}
+        request = {
+            "id": key,
+            "source": code,
+            "scopes": [_scope_identifier(name) for name, _, _, _, _ in cases],
+        }
         proc = subprocess.run(
             ["node", str(harness)],
             input=json.dumps(request) + "\n",
@@ -163,24 +180,51 @@ class TestFinancialPipelineEndToEnd(unittest.TestCase):
             response["typecheck"]["success"],
             f"{key}: Catala typecheck failed:\n{response['typecheck']['errors']}",
         )
+        # The AST's pipeline.output map is the exact set of computation outputs
+        # the emitter must declare. Comparing every USVM field would silently
+        # skip outputs (USVM also reports policy/metadata fields), so coverage
+        # is asserted explicitly.
+        expected_outputs = {_identifier(k) for k in ast["computation"]["pipeline"]["output"]}
         for (name, _, base_p, tax_p, applicable), out in zip(cases, outputs):
-            run = response["results"][name]
+            run = response["results"][_scope_identifier(name)]
             self.assertTrue(run["success"], f"{key}/{name}: Catala interpret failed:\n{run['errors']}")
             values = run["values"]
-            for usvm_key, catala_value in out.items():
+            self.assertEqual(
+                set(values),
+                expected_outputs,
+                f"{key}/{name}: Catala outputs {sorted(values)} != AST outputs "
+                f"{sorted(expected_outputs)}",
+            )
+            compared: set[str] = set()
+            for usvm_key, usvm_value in out.items():
                 ck = _snake(usvm_key)
-                if ck not in values:
+                if ck not in expected_outputs:
                     continue
+                # USVM money outputs are integer minor units (paise); Catala
+                # money is expressed in major units. Convert before comparing.
                 if usvm_key.endswith("Paisa"):
-                    expected = catala_value  # Catala now emits paise directly; no /100 needed
+                    expected = usvm_value / 100
                 else:
-                    expected = catala_value
-                self.assertEqual(
-                    values[ck], expected,
-                    f"{key}/{name}: Catala {ck}={values[ck]} != USVM {usvm_key}={expected}",
+                    expected = usvm_value
+                self.assertAlmostEqual(
+                    values[ck], expected, places=2,
+                    msg=f"{key}/{name}: Catala {ck}={values[ck]} != USVM {usvm_key}={usvm_value}",
                 )
-            self.assertEqual(values["tax_amount_paisa"], tax_p, f"{key}/{name} Catala ground truth")
-            self.assertEqual(values["taxable_base_paisa"], base_p, f"{key}/{name} Catala base")
+                compared.add(ck)
+            self.assertEqual(
+                compared,
+                expected_outputs,
+                f"{key}/{name}: USVM result does not expose Catala outputs "
+                f"{sorted(expected_outputs - compared)}",
+            )
+            self.assertAlmostEqual(
+                values["tax_amount_paisa"], tax_p / 100, places=2,
+                msg=f"{key}/{name} Catala ground truth",
+            )
+            self.assertAlmostEqual(
+                values["taxable_base_paisa"], base_p / 100, places=2,
+                msg=f"{key}/{name} Catala base",
+            )
             self.assertEqual(values["is_applicable"], applicable, f"{key}/{name} Catala applicability")
 
     def test_futa_flat_rate(self):

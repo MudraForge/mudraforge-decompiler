@@ -1,0 +1,43 @@
+{
+  "sectionId": "FR-PROPERTY-2026",
+  "version": "1.0.0",
+  "archetype": "AD_VALOREM_PROPERTY_TAX",
+  "currencyCode": "EUR",
+  "minorUnitScale": 100,
+  "builtPropertyAbatementBps": 5000,
+  "scopeNote": "Built property (taxe fonciere batie) only. The municipal rate is a required fact: the statutory source gives locality-dependent ranges (10-50%), never a single national rate.",
+  "computationSteps": [
+    {
+      "assign": "cadastralValueCents",
+      "expr": { "op": "TO_CENTS", "value": "facts.cadastralValueEur" }
+    },
+    {
+      "assign": "municipalRateBps",
+      "expr": { "op": "VAR", "value": "facts.municipalRateBps" }
+    },
+    {
+      "assign": "taxableBaseCents",
+      "expr": {
+        "op": "RATIONAL_MULTIPLY",
+        "base": "vars.cadastralValueCents",
+        "rateBps": 5000,
+        "denominator": 10000
+      }
+    },
+    {
+      "assign": "propertyTaxCents",
+      "expr": {
+        "op": "RATIONAL_MULTIPLY",
+        "base": "vars.taxableBaseCents",
+        "rateBps": "vars.municipalRateBps",
+        "denominator": 10000
+      }
+    }
+  ],
+  "output": {
+    "cadastralValueEur": { "op": "FROM_CENTS", "value": "vars.cadastralValueCents" },
+    "taxableBaseEur": { "op": "FROM_CENTS", "value": "vars.taxableBaseCents" },
+    "propertyTaxEur": { "op": "FROM_CENTS", "value": "vars.propertyTaxCents" },
+    "municipalRatePercent": { "op": "DIV", "left": "vars.municipalRateBps", "right": 100 }
+  }
+}

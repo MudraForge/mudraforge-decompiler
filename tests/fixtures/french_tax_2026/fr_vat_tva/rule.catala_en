@@ -1,0 +1,73 @@
+# FR-TVA-2026
+
+```catala
+declaration enumeration CustomerCountry:
+  -- France
+  -- EU
+  -- NonEu
+
+declaration enumeration CustomerType:
+  -- B2B
+  -- B2C
+
+declaration enumeration GoodsCategory:
+  -- Standard
+  -- Intermediate
+  -- Reduced
+  -- SuperReduced
+  -- Zero
+
+declaration structure FrTva2026Input:
+  data transaction_amount content money
+  data eu_b2c_sales content money
+  data customer_type content CustomerType
+  data customer_country content CustomerCountry
+  data goods_category content GoodsCategory
+  data customer_country_vat_rate_bps content integer
+  data has_valid_vat_id content boolean
+
+declaration scope FrTva2026:
+  input input_data content FrTva2026Input
+  internal transaction_amount_cents content money
+  internal eu_b2c_sales_cents content money
+  internal customer_type content CustomerType
+  internal customer_country content CustomerCountry
+  internal goods_category content GoodsCategory
+  internal customer_country_vat_rate_bps content integer
+  internal has_valid_vat_id content boolean
+  internal is_eu content boolean
+  internal is_non_eu content boolean
+  internal is_above_distance_threshold content boolean
+  internal french_rate_bps content integer
+  internal vat_rate_bps content integer
+  internal vat_amount_cents content money
+  internal total_amount_cents content money
+  output transaction_amount_eur content money
+  output vat_rate_percent content decimal
+  output vat_amount_eur content money
+  output total_amount_eur content money
+  output is_reverse_charge content boolean
+  output is_export content boolean
+
+scope FrTva2026:
+  definition transaction_amount_cents equals input_data.transaction_amount
+  definition eu_b2c_sales_cents equals input_data.eu_b2c_sales
+  definition customer_type equals input_data.customer_type
+  definition customer_country equals input_data.customer_country
+  definition goods_category equals input_data.goods_category
+  definition customer_country_vat_rate_bps equals input_data.customer_country_vat_rate_bps
+  definition has_valid_vat_id equals input_data.has_valid_vat_id
+  definition is_eu equals (customer_country = EU)
+  definition is_non_eu equals (customer_country = NonEu)
+  definition is_reverse_charge equals ((customer_type = B2B) and (is_eu and has_valid_vat_id))
+  definition is_export equals is_non_eu
+  definition is_above_distance_threshold equals ((customer_type = B2C) and (is_eu and (eu_b2c_sales_cents > $10000.00)))
+  definition french_rate_bps equals (if (goods_category = Standard) then 2000 else (if (goods_category = Intermediate) then 1000 else (if (goods_category = Reduced) then 550 else (if (goods_category = SuperReduced) then 210 else 0))))
+  definition vat_rate_bps equals (if is_export then 0 else (if is_reverse_charge then 0 else (if is_above_distance_threshold then customer_country_vat_rate_bps else french_rate_bps)))
+  definition vat_amount_cents equals (if (is_export or is_reverse_charge) then $0.00 else (transaction_amount_cents * ((decimal of vat_rate_bps) / 10000.0)))
+  definition total_amount_cents equals (transaction_amount_cents + vat_amount_cents)
+  definition transaction_amount_eur equals transaction_amount_cents
+  definition vat_rate_percent equals ((decimal of vat_rate_bps) / (decimal of 100))
+  definition vat_amount_eur equals vat_amount_cents
+  definition total_amount_eur equals total_amount_cents
+```

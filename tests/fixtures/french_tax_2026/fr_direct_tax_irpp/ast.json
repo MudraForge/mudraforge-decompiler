@@ -1,0 +1,55 @@
+{
+  "sectionId": "FR-IRPP-2026",
+  "version": "1.0.0",
+  "archetype": "PROGRESSIVE_SLAB_TAX",
+  "currencyCode": "EUR",
+  "minorUnitScale": 100,
+  "slabsPerPartEur": [
+    { "lower": 0, "upper": 11600, "ratePercent": 0.0 },
+    { "lower": 11600, "upper": 29579, "ratePercent": 11.0 },
+    { "lower": 29579, "upper": 84577, "ratePercent": 30.0 },
+    { "lower": 84577, "upper": 181917, "ratePercent": 41.0 },
+    { "lower": 181917, "upper": null, "ratePercent": 45.0 }
+  ],
+  "computationSteps": [
+    {
+      "assign": "taxableIncomeCents",
+      "expr": { "op": "TO_CENTS", "value": "facts.taxableIncomeEur" }
+    },
+    {
+      "assign": "parts",
+      "expr": { "op": "VAR", "value": "facts.quotientFamilialParts" }
+    },
+    {
+      "assign": "incomePerPartCents",
+      "expr": { "op": "DIV", "left": "vars.taxableIncomeCents", "right": "vars.parts" }
+    },
+    {
+      "assign": "taxPerPartCents",
+      "expr": {
+        "op": "PROGRESSIVE_SLAB",
+        "base": "vars.incomePerPartCents",
+        "slabs": [
+          { "lowerCents": "0", "upperCents": "1160000", "rateBps": 0 },
+          { "lowerCents": "1160000", "upperCents": "2957900", "rateBps": 1100 },
+          { "lowerCents": "2957900", "upperCents": "8457700", "rateBps": 3000 },
+          { "lowerCents": "8457700", "upperCents": "18191700", "rateBps": 4100 },
+          { "lowerCents": "18191700", "upperCents": null, "rateBps": 4500 }
+        ]
+      }
+    },
+    {
+      "assign": "incomeTaxCents",
+      "expr": { "op": "MULTIPLY", "left": "vars.taxPerPartCents", "right": "vars.parts" }
+    },
+    {
+      "assign": "incomeTaxEur",
+      "expr": { "op": "FROM_CENTS", "value": "vars.incomeTaxCents" }
+    }
+  ],
+  "output": {
+    "taxableIncomeEur": { "op": "FROM_CENTS", "value": "vars.taxableIncomeCents" },
+    "incomeTaxEur": { "op": "FROM_CENTS", "value": "vars.incomeTaxCents" },
+    "incomeTaxCents": "vars.incomeTaxCents"
+  }
+}

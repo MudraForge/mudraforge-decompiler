@@ -1,0 +1,158 @@
+{
+  "sectionId": "FR-TVA-2026",
+  "version": "1.0.0",
+  "archetype": "VAT_RATE_LOOKUP_AND_COMPUTE",
+  "currencyCode": "EUR",
+  "minorUnitScale": 100,
+  "ratesBps": {
+    "standard": 2000,
+    "intermediate": 1000,
+    "reduced": 550,
+    "superReduced": 210,
+    "zero": 0
+  },
+  "euDistanceSellingThresholdCents": 1000000,
+  "computationSteps": [
+    {
+      "assign": "transactionAmountCents",
+      "expr": { "op": "TO_CENTS", "value": "facts.transactionAmountEur" }
+    },
+    {
+      "assign": "euB2cSalesCents",
+      "expr": { "op": "TO_CENTS", "value": "facts.euB2cSalesEur" }
+    },
+    {
+      "assign": "customerType",
+      "expr": { "op": "VAR", "value": "facts.customerType" }
+    },
+    {
+      "assign": "customerCountry",
+      "expr": { "op": "VAR", "value": "facts.customerCountry" }
+    },
+    {
+      "assign": "goodsCategory",
+      "expr": { "op": "VAR", "value": "facts.goodsCategory" }
+    },
+    {
+      "assign": "customerCountryVatRateBps",
+      "expr": { "op": "VAR", "value": "facts.customerCountryVatRateBps" }
+    },
+    {
+      "assign": "hasValidVatId",
+      "expr": { "op": "VAR", "value": "facts.hasValidVatId" }
+    },
+    {
+      "assign": "isEu",
+      "expr": { "op": "EQ", "left": "vars.customerCountry", "right": "EU" }
+    },
+    {
+      "assign": "isNonEu",
+      "expr": { "op": "EQ", "left": "vars.customerCountry", "right": "NON_EU" }
+    },
+    {
+      "assign": "isReverseCharge",
+      "expr": {
+        "op": "AND",
+        "left": { "op": "EQ", "left": "vars.customerType", "right": "B2B" },
+        "right": {
+          "op": "AND",
+          "left": "vars.isEu",
+          "right": "vars.hasValidVatId"
+        }
+      }
+    },
+    {
+      "assign": "isExport",
+      "expr": "vars.isNonEu"
+    },
+    {
+      "assign": "isAboveDistanceThreshold",
+      "expr": {
+        "op": "AND",
+        "left": { "op": "EQ", "left": "vars.customerType", "right": "B2C" },
+        "right": {
+          "op": "AND",
+          "left": "vars.isEu",
+          "right": {
+            "op": "GT",
+            "left": "vars.euB2cSalesCents",
+            "right": "1000000"
+          }
+        }
+      }
+    },
+    {
+      "assign": "frenchRateBps",
+      "expr": {
+        "op": "CONDITIONAL",
+        "test": { "op": "EQ", "left": "vars.goodsCategory", "right": "standard" },
+        "then": 2000,
+        "else": {
+          "op": "CONDITIONAL",
+          "test": { "op": "EQ", "left": "vars.goodsCategory", "right": "intermediate" },
+          "then": 1000,
+          "else": {
+            "op": "CONDITIONAL",
+            "test": { "op": "EQ", "left": "vars.goodsCategory", "right": "reduced" },
+            "then": 550,
+            "else": {
+              "op": "CONDITIONAL",
+              "test": { "op": "EQ", "left": "vars.goodsCategory", "right": "superReduced" },
+              "then": 210,
+              "else": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "assign": "vatRateBps",
+      "expr": {
+        "op": "CONDITIONAL",
+        "test": "vars.isExport",
+        "then": 0,
+        "else": {
+          "op": "CONDITIONAL",
+          "test": "vars.isReverseCharge",
+          "then": 0,
+          "else": {
+            "op": "CONDITIONAL",
+            "test": "vars.isAboveDistanceThreshold",
+            "then": "vars.customerCountryVatRateBps",
+            "else": "vars.frenchRateBps"
+          }
+        }
+      }
+    },
+    {
+      "assign": "vatAmountCents",
+      "expr": {
+        "op": "CONDITIONAL",
+        "test": {
+          "op": "OR",
+          "left": "vars.isExport",
+          "right": "vars.isReverseCharge"
+        },
+        "then": 0,
+        "else": {
+          "op": "RATIONAL_MULTIPLY",
+          "base": "vars.transactionAmountCents",
+          "rateBps": "vars.vatRateBps",
+          "denominator": 10000
+        }
+      }
+    },
+    {
+      "assign": "totalAmountCents",
+      "expr": { "op": "ADD", "left": "vars.transactionAmountCents", "right": "vars.vatAmountCents" }
+    }
+  ],
+  "output": {
+    "transactionAmountEur": { "op": "FROM_CENTS", "value": "vars.transactionAmountCents" },
+    "vatRatePercent": { "op": "DIV", "left": "vars.vatRateBps", "right": 100 },
+    "vatAmountEur": { "op": "FROM_CENTS", "value": "vars.vatAmountCents" },
+    "totalAmountEur": { "op": "FROM_CENTS", "value": "vars.totalAmountCents" },
+    "isReverseCharge": "vars.isReverseCharge",
+    "isExport": "vars.isExport"
+  }
+}

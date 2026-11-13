@@ -1,0 +1,28 @@
+# FR-PROPERTY-2026
+
+```catala
+declaration structure FrProperty2026Input:
+  data cadastral_value content money
+  data municipal_rate_bps content integer
+
+declaration scope FrProperty2026:
+  input input_data content FrProperty2026Input
+  internal cadastral_value_cents content money
+  internal municipal_rate_bps content integer
+  internal taxable_base_cents content money
+  internal property_tax_cents content money
+  output cadastral_value_eur content money
+  output taxable_base_eur content money
+  output property_tax_eur content money
+  output municipal_rate_percent content decimal
+
+scope FrProperty2026:
+  definition cadastral_value_cents equals input_data.cadastral_value
+  definition municipal_rate_bps equals input_data.municipal_rate_bps
+  definition taxable_base_cents equals (cadastral_value_cents * ((decimal of 5000) / 10000.0))
+  definition property_tax_cents equals (taxable_base_cents * ((decimal of municipal_rate_bps) / 10000.0))
+  definition cadastral_value_eur equals cadastral_value_cents
+  definition taxable_base_eur equals taxable_base_cents
+  definition property_tax_eur equals property_tax_cents
+  definition municipal_rate_percent equals ((decimal of municipal_rate_bps) / (decimal of 100))
+```
