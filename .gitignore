@@ -60,3 +60,6 @@ checkpoints/smoke_test_*.pt
 # scripts/fetch_catala_interpreter.mjs)
 scripts/catala_interpreter.cjs
 scripts/*.tmp
+
+# Local agent instructions (kept out of the published repository)
+.agents/
