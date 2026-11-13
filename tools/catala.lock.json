@@ -5,7 +5,9 @@
   "catala_version_source": "Embedded Catala_utils.Version in the upstream bundle; assets.catala-lang.org serves an untagged dev build.",
   "jsoo_version": "6.4.1",
   "url": "https://assets.catala-lang.org/catala_web_interpreter.js",
-  "mirrors": [],
+  "mirrors": [
+    "https://github.com/MudraForge/mudraforge-decompiler/releases/download/catala-interpreter-3f922959/catala_interpreter.cjs"
+  ],
   "sha256": "3f922959f578fb1976dacd534f9428d3e920b49049c5be6707d59b8e4f146323",
   "bytes": 10245495,
   "node": ">=20"
