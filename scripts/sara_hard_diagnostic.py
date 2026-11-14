@@ -191,6 +191,15 @@ def run_diagnostic_on_case(
         res.failure_detail = msg
         return res
 
+    if decomp.get("status") == "LOWERING_FAILED":
+        res.annotation_ok = True
+        res.scope_ok = True
+        res.furthest_stage = STAGE_LOWER
+        err_msg = str(decomp.get("loweringError") or "")
+        res.failure_code = err_msg.split(":", 1)[0].strip() if ":" in err_msg else (err_msg or "ERR_LOWERING_FAILED")
+        res.failure_detail = err_msg
+        return res
+
     if decomp.get("status") != "SUCCESS":
         res.failure_code = "ERR_ANNOTATION_FAILED"
         res.failure_detail = f"status={decomp.get('status')}"
@@ -328,9 +337,10 @@ def run_diagnostic_on_case(
 def run_all_diagnostics(
     output_json: Path,
     output_md: Path,
+    checkpoint_path: str = "checkpoints/dual_stream_sup.pt",
 ) -> dict[str, Any]:
-    print("Loading dual-stream model checkpoint...")
-    decompiler = DualStreamDecompilerInference("checkpoints/dual_stream_sup.pt")
+    print(f"Loading dual-stream model checkpoint: {checkpoint_path}...")
+    decompiler = DualStreamDecompilerInference(checkpoint_path)
     
     catala_available = CATALA_INTERPRETER.exists() and HARNESS.exists()
     print(f"Catala interpreter available: {catala_available}")
@@ -535,5 +545,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SARA-Hard Compilation Diagnostic")
     parser.add_argument("--json", type=Path, default=REPO_ROOT / "docs" / "sara_hard_diagnostic.json")
     parser.add_argument("--md", type=Path, default=REPO_ROOT / "docs" / "sara_hard_diagnostic.md")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/dual_stream_sup.pt")
     args = parser.parse_args()
-    run_all_diagnostics(args.json, args.md)
+    run_all_diagnostics(args.json, args.md, checkpoint_path=args.checkpoint)

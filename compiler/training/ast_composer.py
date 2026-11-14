@@ -155,10 +155,21 @@ _CITATION_NOISE = [
 ]
 
 
-def _pick_operand_phrase(rng: random.Random) -> str:
+def _split_seq(seq: list[Any], split: str) -> list[Any]:
+    if split not in ("train", "val") or len(seq) < 2:
+        return seq
+    cut = max(1, (len(seq) * 3) // 4)
+    if cut >= len(seq):
+        cut = len(seq) - 1
+    return seq[:cut] if split == "train" else seq[cut:]
+
+
+def _pick_operand_phrase(rng: random.Random, split: str = "all") -> str:
     if rng.random() < 0.35:
-        return f"{rng.choice(_OOD_MODIFIERS)} {rng.choice(_OOD_HEAD_NOUNS)}"
-    return rng.choice(_BASE_OPERANDS)
+        mods = _split_seq(_OOD_MODIFIERS, split)
+        nouns = _split_seq(_OOD_HEAD_NOUNS, split)
+        return f"{rng.choice(mods)} {rng.choice(nouns)}"
+    return rng.choice(_split_seq(_BASE_OPERANDS, split))
 
 
 def _fmt_money(rng: random.Random, major_val: int, currency: str = "USD") -> str:
@@ -174,15 +185,31 @@ class CombinatorialAstComposer:
 
     def __init__(self, seed: int = 42):
         self.rng = random.Random(seed)
+        self._active_split = "all"
 
-    def sample_rule(self, formulation: int | None = None) -> dict[str, Any]:
+    def _pick_base_operand(self) -> str:
+        return self.rng.choice(_split_seq(_BASE_OPERANDS, self._active_split))
+
+    def _pick_defined_term(self) -> str:
+        return self.rng.choice(_split_seq(_DEFINED_TERMS, self._active_split))
+
+    def _pick_collection_item(self) -> tuple[str, str]:
+        return self.rng.choice(_split_seq(_COLLECTION_ITEMS, self._active_split))
+
+    def sample_rule(
+        self,
+        formulation: int | None = None,
+        split: str = "all",
+    ) -> dict[str, Any]:
         """Generates a single AST-first combinatorial v2 sample.
 
-        Formulations 0 and 1 form the train phrasing distribution; 2 and 3 form
-        the held-out validation phrasing distribution.
+        Both train and val splits sample across all phrasing formulations [0, 1, 2, 3],
+        while open-class operands, modifiers, head nouns, defined terms, and collection
+        entities are partitioned disjointly when split is 'train' vs 'val'.
         """
+        self._active_split = split if split in ("train", "val") else "all"
         if formulation is None:
-            formulation = self.rng.choice([0, 1]) if self.rng.random() < 0.80 else self.rng.choice([2, 3])
+            formulation = self.rng.choice([0, 1, 2, 3])
         ccy = self.rng.choice(["USD", "INR", "EUR", "GBP", "SGD", "CHF"])
 
         family = self.rng.choices(
@@ -228,7 +255,7 @@ class CombinatorialAstComposer:
     # ── Builder 1: Depth 1..5 Composed Arithmetic (`RATE`, `EXCESS`, `SUB_CREDIT`, `MIN_CAP`, `LET`) ──
 
     def _gen_composed_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
-        op_name = _pick_operand_phrase(self.rng)
+        op_name = _pick_operand_phrase(self.rng, split=self._active_split)
         rate = self.rng.choice(_RATES)
         use_excess = self.rng.random() < 0.65
         floor_amt = _fmt_money(self.rng, self.rng.choice([5000, 12500, 25000, 50000, 120000]), currency=currency)
@@ -237,7 +264,7 @@ class CombinatorialAstComposer:
         use_cap = self.rng.random() < 0.55
         credit_amt = _fmt_money(self.rng, self.rng.choice([250, 500, 1200, 2500]), currency=currency)
         cap_amt = _fmt_money(self.rng, self.rng.choice([8000, 15000, 30000, 75000]), currency=currency)
-        def_term = self.rng.choice(_DEFINED_TERMS)
+        def_term = self._pick_defined_term()
         use_unit_contrast = self.rng.random() < 0.45
         dur_txt = self.rng.choice(_DURATIONS)
         cnt_txt = self.rng.choice(_COUNTS)
@@ -269,25 +296,52 @@ class CombinatorialAstComposer:
         spans.append((op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"))
 
         if use_excess:
+            use_repeated_threshold = (
+                idx_floor_sym is None and self.rng.random() < 0.35
+            )
             if idx_floor_sym is not None:
                 th_tok = f"such {def_term}"
                 idx_th = len(spans)
                 spans.append((th_tok, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_SYMBOL_VAR"))
                 rels.append((idx_th, idx_floor_sym, "REL_COREF_LINK"))
+                rels.append((idx_rate, idx_th, "REL_RATE_TO_THRESHOLD"))
+                rel_join = f"exceeding {th_tok}"
+                if formulation == 0:
+                    core_s = f"{prefix}The charge shall equal {rate_phrase} of the excess of {op_name} {rel_join}"
+                elif formulation == 1:
+                    core_s = f"{prefix}On {op_name} {rel_join}, an assessment at {rate_phrase} applies"
+                elif formulation == 2:
+                    core_s = f"{prefix}Liability is computed as {rate_phrase} on {op_name} {rel_join}"
+                else:
+                    core_s = f"{prefix}A party shall remit {rate_phrase} of {op_name} {rel_join}"
+            elif use_repeated_threshold:
+                dup_tok = f"exceeding {floor_amt}" if formulation == 1 else f"over {floor_amt}"
+                spans.append((dup_tok, "ROLE_IGNORE", "UNIT_MONEY"))
+                idx_th = len(spans)
+                spans.append((floor_amt, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"))
+                rels.append((idx_rate, idx_th, "REL_RATE_TO_THRESHOLD"))
+                if formulation == 0:
+                    core_s = f"If {op_name} exceeds {floor_amt}, the charge shall equal {rate_phrase} on the excess {dup_tok}"
+                elif formulation == 1:
+                    core_s = f"Where {op_name} exceeds {floor_amt}, levy {rate_phrase} on the excess {dup_tok}"
+                elif formulation == 2:
+                    core_s = f"When {op_name} exceeds {floor_amt}, liability is computed as {rate_phrase} on the excess {dup_tok}"
+                else:
+                    core_s = f"Whenever {op_name} exceeds {floor_amt}, remit {rate_phrase} on the excess {dup_tok}"
             else:
                 th_tok = f"exceeding {floor_amt}" if formulation in (0, 2) else f"over {floor_amt}"
                 idx_th = len(spans)
                 spans.append((th_tok, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"))
-            rels.append((idx_rate, idx_th, "REL_RATE_TO_THRESHOLD"))
-            rel_join = f"exceeding {th_tok}" if idx_floor_sym is not None else th_tok
-            if formulation == 0:
-                core_s = f"{prefix}The charge shall equal {rate_phrase} of the excess of {op_name} {rel_join}"
-            elif formulation == 1:
-                core_s = f"{prefix}On {op_name} {rel_join}, an assessment at {rate_phrase} applies"
-            elif formulation == 2:
-                core_s = f"{prefix}Liability is computed as {rate_phrase} on {op_name} {rel_join}"
-            else:
-                core_s = f"{prefix}A party shall remit {rate_phrase} of {op_name} {rel_join}"
+                rels.append((idx_rate, idx_th, "REL_RATE_TO_THRESHOLD"))
+                rel_join = th_tok
+                if formulation == 0:
+                    core_s = f"{prefix}The charge shall equal {rate_phrase} of the excess of {op_name} {rel_join}"
+                elif formulation == 1:
+                    core_s = f"{prefix}On {op_name} {rel_join}, an assessment at {rate_phrase} applies"
+                elif formulation == 2:
+                    core_s = f"{prefix}Liability is computed as {rate_phrase} on {op_name} {rel_join}"
+                else:
+                    core_s = f"{prefix}A party shall remit {rate_phrase} of {op_name} {rel_join}"
         else:
             rels.append((idx_rate, idx_op, "REL_RATE_TO_THRESHOLD"))
             if formulation == 0:
@@ -363,7 +417,7 @@ class CombinatorialAstComposer:
     # ── Builder 2: Bounded Brackets `(floor, ceiling]` + Optional `baseTax` ───────────────────────
 
     def _gen_bounded_bracket(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
-        op_name = self.rng.choice(_BASE_OPERANDS)
+        op_name = self._pick_base_operand()
         lo_num = self.rng.choice([15000, 36900, 50000, 80000])
         hi_num = lo_num + self.rng.choice([25000, 52250, 90000])
         lo_amt = _fmt_money(self.rng, lo_num, currency=currency)
@@ -450,7 +504,7 @@ class CombinatorialAstComposer:
     def _gen_boolean_dag(self, formulation: int) -> dict[str, Any]:
         preds = self.rng.sample(_BOOLEAN_PREDICATES, k=self.rng.randint(2, 4))
         use_def = self.rng.random() < 0.65
-        term = self.rng.choice(_DEFINED_TERMS)
+        term = self._pick_defined_term()
         use_mixed_dnf = len(preds) >= 3 and self.rng.random() < 0.40
         op_join = "DNF_MIXED" if use_mixed_dnf else self.rng.choice(["AND", "OR"])
         neg_mask = [self.rng.random() < 0.35 for _ in preds]
@@ -582,7 +636,7 @@ class CombinatorialAstComposer:
     # ── Builder 4: Bounded Collection Folds & Quantifiers ──────────────────────────────────────
 
     def _gen_collection_fold(self, formulation: int) -> dict[str, Any]:
-        coll_name, elem_name = self.rng.choice(_COLLECTION_ITEMS)
+        coll_name, elem_name = self._pick_collection_item()
         pred_text, _ = self.rng.choice(_COLLECTION_BOOL_PREDS)
         mode = self.rng.choice(["SUM", "COUNT", "FORALL", "EXISTS", "NOT_FORALL"])
 
@@ -659,7 +713,7 @@ class CombinatorialAstComposer:
     # ── Builder 5: Multi-Clause Lexical-Scope Substitution (`REL_DEFINED_TERM_OF` + `REL_SUBSTITUTE_WHEN`) ──
 
     def _gen_scoped_substitution(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
-        term = self.rng.choice(_DEFINED_TERMS)
+        term = self._pick_defined_term()
         base_amt = _fmt_money(self.rng, self.rng.choice([4400, 12000, 25000, 60000]), currency=currency)
         sub_amt = _fmt_money(self.rng, self.rng.choice([18000, 35000, 75000, 150000]), currency=currency)
         d1 = self.rng.choice(_DATES_START)
@@ -860,7 +914,7 @@ class CombinatorialAstComposer:
     # ── Builder 7: Cross-Primitive Fold -> Excess -> Rate -> Cap/Credit Pipeline ───────────────
 
     def _gen_fold_to_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
-        coll_name, elem_name = self.rng.choice(_COLLECTION_ITEMS)
+        coll_name, elem_name = self._pick_collection_item()
         rate = self.rng.choice(_RATES)
         floor_amt = _fmt_money(self.rng, self.rng.choice([10000, 25000, 50000]), currency=currency)
         cap_amt = _fmt_money(self.rng, self.rng.choice([12000, 30000, 80000]), currency=currency)
@@ -906,7 +960,7 @@ class CombinatorialAstComposer:
 
     def _gen_gated_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
         preds = self.rng.sample(_BOOLEAN_PREDICATES, k=2)
-        op_name = self.rng.choice(_BASE_OPERANDS)
+        op_name = self._pick_base_operand()
         rate = self.rng.choice(_RATES)
         floor_amt = _fmt_money(self.rng, self.rng.choice([8000, 20000, 45000]), currency=currency)
         if self.rng.random() < 0.30:
@@ -1000,7 +1054,7 @@ class CombinatorialAstComposer:
     # ── Builder 9: Multi-Clause Progressive Bracket Tiers (2..3 Tiers) ──────────────────────────
 
     def _gen_multi_tier_bracket(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
-        op_name = self.rng.choice(_BASE_OPERANDS)
+        op_name = self._pick_base_operand()
         t1_lo, t1_hi, t2_hi = 10000, 40000, 90000
         a1 = _fmt_money(self.rng, t1_lo, currency=currency)
         a2 = _fmt_money(self.rng, t1_hi, currency=currency)
@@ -1046,7 +1100,7 @@ class CombinatorialAstComposer:
     # ── Builder 10: Conditional & Additive Dual-Rate Expressions (`IF cond THEN r1 ELSE r2` | `r1 + r2`)
 
     def _gen_branched_rates(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
-        op_name = _pick_operand_phrase(self.rng)
+        op_name = _pick_operand_phrase(self.rng, split=self._active_split)
         mode = "conditional" if self.rng.random() < 0.65 else "additive"
         r1 = self.rng.choice(["4%", "7.5%", "12%"])
         r2 = self.rng.choice(["18%", "22%", "28%"])

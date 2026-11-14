@@ -489,11 +489,12 @@ class ComprehensiveDatasetGenerator:
         ]
 
         if v2:
-            # Universal AST-First Combinatorial Rule Composition (zero section-specific templates, 80/20 disjoint split)
+            # Universal AST-First Combinatorial Rule Composition (zero section-specific templates, 80/20 disjoint lexical split)
             composer = CombinatorialAstComposer(seed=self.seed)
             for idx in range(num_samples):
                 is_train_split = (idx % 5 != 4)  # exact 80% Train / 20% Val split
-                formulation = random.choice([0, 1]) if is_train_split else random.choice([2, 3])
+                split_name = "train" if is_train_split else "val"
+                formulation = random.choice([0, 1, 2, 3])
                 if random.random() < 0.15:
                     text = random.choice(abstain_train_texts if is_train_split else abstain_val_texts)
                     sample_item = {
@@ -508,7 +509,7 @@ class ComprehensiveDatasetGenerator:
                         "clauses": [],
                     }
                 else:
-                    comp = composer.sample_rule(formulation=formulation)
+                    comp = composer.sample_rule(formulation=formulation, split=split_name)
                     text = comp["text"]
                     raw_swu = comp.get("spans_with_units") or []
                     valid_swu = []

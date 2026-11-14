@@ -111,13 +111,13 @@ class TestModelV2Commit3(unittest.TestCase):
             ds = generate_synthetic_dataset(num_samples=120, seed=42, v2=True)
             torch.save(ds, ds_path)
 
-            # Train long enough (~2s) that the smoke checkpoint produces valid non-abstained v2 ASTs
+            # Train long enough (~10s) that the smoke checkpoint produces valid non-abstained v2 ASTs
             train_supervised_dual_stream(
                 dataset_path=ds_path,
                 checkpoint_out=sup_path,
-                epochs=8,
+                epochs=10,
                 lr=1e-3,
-                batch_size=16,
+                batch_size=8,
                 smoke_test=False,
                 v2=True,
             )
@@ -489,18 +489,22 @@ class TestModelV2Commit3(unittest.TestCase):
         self.assertEqual(summary["passed"], summary["checked"])
 
         # 1. Fault injection: mask-blocked gold relation edge
+        from compiler.neural.inference_v2 import _is_compatible_triple
+        from compiler.neural.statutory_neural_parser import V2_RELATION_TYPES
         bad_ds = copy.deepcopy(ds)
         corrupted = False
         for it in bad_ds["train"]:
             if it.get("modality_name") != "MODALITY_ABSTAIN_UNRESOLVED" and any(
-                cell != 0 for row in it.get("rel_matrix", []) for cell in row
+                cell != 0 and not _is_compatible_triple("UNIT_NONE", V2_RELATION_TYPES[cell], "UNIT_NONE")
+                for row in it.get("rel_matrix", [])
+                for cell in row
             ):
                 it["unit_labels"] = [0] * len(it.get("unit_labels", []))
                 corrupted = True
                 break
         self.assertTrue(corrupted)
         with self.assertRaises(RuntimeError) as ctx:
-            verify_v2_dataset_contract(bad_ds, max_samples=50, strict=True)
+            verify_v2_dataset_contract(bad_ds, max_samples=100, strict=True)
         self.assertIn("MASK_BLOCKED_GOLD_EDGE", str(ctx.exception))
 
         # 2. Fault injection: semantic invariant checker flags Boolean Paisa suffix & wrong branch op
@@ -910,6 +914,178 @@ class TestModelV2Commit3(unittest.TestCase):
         pred_ids = decompiler._viterbi_decode(logits, tokens)
         pred_tags = [decompiler.id2bio[i] for i in pred_ids]
         self.assertEqual(pred_tags, ["B-THRESHOLD", "I-THRESHOLD", "O", "B-RATE", "I-RATE", "I-RATE"])
+
+    def test_remap_and_decode_dag_relations_eliminates_post_stitch_and_clause_cycles(self):
+        import torch
+        from compiler.neural.inference_v2 import remap_and_decode_dag_relations_v2
+        from compiler.neural.statutory_neural_parser import V2_RELATION_TYPES
+        from compiler.neural.clause_linker import _v2_topo_sort_indices
+
+        rel2id = {r: i for i, r in enumerate(V2_RELATION_TYPES)}
+        id2rel = {i: r for i, r in enumerate(V2_RELATION_TYPES)}
+
+        # Case 1: Pre-mapping 3-span edges (0->1 strong, 1->2 weak) collapse into a
+        # 2-cycle (0 <-> 1) when spans 0 and 2 merge via old_to_new_span_idx={0:0, 1:1, 2:0}.
+        logits = torch.full((3, 3, len(V2_RELATION_TYPES)), -5.0)
+        logits[:, :, rel2id["REL_NO_EDGE"]] = 0.0
+        logits[0, 1, rel2id["REL_RATE_TO_THRESHOLD"]] = 6.0
+        logits[1, 2, rel2id["REL_SUBTRACTION_BASE"]] = 2.0
+
+        preds = remap_and_decode_dag_relations_v2(
+            logits,
+            old_to_new_span_idx={0: 0, 1: 1, 2: 0},
+            num_mapped_spans=2,
+            id2rel=id2rel,
+        )
+        self.assertEqual(len(preds), 2)
+        self.assertEqual(preds[0][0], 0)
+        self.assertEqual(preds[1][1], 0)
+        self.assertEqual(preds[0][1], rel2id["REL_RATE_TO_THRESHOLD"])
+        self.assertEqual(preds[1][0], 0)
+
+        # Case 2: Cross-clause cycle (clause 0 <-> clause 1) broken by dropping weaker span edge.
+        c_logits = torch.full((4, 4, len(V2_RELATION_TYPES)), -5.0)
+        c_logits[:, :, rel2id["REL_NO_EDGE"]] = 0.0
+        c_logits[0, 2, rel2id["REL_RATE_TO_THRESHOLD"]] = 5.0  # clause 0 -> clause 1 (strong)
+        c_logits[3, 1, rel2id["REL_DEFINED_TERM_OF"]] = 1.5  # clause 1 -> clause 0 (weak)
+        clause_ids = [0, 0, 1, 1]
+        c_preds = remap_and_decode_dag_relations_v2(
+            c_logits,
+            old_to_new_span_idx={i: i for i in range(4)},
+            num_mapped_spans=4,
+            id2rel=id2rel,
+            clause_ids=clause_ids,
+        )
+        # Stronger edge survives, weaker cross-clause edge creating cycle is pruned.
+        self.assertEqual(c_preds[0][2], rel2id["REL_RATE_TO_THRESHOLD"])
+        self.assertEqual(c_preds[3][1], 0)
+        clause_adj: dict[int, set[int]] = {0: set(), 1: set()}
+        for s in range(4):
+            for t in range(4):
+                if c_preds[s][t] != 0 and clause_ids[s] != clause_ids[t]:
+                    clause_adj[clause_ids[s]].add(clause_ids[t])
+        self.assertEqual(_v2_topo_sort_indices(clause_adj), [1, 0])
+
+    def test_dual_stream_windowed_inference_merges_multi_clause_offsets(self):
+        import torch
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.domain_sensor import DOMAIN_TOKEN_CLASSES
+        from compiler.neural.logic_reasoner import LOGIC_VOCAB
+        from compiler.neural.statutory_neural_parser import (
+            BIO_TAGS,
+            RULE_MODALITIES,
+            SPAN_UNITS,
+            V2_RELATION_TYPES,
+            V2_SEMANTIC_ROLES,
+        )
+
+        bio2id = {t: i for i, t in enumerate(BIO_TAGS)}
+        role2id = {t: i for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        rel2id = {t: i for i, t in enumerate(V2_RELATION_TYPES)}
+        unit2id = {t: i for i, t in enumerate(SPAN_UNITS)}
+        mod2id = {t: i for i, t in enumerate(RULE_MODALITIES)}
+
+        cur_lid = LOGIC_VOCAB["<CURRENCY>"]
+        num_lid = LOGIC_VOCAB["<NUM_INT>"]
+        pct_lid = LOGIC_VOCAB["<PERCENT>"]
+
+        class _MockWindowModel:
+            def __call__(self, raw_token_ids, logic_token_ids, suffix_ids, clause_spans=None, span_indices=None):
+                seq_len = int(logic_token_ids.size(1))
+                lids = logic_token_ids[0].tolist()
+                if span_indices is None:
+                    mod_logits = torch.full((1, len(RULE_MODALITIES)), -5.0)
+                    mod_logits[0, mod2id["MODALITY_COMPUTATIONAL_EXCESS"]] = 6.0
+                    c_mod = None
+                    if clause_spans is not None:
+                        c_mod = torch.full((len(clause_spans), len(RULE_MODALITIES)), -5.0)
+                        c_mod[:, mod2id["MODALITY_COMPUTATIONAL_EXCESS"]] = 6.0
+                    bio_logits = torch.full((seq_len, len(BIO_TAGS)), -5.0)
+                    bio_logits[:, bio2id["O"]] = 4.0
+                    i = 0
+                    while i < seq_len:
+                        if i + 1 < seq_len and lids[i] == cur_lid and lids[i + 1] == num_lid:
+                            bio_logits[i, bio2id["O"]] = -5.0
+                            bio_logits[i, bio2id["B-THRESHOLD"]] = 6.0
+                            bio_logits[i + 1, bio2id["O"]] = -5.0
+                            bio_logits[i + 1, bio2id["I-THRESHOLD"]] = 6.0
+                            i += 2
+                        elif lids[i] == pct_lid:
+                            bio_logits[i, bio2id["O"]] = -5.0
+                            bio_logits[i, bio2id["B-RATE"]] = 6.0
+                            i += 1
+                        elif i + 1 < seq_len and lids[i] == num_lid and lids[i + 1] == pct_lid:
+                            bio_logits[i, bio2id["O"]] = -5.0
+                            bio_logits[i, bio2id["B-RATE"]] = 6.0
+                            bio_logits[i + 1, bio2id["O"]] = -5.0
+                            bio_logits[i + 1, bio2id["I-RATE"]] = 6.0
+                            i += 2
+                        else:
+                            i += 1
+                    dom_probs = torch.zeros((1, seq_len, len(DOMAIN_TOKEN_CLASSES)))
+                    dom_probs[0, :, 0] = 1.0
+                    dom_abst = torch.tensor([[0.95, 0.05]])
+                    return {
+                        "modality_logits": mod_logits,
+                        "clause_mod_logits": c_mod,
+                        "bio_logits": bio_logits,
+                        "domain_probs": dom_probs,
+                        "domain_abstain_probs": dom_abst,
+                    }
+
+                n_spans = len(span_indices)
+                role_logits = torch.full((n_spans, len(V2_SEMANTIC_ROLES)), -5.0)
+                unit_logits = torch.full((n_spans, len(SPAN_UNITS)), -5.0)
+                rel_logits = torch.full((n_spans, n_spans, len(V2_RELATION_TYPES)), -5.0)
+                rel_logits[:, :, rel2id["REL_NO_EDGE"]] = 2.0
+                for s_i, (ts, te) in enumerate(span_indices):
+                    if lids[ts] == cur_lid:
+                        role_logits[s_i, role2id["ROLE_TRANSACTION_EXCESS_THRESHOLD"]] = 6.0
+                        unit_logits[s_i, unit2id["UNIT_MONEY"]] = 6.0
+                    else:
+                        role_logits[s_i, role2id["ROLE_STANDARD_STATUTORY_RATE"]] = 6.0
+                        unit_logits[s_i, unit2id["UNIT_RATE"]] = 6.0
+                        if s_i > 0 and lids[span_indices[s_i - 1][0]] == cur_lid:
+                            rel_logits[s_i, s_i - 1, rel2id["REL_NO_EDGE"]] = -2.0
+                            rel_logits[s_i, s_i - 1, rel2id["REL_RATE_TO_THRESHOLD"]] = 8.0
+                return {
+                    "role_logits": role_logits,
+                    "unit_logits": unit_logits,
+                    "rel_logits": rel_logits,
+                }
+
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.architecture_version = "v2"
+        decompiler.model = _MockWindowModel()
+        decompiler.vocab = {"<PAD>": 0, "<UNK>": 1}
+        decompiler.bio2id = bio2id
+        decompiler.id2bio = {i: t for i, t in enumerate(BIO_TAGS)}
+        decompiler.id2role = {i: t for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        decompiler.id2rel = {i: t for i, t in enumerate(V2_RELATION_TYPES)}
+        decompiler.id2unit = {i: t for i, t in enumerate(SPAN_UNITS)}
+        decompiler.id2mod = {i: t for i, t in enumerate(RULE_MODALITIES)}
+        decompiler.id2dom = {i: t for i, t in enumerate(DOMAIN_TOKEN_CLASSES)}
+        decompiler.transition_mask = torch.zeros((len(BIO_TAGS), len(BIO_TAGS)), dtype=torch.float32)
+
+        text = (
+            "(a) On base exceeding $1,000, charge 5%. "
+            "(b) On base exceeding $2,000, charge 6%. "
+            "(c) On base exceeding $3,000, charge 7%. "
+            "(d) On base exceeding $4,000, charge 8%."
+        )
+        res = decompiler.decompile_text(text)
+        self.assertEqual(res["status"], "SUCCESS", f"Windowed decompile failed: {res}")
+        spans = res["classifiedSpans"]
+        edges = res["relationalEdges"]
+        self.assertEqual(len(spans), 8)
+        self.assertEqual([sp["clauseIdx"] for sp in spans], [0, 0, 1, 1, 2, 2, 3, 3])
+        self.assertEqual(spans[6]["span"], "$4,000")
+        self.assertEqual(spans[7]["span"], "8%")
+        self.assertEqual(
+            [(e["sourceIdx"], e["targetIdx"]) for e in edges],
+            [(1, 0), (3, 2), (5, 4), (7, 6)],
+        )
 
 
 if __name__ == "__main__":

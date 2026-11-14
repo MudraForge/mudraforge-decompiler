@@ -41,6 +41,7 @@ from .literals import (
 from .inference_v2 import (
     apply_type_compatibility_mask,
     decode_dag_relations_v2,
+    remap_and_decode_dag_relations_v2,
     synthesize_usvm_ast_v2,
 )
 from .ssa_walker import V2LoweringError
@@ -182,52 +183,62 @@ class DualStreamDecompilerInference:
         path.reverse()
         return path
 
-    def decompile_text(
+    @staticmethod
+    def _partition_clause_windows(
+        clause_ranges: list[tuple[int, int]],
+        total_tokens: int,
+        max_clauses: int = 3,
+        max_tokens: int = 110,
+    ) -> list[list[tuple[int, int, int]]]:
+        """Group ordered clauses into 1-3 clause inference windows under the token budget."""
+        if not clause_ranges:
+            return [[(0, 0, total_tokens - 1)]] if total_tokens > 0 else []
+        if len(clause_ranges) <= max_clauses and total_tokens <= 120:
+            return [[(c_idx, cs, ce) for c_idx, (cs, ce) in enumerate(clause_ranges)]]
+
+        windows: list[list[tuple[int, int, int]]] = []
+        cur_win: list[tuple[int, int, int]] = []
+        for c_idx, (cs, ce) in enumerate(clause_ranges):
+            if cur_win:
+                projected_tokens = ce - cur_win[0][1] + 1
+                if len(cur_win) >= max_clauses or projected_tokens > max_tokens:
+                    windows.append(cur_win)
+                    cur_win = []
+            cur_win.append((c_idx, cs, ce))
+        if cur_win:
+            windows.append(cur_win)
+        return windows
+
+    def _annotate_window(
         self,
         text: str,
-        source_metadata: dict = None,
-        rule_domain: str = "AUTO",
-        typed_inputs: bool = False,
-        clause_scopes: bool = False,
+        tokens: list[str],
+        offsets: list[tuple[int, int]],
+        raw_ids: list[int],
+        logic_ids: list[int],
+        suffix_ids: list[int],
+        window_clauses: list[tuple[int, int, int]],
+        w_tok_start: int,
+        w_tok_end: int,
     ) -> dict:
-        req_domain = str(rule_domain or "AUTO").strip().upper()
-        if req_domain not in ALLOWED_RULE_DOMAINS:
-            raise ValueError(f"Unsupported rule_domain '{rule_domain}'")
+        w_tokens = tokens[w_tok_start : w_tok_end + 1]
+        w_offsets = offsets[w_tok_start : w_tok_end + 1]
+        w_clause_ranges = [
+            (cs - w_tok_start, ce - w_tok_start)
+            for (_, cs, ce) in window_clauses
+        ]
+        global_clause_ids = [g_c_idx for (g_c_idx, _, _) in window_clauses]
 
-        tokens, offsets = tokenize_with_offsets(text)
-        if not tokens:
-            return {
-                "status": "UNRESOLVED_STATUTORY_AMBIGUITY",
-                "compiler": "DualStream-Generalist-Lab",
-                "ruleDomain": req_domain,
-                "calibratedConfidence": 0.0,
-                "isAuthorizedToDisburse": False,
-                "candidateSets": [],
-            }
-
-        raw_ids = []
-        suffix_ids = []
-        for idx, t in enumerate(tokens):
-            p1 = tokens[idx - 1] if idx > 0 else None
-            p2 = tokens[idx - 2] if idx > 1 else None
-            nxt = tokens[idx + 1] if idx + 1 < len(tokens) else None
-            raw_ids.append(resolve_open_class_token(t, p1, p2, self.vocab, next_token=nxt))
-            canon = canonicalize_token(t, p1, nxt)
-            suffix_ids.append(SUFFIX2ID.get(canonical_suffix(t, canon), SUFFIX2ID["<NONE>"]))
-
-        logic_ids = tokens_to_logic_ids(tokens)
-        clause_ranges = segment_clauses(text, tokens, offsets)
-
-        raw_tensor = torch.tensor([raw_ids], dtype=torch.long, device=self.device)
-        logic_tensor = torch.tensor([logic_ids], dtype=torch.long, device=self.device)
-        suffix_tensor = torch.tensor([suffix_ids], dtype=torch.long, device=self.device)
+        raw_tensor = torch.tensor([raw_ids[w_tok_start : w_tok_end + 1]], dtype=torch.long, device=self.device)
+        logic_tensor = torch.tensor([logic_ids[w_tok_start : w_tok_end + 1]], dtype=torch.long, device=self.device)
+        suffix_tensor = torch.tensor([suffix_ids[w_tok_start : w_tok_end + 1]], dtype=torch.long, device=self.device)
 
         with torch.no_grad():
             out = self.model(
                 raw_token_ids=raw_tensor,
                 logic_token_ids=logic_tensor,
                 suffix_ids=suffix_tensor,
-                clause_spans=clause_ranges if len(clause_ranges) > 1 else None,
+                clause_spans=w_clause_ranges if len(w_clause_ranges) > 1 else None,
             )
             mod_probs = torch.softmax(out["modality_logits"].squeeze(0), dim=-1)
             pred_mod_id = int(mod_probs.argmax(dim=-1).item())
@@ -242,27 +253,28 @@ class DualStreamDecompilerInference:
                     "token": tok,
                     "domainClass": self.id2dom.get(cls_id, "DT_OPERATIVE_ENTITY"),
                 }
-                for tok, cls_id in zip(tokens, dom_tok_preds)
+                for tok, cls_id in zip(w_tokens, dom_tok_preds)
             ]
 
             clause_modalities = []
             c_mod_logits = out["clause_mod_logits"]
             if c_mod_logits is not None and c_mod_logits.numel() > 0:
                 cm_probs = torch.softmax(c_mod_logits, dim=-1)
-                for c_idx, (cs_tok, ce_tok) in enumerate(clause_ranges):
-                    c_pid = int(cm_probs[c_idx].argmax(dim=-1).item())
+                for local_idx, (g_c_idx, cs_tok, ce_tok) in enumerate(window_clauses):
+                    c_pid = int(cm_probs[local_idx].argmax(dim=-1).item())
                     clause_modalities.append({
-                        "clauseIdx": c_idx,
+                        "clauseIdx": g_c_idx,
                         "tokenRange": [cs_tok, ce_tok],
                         "charRange": [offsets[cs_tok][0], offsets[ce_tok][1]],
                         "modality": self.id2mod.get(c_pid, "MODALITY_COMPUTATIONAL_EXCESS"),
-                        "confidence": round(float(cm_probs[c_idx, c_pid].item()), 4),
+                        "confidence": round(float(cm_probs[local_idx, c_pid].item()), 4),
                     })
-            elif clause_ranges:
+            elif window_clauses:
+                g_c_idx = global_clause_ids[0]
                 clause_modalities.append({
-                    "clauseIdx": 0,
-                    "tokenRange": [0, len(tokens) - 1],
-                    "charRange": [offsets[0][0], offsets[-1][1]],
+                    "clauseIdx": g_c_idx,
+                    "tokenRange": [w_tok_start, w_tok_end],
+                    "charRange": [offsets[w_tok_start][0], offsets[w_tok_end][1]],
                     "modality": pred_modality,
                     "confidence": round(modality_conf, 4),
                 })
@@ -277,40 +289,34 @@ class DualStreamDecompilerInference:
                     pred_modality = chosen_cm["modality"]
                     modality_conf = max(modality_conf, chosen_cm["confidence"])
 
-            bio_preds = self._viterbi_decode(out["bio_logits"], tokens)
+            bio_preds = self._viterbi_decode(out["bio_logits"], w_tokens)
             bio_tags = [self.id2bio[p] for p in bio_preds]
 
         if pred_modality == "MODALITY_ABSTAIN_UNRESOLVED" or (
             self.architecture_version == "v2" and dom_abstain_prob >= 0.88
         ):
             return {
-                "status": "UNRESOLVED_STATUTORY_AMBIGUITY",
-                "compiler": "DualStream-Generalist-Lab",
-                "ruleDomain": req_domain,
-                "predictedModality": pred_modality,
-                "modalityConfidence": round(modality_conf, 4),
-                "domainAbstainProb": round(dom_abstain_prob, 4),
-                "domainSignals": domain_signals,
-                "calibratedConfidence": 0.0,
-                "statutoryInvariants": {"isAuthorizedToDisburse": False, "requiresHumanApprovalForOutcomes": True},
-                "isAuthorizedToDisburse": False,
-                "candidateSets": [],
+                "abstained": True,
+                "pred_modality": pred_modality,
+                "modality_conf": modality_conf,
+                "dom_abstain_prob": dom_abstain_prob,
+                "domain_signals": domain_signals,
+                "clause_modalities": clause_modalities,
+                "classified_spans": [],
+                "rel_edges": [],
             }
 
-        discovered_spans = decode_bio_spans(bio_tags, tokens, offsets)
+        discovered_spans = decode_bio_spans(bio_tags, w_tokens, w_offsets)
         if not discovered_spans:
             return {
-                "status": "UNRESOLVED_STATUTORY_AMBIGUITY",
-                "compiler": "DualStream-Generalist-Lab",
-                "ruleDomain": req_domain,
-                "predictedModality": pred_modality,
-                "modalityConfidence": round(modality_conf, 4),
-                "domainAbstainProb": round(dom_abstain_prob, 4),
-                "domainSignals": domain_signals,
-                "calibratedConfidence": 0.0,
-                "statutoryInvariants": {"isAuthorizedToDisburse": False, "requiresHumanApprovalForOutcomes": True},
-                "isAuthorizedToDisburse": False,
-                "candidateSets": [],
+                "abstained": True,
+                "pred_modality": pred_modality,
+                "modality_conf": modality_conf,
+                "dom_abstain_prob": dom_abstain_prob,
+                "domain_signals": domain_signals,
+                "clause_modalities": clause_modalities,
+                "classified_spans": [],
+                "rel_edges": [],
             }
 
         span_boundaries = [(s["token_start"], s["token_end"]) for s in discovered_spans]
@@ -335,24 +341,26 @@ class DualStreamDecompilerInference:
                 pred_units = None
                 pred_unit_confs = None
 
-        def _locate_clause_idx(ts: int, te: int) -> int:
-            mid = (ts + te) // 2
+        def _locate_clause_idx(ts_global: int, te_global: int) -> int:
+            mid = (ts_global + te_global) // 2
             for cm in clause_modalities:
                 if cm["tokenRange"][0] <= mid <= cm["tokenRange"][1]:
                     return cm["clauseIdx"]
-            return 0
+            return global_clause_ids[0] if global_clause_ids else 0
 
         classified_spans = []
         for i, s_info in enumerate(discovered_spans):
             cs, ce = s_info["char_start"], s_info["char_end"]
+            ts_global = w_tok_start + s_info["token_start"]
+            te_global = w_tok_start + s_info["token_end"]
             entry = {
                 "span": text[cs:ce].strip(),
                 "bioType": s_info.get("type", "UNKNOWN"),
                 "role": self.id2role.get(pred_roles[i], "ROLE_IGNORE"),
                 "confidence": round(pred_confs[i], 4),
                 "charRange": [cs, ce],
-                "tokenRange": [s_info["token_start"], s_info["token_end"]],
-                "clauseIdx": _locate_clause_idx(s_info["token_start"], s_info["token_end"]),
+                "tokenRange": [ts_global, te_global],
+                "clauseIdx": _locate_clause_idx(ts_global, te_global),
             }
             if pred_units is not None:
                 entry["unit"] = self.id2unit.get(pred_units[i], "UNIT_NONE")
@@ -389,28 +397,176 @@ class DualStreamDecompilerInference:
                     id2unit=self.id2unit,
                     id2rel=self.id2rel,
                 )
-                rel_preds = decode_dag_relations_v2(rel_logits, id2rel=self.id2rel)
+                rel_preds = remap_and_decode_dag_relations_v2(
+                    rel_logits,
+                    old_to_new_span_idx=old_to_new_span_idx,
+                    num_mapped_spans=len(classified_spans),
+                    id2rel=self.id2rel,
+                    clause_ids=[sp["clauseIdx"] for sp in classified_spans],
+                )
+                mapped_n = len(classified_spans)
+                for sm in range(mapped_n):
+                    for tm in range(mapped_n):
+                        rel_id = rel_preds[sm][tm]
+                        if rel_id != 0 and sm != tm:
+                            rel_name = self.id2rel.get(rel_id, "REL_NO_EDGE")
+                            rel_edges.append({
+                                "sourceIdx": sm,
+                                "targetIdx": tm,
+                                "sourceSpan": classified_spans[sm]["span"],
+                                "targetSpan": classified_spans[tm]["span"],
+                                "relationType": rel_name,
+                            })
             else:
                 rel_preds = rel_logits.argmax(dim=-1).cpu().tolist()
-            num_spans = len(discovered_spans)
-            for src in range(num_spans):
-                for tgt in range(num_spans):
-                    rel_id = rel_preds[src][tgt]
-                    if rel_id != 0:
-                        sm = old_to_new_span_idx.get(src, src)
-                        tm = old_to_new_span_idx.get(tgt, tgt)
-                        if sm < len(classified_spans) and tm < len(classified_spans) and sm != tm:
-                            rel_name = self.id2rel.get(rel_id, "REL_NO_EDGE")
-                            ek = (sm, tm, rel_name)
-                            if ek not in seen_edges:
-                                seen_edges.add(ek)
-                                rel_edges.append({
-                                    "sourceIdx": sm,
-                                    "targetIdx": tm,
-                                    "sourceSpan": classified_spans[sm]["span"],
-                                    "targetSpan": classified_spans[tm]["span"],
-                                    "relationType": rel_name,
-                                })
+                num_spans = len(discovered_spans)
+                for src in range(num_spans):
+                    for tgt in range(num_spans):
+                        rel_id = rel_preds[src][tgt]
+                        if rel_id != 0:
+                            sm = old_to_new_span_idx.get(src, src)
+                            tm = old_to_new_span_idx.get(tgt, tgt)
+                            if sm < len(classified_spans) and tm < len(classified_spans) and sm != tm:
+                                rel_name = self.id2rel.get(rel_id, "REL_NO_EDGE")
+                                ek = (sm, tm, rel_name)
+                                if ek not in seen_edges:
+                                    seen_edges.add(ek)
+                                    rel_edges.append({
+                                        "sourceIdx": sm,
+                                        "targetIdx": tm,
+                                        "sourceSpan": classified_spans[sm]["span"],
+                                        "targetSpan": classified_spans[tm]["span"],
+                                        "relationType": rel_name,
+                                    })
+
+        return {
+            "abstained": False,
+            "pred_modality": pred_modality,
+            "modality_conf": modality_conf,
+            "dom_abstain_prob": dom_abstain_prob,
+            "domain_signals": domain_signals,
+            "clause_modalities": clause_modalities,
+            "classified_spans": classified_spans,
+            "rel_edges": rel_edges,
+        }
+
+    def decompile_text(
+        self,
+        text: str,
+        source_metadata: dict = None,
+        rule_domain: str = "AUTO",
+        typed_inputs: bool = False,
+        clause_scopes: bool = False,
+    ) -> dict:
+        req_domain = str(rule_domain or "AUTO").strip().upper()
+        if req_domain not in ALLOWED_RULE_DOMAINS:
+            raise ValueError(f"Unsupported rule_domain '{rule_domain}'")
+
+        tokens, offsets = tokenize_with_offsets(text)
+        if not tokens:
+            return {
+                "status": "UNRESOLVED_STATUTORY_AMBIGUITY",
+                "compiler": "DualStream-Generalist-Lab",
+                "ruleDomain": req_domain,
+                "calibratedConfidence": 0.0,
+                "isAuthorizedToDisburse": False,
+                "candidateSets": [],
+            }
+
+        raw_ids = []
+        suffix_ids = []
+        for idx, t in enumerate(tokens):
+            p1 = tokens[idx - 1] if idx > 0 else None
+            p2 = tokens[idx - 2] if idx > 1 else None
+            nxt = tokens[idx + 1] if idx + 1 < len(tokens) else None
+            raw_ids.append(resolve_open_class_token(t, p1, p2, self.vocab, next_token=nxt))
+            canon = canonicalize_token(t, p1, nxt)
+            suffix_ids.append(SUFFIX2ID.get(canonical_suffix(t, canon), SUFFIX2ID["<NONE>"]))
+
+        logic_ids = tokens_to_logic_ids(tokens)
+        clause_ranges = segment_clauses(text, tokens, offsets)
+        windows = self._partition_clause_windows(clause_ranges, len(tokens))
+
+        domain_signals: list[dict] = []
+        clause_modalities: list[dict] = []
+        classified_spans: list[dict] = []
+        rel_edges: list[dict] = []
+        non_abstained_windows: list[dict] = []
+        all_windows: list[dict] = []
+
+        for win in windows:
+            w_tok_start = 0 if len(windows) == 1 else win[0][1]
+            w_tok_end = (len(tokens) - 1) if len(windows) == 1 else win[-1][2]
+            w_res = self._annotate_window(
+                text=text,
+                tokens=tokens,
+                offsets=offsets,
+                raw_ids=raw_ids,
+                logic_ids=logic_ids,
+                suffix_ids=suffix_ids,
+                window_clauses=win,
+                w_tok_start=w_tok_start,
+                w_tok_end=w_tok_end,
+            )
+            all_windows.append(w_res)
+            domain_signals.extend(w_res["domain_signals"])
+            clause_modalities.extend(w_res["clause_modalities"])
+            if not w_res["abstained"] and w_res["classified_spans"]:
+                non_abstained_windows.append(w_res)
+                span_offset = len(classified_spans)
+                for sp in w_res["classified_spans"]:
+                    classified_spans.append(dict(sp))
+                for edge in w_res["rel_edges"]:
+                    rel_edges.append({
+                        "sourceIdx": edge["sourceIdx"] + span_offset,
+                        "targetIdx": edge["targetIdx"] + span_offset,
+                        "sourceSpan": edge["sourceSpan"],
+                        "targetSpan": edge["targetSpan"],
+                        "relationType": edge["relationType"],
+                    })
+
+        if not non_abstained_windows or not classified_spans:
+            last_win = all_windows[-1]
+            return {
+                "status": "UNRESOLVED_STATUTORY_AMBIGUITY",
+                "compiler": "DualStream-Generalist-Lab",
+                "ruleDomain": req_domain,
+                "predictedModality": last_win["pred_modality"],
+                "modalityConfidence": round(last_win["modality_conf"], 4),
+                "domainAbstainProb": round(last_win["dom_abstain_prob"], 4),
+                "domainSignals": domain_signals,
+                "calibratedConfidence": 0.0,
+                "statutoryInvariants": {"isAuthorizedToDisburse": False, "requiresHumanApprovalForOutcomes": True},
+                "isAuthorizedToDisburse": False,
+                "candidateSets": [],
+            }
+
+        if len(windows) == 1:
+            pred_modality = non_abstained_windows[0]["pred_modality"]
+            modality_conf = non_abstained_windows[0]["modality_conf"]
+            dom_abstain_prob = non_abstained_windows[0]["dom_abstain_prob"]
+        else:
+            comp_mods = [
+                cm for cm in clause_modalities
+                if cm["modality"].startswith("MODALITY_COMPUTATIONAL")
+            ]
+            non_abst_mods = [
+                cm for cm in clause_modalities
+                if cm["modality"] != "MODALITY_ABSTAIN_UNRESOLVED"
+            ]
+            if comp_mods:
+                best_cm = max(comp_mods, key=lambda x: x["confidence"])
+                pred_modality = best_cm["modality"]
+                modality_conf = best_cm["confidence"]
+            elif non_abst_mods:
+                best_cm = max(non_abst_mods, key=lambda x: x["confidence"])
+                pred_modality = best_cm["modality"]
+                modality_conf = best_cm["confidence"]
+            else:
+                pred_modality = non_abstained_windows[0]["pred_modality"]
+                modality_conf = non_abstained_windows[0]["modality_conf"]
+            dom_abstain_prob = min(w["dom_abstain_prob"] for w in non_abstained_windows)
+
 
         if self.architecture_version == "v2":
             try:

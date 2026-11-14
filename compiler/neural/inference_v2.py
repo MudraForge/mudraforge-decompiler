@@ -143,6 +143,7 @@ def _find_directed_cycle(n: int, edges: dict[tuple[int, int], tuple[int, int, in
 def decode_dag_relations_v2(
     rel_logits: torch.Tensor,
     id2rel: dict[int, str] | None = None,
+    clause_ids: list[int] | None = None,
 ) -> list[list[int]]:
     """Decode an (N, N, R) relation logit tensor into an anti-symmetric DAG prediction matrix.
 
@@ -150,8 +151,9 @@ def decode_dag_relations_v2(
     1. No self-loops (i == i -> 0).
     2. Anti-symmetry across pairs: if both i->j and j->i predict non-zero relations,
        keep only the direction with larger positive margin (logit[r] - logit[0]).
-    3. Acyclicity across both V2_EDGE_DIRECTION evaluation dependencies and raw directed
-       edges: iteratively drop the lowest-margin edge on any residual cycle.
+    3. Acyclicity across V2_EDGE_DIRECTION evaluation dependencies, raw directed
+       edges, and (when clause_ids is provided) cross-clause dependency links:
+       iteratively drop the lowest-margin edge on any residual cycle.
     """
     if rel_logits is None or rel_logits.numel() == 0:
         return []
@@ -160,6 +162,16 @@ def decode_dag_relations_v2(
         return []
 
     from .ssa_walker import V2_EDGE_DIRECTION
+
+    CLAUSE_DEP_RELS = {
+        "REL_COREF_LINK",
+        "REL_DEFINED_TERM_OF",
+        "REL_SUBSTITUTE_WHEN",
+        "REL_RATE_TO_THRESHOLD",
+        "REL_SUBTRACTION_BASE",
+    }
+    check_clauses = clause_ids is not None and len(clause_ids) == n
+    num_clauses = (max(clause_ids) + 1) if check_clauses and clause_ids else 0
 
     logits_cpu = rel_logits.detach().cpu()
     preds: list[list[int]] = logits_cpu.argmax(dim=-1).tolist()
@@ -183,10 +195,11 @@ def decode_dag_relations_v2(
                 else:
                     preds[i][j] = 0
 
-    # 2. Break any longer cycles on either V2_EDGE_DIRECTION eval graph or raw directed graph
+    # 2. Break any longer cycles on V2_EDGE_DIRECTION eval graph, raw graph, or clause graph
     while True:
         eval_edges: dict[tuple[int, int], tuple[int, int, int, float]] = {}
         raw_edges: dict[tuple[int, int], tuple[int, int, int, float]] = {}
+        clause_edges: dict[tuple[int, int], tuple[int, int, int, float]] = {}
         for s in range(n):
             for t in range(n):
                 rid = preds[s][t]
@@ -201,11 +214,22 @@ def decode_dag_relations_v2(
                 elif direction == "target_before_source":
                     eval_edges[(t, s)] = (s, t, rid, m)
 
+                if check_clauses and rel_name in CLAUSE_DEP_RELS:
+                    sc = clause_ids[s]
+                    tc = clause_ids[t]
+                    if sc != tc and (rel_name != "REL_COREF_LINK" or sc - tc == 1):
+                        prev = clause_edges.get((sc, tc))
+                        if prev is None or m < prev[3]:
+                            clause_edges[(sc, tc)] = (s, t, rid, m)
+
         cyc = _find_directed_cycle(n, eval_edges)
         graph_used = eval_edges
         if cyc is None:
             cyc = _find_directed_cycle(n, raw_edges)
             graph_used = raw_edges
+        if cyc is None and check_clauses and clause_edges:
+            cyc = _find_directed_cycle(num_clauses, clause_edges)
+            graph_used = clause_edges
         if cyc is None:
             break
 
@@ -216,6 +240,63 @@ def decode_dag_relations_v2(
         preds[weakest[0]][weakest[1]] = 0
 
     return preds
+
+
+def remap_and_decode_dag_relations_v2(
+    rel_logits: torch.Tensor,
+    old_to_new_span_idx: dict[int, int],
+    num_mapped_spans: int,
+    id2rel: dict[int, str] | None = None,
+    clause_ids: list[int] | None = None,
+) -> list[list[int]]:
+    """Project (N, N, R) relation logits through old_to_new_span_idx, then decode DAG.
+
+    Running DAG anti-symmetry and cycle pruning AFTER span remapping guarantees that
+    merging/stitching adjacent spans can never re-introduce self-loops or 2-cycles.
+    """
+    if rel_logits is None or rel_logits.numel() == 0 or num_mapped_spans <= 0:
+        return []
+    n = int(rel_logits.size(0))
+    if n == 0:
+        return []
+
+    is_identity = (
+        num_mapped_spans == n
+        and all(old_to_new_span_idx.get(i, i) == i for i in range(n))
+    )
+    if is_identity:
+        return decode_dag_relations_v2(
+            rel_logits,
+            id2rel=id2rel,
+            clause_ids=clause_ids,
+        )
+
+    logits_cpu = rel_logits.detach().cpu()
+    num_rels = int(logits_cpu.size(-1))
+    mapped_logits = torch.zeros((num_mapped_spans, num_mapped_spans, num_rels), dtype=logits_cpu.dtype)
+    mapped_logits[:, :, 0] = 1.0
+    best_margin: dict[tuple[int, int], float] = {}
+
+    for src in range(n):
+        sm = old_to_new_span_idx.get(src, src)
+        if sm < 0 or sm >= num_mapped_spans:
+            continue
+        for tgt in range(n):
+            tm = old_to_new_span_idx.get(tgt, tgt)
+            if tm < 0 or tm >= num_mapped_spans or sm == tm:
+                continue
+            cell = logits_cpu[src, tgt]
+            margin = float(cell[1:].max().item() - cell[0].item()) if num_rels > 1 else 0.0
+            key = (sm, tm)
+            if key not in best_margin or margin > best_margin[key]:
+                best_margin[key] = margin
+                mapped_logits[sm, tm] = cell
+
+    return decode_dag_relations_v2(
+        mapped_logits,
+        id2rel=id2rel,
+        clause_ids=clause_ids,
+    )
 
 
 def synthesize_usvm_ast_v2(
