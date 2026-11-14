@@ -1039,12 +1039,16 @@ class StatutoryRlEnvironment:
             cand_list = self._build_deontic_gate_fact_candidates(gold_ast)
 
         if not cand_list:
+            if gold_ast.get("astVersion") == "v2":
+                raise RuntimeError(f"ERR_V2_EMPTY_FACT_CANDIDATES: {gold_ast.get('ruleId')}")
             return self._select_vectors(stype=stype)
 
         batch_items = [{"ast": gold_ast, "facts": f_dict} for _, f_dict in cand_list]
         try:
             gold_outputs = self.evaluator.evaluate_batch(batch_items)
-        except Exception:
+        except Exception as exc:
+            if gold_ast.get("astVersion") == "v2":
+                raise RuntimeError(f"ERR_V2_VECTOR_EVAL_FAILED: {exc}") from exc
             return self._select_vectors(stype=stype)
 
         vectors = []
@@ -1062,6 +1066,8 @@ class StatutoryRlEnvironment:
 
         if vectors:
             return vectors
+        if gold_ast.get("astVersion") == "v2":
+            raise RuntimeError(f"ERR_V2_NO_VALID_VECTORS: {gold_ast.get('ruleId')}")
         return self._select_vectors(stype=stype)
 
     def _select_vectors(self, vectors: list[dict] = None, stype: str = None) -> list[dict]:

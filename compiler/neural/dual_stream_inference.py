@@ -376,34 +376,14 @@ class DualStreamDecompilerInference:
                                 })
 
         if self.architecture_version == "v2":
-            try:
-                ast_package = synthesize_usvm_ast_v2(
-                    text=text,
-                    spans=classified_spans,
-                    edges=rel_edges,
-                    clause_modalities=clause_modalities,
-                    dominant_modality=pred_modality,
-                    domain_abstain_prob=dom_abstain_prob,
-                )
-            except V2LoweringError as exc:
-                return {
-                    "status": "UNRESOLVED_STATUTORY_AMBIGUITY",
-                    "compiler": "DualStream-Generalist-Lab",
-                    "architectureVersion": self.architecture_version,
-                    "ruleDomain": req_domain,
-                    "predictedModality": pred_modality,
-                    "modalityConfidence": round(modality_conf, 4),
-                    "domainAbstainProb": round(dom_abstain_prob, 4),
-                    "domainSignals": domain_signals,
-                    "clauseModalities": clause_modalities,
-                    "classifiedSpans": classified_spans,
-                    "relationEdges": rel_edges,
-                    "calibratedConfidence": 0.0,
-                    "loweringError": str(exc),
-                    "statutoryInvariants": {"isAuthorizedToDisburse": False, "requiresHumanApprovalForOutcomes": True},
-                    "isAuthorizedToDisburse": False,
-                    "candidateSets": [],
-                }
+            ast_package = synthesize_usvm_ast_v2(
+                text=text,
+                spans=classified_spans,
+                edges=rel_edges,
+                clause_modalities=clause_modalities,
+                dominant_modality=pred_modality,
+                domain_abstain_prob=dom_abstain_prob,
+            )
         else:
             ast_package = synthesize_usvm_ast(
                 text=text,

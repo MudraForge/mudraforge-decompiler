@@ -101,25 +101,41 @@ class TestModelV2Commit3(unittest.TestCase):
             env.evaluator.close()
 
     def test_v2_supervised_and_grpo_smoke_pipeline_with_inference_loading(self):
+        from compiler.training.dataset_generator import generate_synthetic_dataset
+
         with tempfile.TemporaryDirectory() as td:
             sup_path = Path(td) / "v2_sup.pt"
             rl_path = Path(td) / "v2_rl.pt"
+            ds_path = Path(td) / "v2_ds.pt"
 
-            train_supervised_dual_stream(checkpoint_out=sup_path, smoke_test=True, v2=True)
+            ds = generate_synthetic_dataset(num_samples=120, seed=42, v2=True)
+            torch.save(ds, ds_path)
+
+            # Train long enough (~2s) that the smoke checkpoint produces valid non-abstained v2 ASTs
+            train_supervised_dual_stream(
+                dataset_path=ds_path,
+                checkpoint_out=sup_path,
+                epochs=8,
+                lr=1e-3,
+                batch_size=16,
+                smoke_test=False,
+                v2=True,
+            )
             self.assertTrue(sup_path.exists())
             sup_ckpt = torch.load(sup_path, map_location="cpu", weights_only=True)
             self.assertEqual(sup_ckpt["config"]["architecture_version"], "v2")
             self.assertEqual(sup_ckpt["config"]["num_span_units"], len(SPAN_UNITS))
             self.assertEqual(sup_ckpt["span_units"], SPAN_UNITS)
 
-            # Verify DualStreamDecompilerInference auto-routes loaded v2 checkpoint
+            # Verify DualStreamDecompilerInference auto-routes loaded v2 checkpoint and succeeds strictly
             engine = DualStreamDecompilerInference(checkpoint_path=sup_path)
             self.assertEqual(engine.architecture_version, "v2")
             self.assertEqual(engine.model.num_span_units, len(SPAN_UNITS))
             out = engine.decompile_text(
-                "A levy of 10% applies on gross income exceeding $5,000.",
+                "A charge of 12% applies to qualified revenue exceeding $50,000.",
             )
-            self.assertIn("compiler", out)
+            self.assertEqual(out.get("status"), "SUCCESS", f"Inference did not succeed: {out}")
+            self.assertEqual(out.get("synthesizedAst", {}).get("astVersion"), "v2")
             self.assertFalse(out.get("isAuthorizedToDisburse", False))
 
             # Run 1-epoch GRPO smoke test on v2 supervised checkpoint
@@ -132,6 +148,8 @@ class TestModelV2Commit3(unittest.TestCase):
             rl_ckpt = torch.load(rl_path, map_location="cpu", weights_only=True)
             self.assertEqual(rl_ckpt["config"]["architecture_version"], "v2")
             self.assertEqual(rl_ckpt["span_units"], SPAN_UNITS)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def test_section_c_rate_bps_count_date_and_missing_required_fail_closed(self):
         ast = {
