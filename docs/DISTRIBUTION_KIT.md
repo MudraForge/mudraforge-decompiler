@@ -36,7 +36,7 @@ No one can fake 22 entries of forensic compiler engineering. It demonstrates tha
 ### Platform 1: Official Website / Engineering Blog Post
 
 **URL Slug**: `/blog/why-llms-fail-at-tax-law-and-how-compilers-fix-it`  
-**Title**: Why 1-Trillion Parameter LLMs Get 44% on Tax Law, and How a 5.8M-Parameter Neuro-Symbolic Compiler Achieved 100% Zero-Shot  
+**Title**: Why 1-Trillion Parameter LLMs Get 44% on Tax Law, and How a 7.9M-Parameter Neuro-Symbolic Compiler Achieved Parameter-Efficient Zero-Shot Decomposition  
 **Subtitle**: Breaking the 6-year bottleneck in computational law by treating statutory legislation as code to be compiled, not text to be predicted.  
 
 #### Blog Body:
@@ -62,7 +62,7 @@ Our model was trained on Indian Direct Tax, GST, and statutory grammar primitive
 ```
 [ Natural Language Statute ]
              |
-             | Neural Parsing (5.8M-param Dual-Stream Transformer)
+             | Neural Parsing (7.9M-param Dual-Stream Transformer, 5.8M logic)
              v
 [ Declarative Abstract Syntax Tree (AST) ]
   { "type": "PROGRESSIVE_SLAB", "rate": 0.15, "threshold": 36900, "base": "taxableIncome" }
@@ -112,7 +112,7 @@ Read our full 22-entry training diary and the technical report at:
 
 ### Platform 2: Hacker News (Show HN)
 
-**Title**: Show HN: A 5.8M neuro-symbolic statutory compiler (100% on SARA hard vs. GPT-4's 44%)  
+**Title**: Show HN: A 7.9M neuro-symbolic statutory compiler (Track 1D 100% vs. GPT-4's 44% on SARA hard)  
 **URL**: Link to GitHub repository / technical report  
 
 #### First Comment by Author (The "Context Comment"):
@@ -127,7 +127,7 @@ The benchmark tests whether an AI can evaluate natural language provisions from 
 
 On the hard quantitative split (`sara_numeric/hard.json`), frontier LLMs (including GPT-4 and Claude direct chain-of-thought) peak at **44.4% accuracy**. The only baseline in the literature that achieved 100% was a hand-coded Prolog expert system manually written by human researchers over several weeks.
 
-We took our dual-stream neural compiler (a 5.8M-parameter transformer trained strictly on Indian Direct Tax, GST, and general statutory grammar—with zero U.S. tax code in its training data) and tested whether it could decompile and execute the U.S. tax code zero-shot.
+We took our dual-stream neural compiler (a 7.86M-parameter transformer: 2.08M DomainSensor + 5.78M LogicReasoner, trained strictly on Indian Direct Tax, GST, and general statutory grammar—with zero U.S. tax code in its training data) and tested whether it could decompile and execute the U.S. tax code zero-shot.
 
 Here are the results:
 - Track 1D (verbatim U.S. IRC clauses compiled by neural model and executed by VM): 14/14 (100.0%)
@@ -154,7 +154,7 @@ Happy to answer questions about the grammar constraints, Viterbi decoding, or th
 ### Platform 3: X (Twitter) Long-Form Thread
 
 **Tweet 1 (Hook)**:  
-Why do 1-trillion parameter LLMs score only 44.4% on tax law benchmarks, while a 5.8M-parameter neuro-symbolic compiler achieved 100% zero-shot?
+Why do 1-trillion parameter LLMs score only 44.4% on tax law benchmarks, while a 7.9M-parameter neuro-symbolic compiler achieved parameter-efficient zero-shot decomposition?
 
 We just published the benchmark results and a 22-entry training diary on SARA & DeonticBench.
 
@@ -171,7 +171,7 @@ Until now, the ONLY system that scored 100% on SARA was a hand-coded Prolog expe
 It wasn't an AI model—it was human software engineering. When researchers tried to train NLP models to generate Prolog, the parsers broke down.
 
 **Tweet 4 (The Breakthrough)**:  
-We took our 5.8M-parameter Dual-Stream Decompiler—trained strictly on Indian Direct Tax & GST, with ZERO exposure to U.S. tax code—and evaluated it zero-shot:
+We took our 7.86M-parameter Dual-Stream Decompiler (5.8M logic reasoner)—trained strictly on Indian Direct Tax & GST, with ZERO exposure to U.S. tax code—and evaluated it zero-shot:
 
 - SARA Track 1D (End-to-End Compile to Math): 14/14 (100.0%)
 - SARA Binary (30 hard cases): 30/30 (100.0%)
@@ -220,7 +220,7 @@ This is why Large Language Models have struggled with statutory reasoning. On th
 
 Today, MudraForge is publishing the results of our **Neuro-Symbolic Statutory Decompiler**:
 
-By separating linguistic parsing (a 5.8M-parameter transformer that maps natural language statutes into an inspectable Declarative Abstract Syntax Tree) from execution (the Universal Statutory Virtual Machine running exact integer-cent arithmetic in a secure V8 isolate), MudraForge achieved:
+By separating linguistic parsing (a 7.86M-parameter transformer that maps natural language statutes into an inspectable Declarative Abstract Syntax Tree) from execution (the Universal Statutory Virtual Machine running exact integer-cent arithmetic in a secure V8 isolate), MudraForge achieved:
 
 - **100.0% (35/35)** on the official DeonticBench SARA Numeric hard split.
 - **100.0% (30/30)** on the SARA Binary statutory entailment hard split.
@@ -246,6 +246,6 @@ Read our complete research publication and 22-entry engineering log here:
 
 Statutory reasoning over regulatory and tax legislation requires navigating complex defeasibility hierarchies, relational kinship structures, and multi-tier progressive mathematical formulations. Recent evaluations on the SARA (Statutory Reasoning Assessment) and DeonticBench corpora demonstrate that frontier autoregressive Large Language Models (LLMs) collapse on quantitative statutory splits, peaking at 44.4% accuracy due to arithmetic hallucinations and state-tracking drifts. Conversely, existing 100% baselines rely on manually engineered Prolog expert systems that cannot automate the extraction of new legislation from raw text.
 
-In this work, we present a factored neuro-symbolic framework that decouples statutory language understanding from deterministic symbolic computation. Our architecture pairs a lightweight (5.8M parameter) dual-stream transformer parser with a formal Declarative Abstract Syntax Tree (AST) intermediate representation executed over a deterministic virtual machine (USVM). 
+In this work, we present a factored neuro-symbolic framework that decouples statutory language understanding from deterministic symbolic computation. Our architecture pairs a lightweight (7.86M parameter total, 5.8M logic reasoner) dual-stream transformer parser with a formal Declarative Abstract Syntax Tree (AST) intermediate representation executed over a deterministic virtual machine (USVM). 
 
 Trained exclusively on Indian tax statutes and generalized statutory grammar, our system achieves 100.0% zero-shot accuracy across the SARA Track 1D end-to-end compilation suite (14/14), 100.0% on SARA Binary (30/30), and 100.0% on SARA Numeric (35/35 under the official $\pm \$1$ benchmark tolerance), with zero U.S. Internal Revenue Code instances present in the training set. We provide a forensic mathematical derivation proving that the three non-zero differences under exact-dollar evaluation stem from mixed truncation conventions (`floor` vs. `ceil`) within the benchmark's ground-truth generator. Finally, we demonstrate cross-domain transfer across airline tariff policies and state housing eviction statutes, alongside an epistemic fail-closed gate that abstains from discretionary, non-statutory case law.

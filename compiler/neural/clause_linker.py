@@ -700,6 +700,33 @@ def build_clause_scoped_computation(
         )
 
     # â”€â”€ 4. emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 3. identify section-level / parent base operand for inheritance ─────────
+    # If prior clauses establish an unambiguous monetary base operand, child clauses
+    # without an explicit local base can inherit it (preserving Gate A2.4).
+    candidate_bases = []
+    for plan in plans:
+        for span in plan.scope.spans:
+            if span.role == "ROLE_COMPUTATION_OPERAND":
+                bid = input_id_from_phrase(span.text, currency_code)
+                if bid and bid not in candidate_bases:
+                    candidate_bases.append(bid)
+    # Check whole section header/text for canonical legal subject nouns
+    if not candidate_bases:
+        header_text = text[:min(len(text), 600)].lower()
+        for cue, canonical_id in (
+            ("taxable income", "taxableIncome"),
+            ("gross income", "grossIncome"),
+            ("wages", "wages"),
+            ("turnover", "turnover"),
+            ("invoice", "invoiceAmount"),
+            ("purchase", "purchaseAmount"),
+        ):
+            if cue in header_text and canonical_id not in candidate_bases:
+                candidate_bases.append(canonical_id)
+
+    # Gate A2.4: unambiguous single base candidate, otherwise fail closed or leave None
+    unambiguous_base_id = candidate_bases[0] if len(candidate_bases) == 1 else None
+
     inputs: dict[str, dict] = {}
     steps: list[dict] = []
     outputs: dict[str, str] = {}
@@ -965,6 +992,8 @@ def build_clause_scoped_computation(
                 clause_idx=scope.index,
                 currency_code=currency_code,
                 inputs=inputs,
+                inherited_base_id=unambiguous_base_id,
+                candidate_bases=candidate_bases,
             )
             if walker_diagnostics:
                 for diagnostic in walker_diagnostics:
@@ -1021,6 +1050,19 @@ def build_clause_scoped_computation(
                     )
                 else:
                     base_id = input_id_from_phrase(phrase, currency_code)
+                    if not base_id:
+                        if unambiguous_base_id:
+                            base_id = unambiguous_base_id
+                        elif len(candidate_bases) > 1:
+                            diagnostics.append(
+                                Diagnostic(
+                                    code=ERR_AMBIGUOUS_REFERENCE,
+                                    severity="error",
+                                    clause_idx=scope.index,
+                                    detail=f"multiple candidate base amounts {candidate_bases} for clause {scope.index}",
+                                )
+                            )
+                            continue
                     if not base_id:
                         diagnostics.append(
                             Diagnostic(

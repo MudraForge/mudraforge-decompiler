@@ -4,38 +4,38 @@
     "total": 65,
     "annotation_ok": 65,
     "scope_ok": 65,
-    "lower_ok": 10,
-    "catala_emit_ok": 10,
-    "catala_typecheck_ok": 10,
-    "usvm_exec_ok": 10,
+    "lower_ok": 27,
+    "catala_emit_ok": 27,
+    "catala_typecheck_ok": 27,
+    "usvm_exec_ok": 27,
     "cross_engine_equal": 0
   },
   "compilation_coverage_numeric": {
     "total": 35,
     "annotation_ok": 35,
     "scope_ok": 35,
-    "lower_ok": 5,
-    "catala_emit_ok": 5,
-    "catala_typecheck_ok": 5,
-    "usvm_exec_ok": 5,
+    "lower_ok": 7,
+    "catala_emit_ok": 7,
+    "catala_typecheck_ok": 7,
+    "usvm_exec_ok": 7,
     "cross_engine_equal": 0
   },
   "compilation_coverage_binary": {
     "total": 30,
     "annotation_ok": 30,
     "scope_ok": 30,
-    "lower_ok": 5,
-    "catala_emit_ok": 5,
-    "catala_typecheck_ok": 5,
-    "usvm_exec_ok": 5,
+    "lower_ok": 20,
+    "catala_emit_ok": 20,
+    "catala_typecheck_ok": 20,
+    "usvm_exec_ok": 20,
     "cross_engine_equal": 0
   },
   "furthest_stage_distribution": {
-    "LOWER": 55,
-    "COMPLETE": 10
+    "COMPLETE": 27,
+    "LOWER": 38
   },
   "failure_codes_histogram": {
-    "ERR_NO_BASE_OPERAND": 43,
+    "ERR_AMBIGUOUS_REFERENCE": 26,
     "ERR_NO_RATE_HEAD": 9,
     "ERR_NO_COMPUTATION": 3
   },
@@ -44,16 +44,16 @@
       "case_id": "tax_case_10",
       "track": "numeric",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "tax_case_15",
@@ -67,8 +67,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_18",
@@ -82,23 +82,23 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_2",
       "track": "numeric",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "tax_case_29",
@@ -112,8 +112,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_35",
@@ -127,8 +127,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_39",
@@ -142,8 +142,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_44",
@@ -157,8 +157,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_47",
@@ -187,8 +187,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_51",
@@ -217,8 +217,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_60",
@@ -232,8 +232,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_61",
@@ -247,8 +247,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_78",
@@ -262,8 +262,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_85",
@@ -277,8 +277,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_93",
@@ -292,8 +292,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_64",
@@ -307,8 +307,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_83",
@@ -367,8 +367,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_63",
@@ -382,8 +382,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_67",
@@ -397,8 +397,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_69",
@@ -412,8 +412,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_70",
@@ -442,8 +442,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_73",
@@ -457,8 +457,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_74",
@@ -472,8 +472,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_75",
@@ -517,8 +517,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_94",
@@ -532,8 +532,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_95",
@@ -547,8 +547,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "tax_case_97",
@@ -569,61 +569,61 @@
       "case_id": "s1_a_1_i_pos",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s1_a_2_ii_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s1_a_2_iv_pos",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s1_c_iii_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s2_a_2_B_neg",
@@ -689,16 +689,16 @@
       "case_id": "s63_c_2_A_ii_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s63_f_3_pos",
@@ -712,8 +712,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "s68_a_2_pos",
@@ -727,8 +727,8 @@
       "catala_typecheck_ok": false,
       "usvm_exec_ok": false,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount ('')"
+      "failure_code": "ERR_AMBIGUOUS_REFERENCE",
+      "failure_detail": "ERR_AMBIGUOUS_REFERENCE: clause has ambiguous candidate base amounts: ['taxableIncome', 'grossIncome']"
     },
     {
       "case_id": "s68_b_1_C_neg",
@@ -764,31 +764,31 @@
       "case_id": "s152_a_pos",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s152_b_1_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s152_c_1_pos",
@@ -809,31 +809,31 @@
       "case_id": "s152_c_2_A_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s152_c_2_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s152_d_1_D_pos",
@@ -854,31 +854,31 @@
       "case_id": "s152_d_2_A_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s152_d_2_D_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s152_d_2_F_neg",
@@ -914,16 +914,16 @@
       "case_id": "s3306_a_1_B_pos",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s3306_a_2_B_neg",
@@ -959,16 +959,16 @@
       "case_id": "s3306_b_10_B_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s3306_c_1_pos",
@@ -989,31 +989,31 @@
       "case_id": "s3306_c_2_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     },
     {
       "case_id": "s3306_c_10_A_ii_neg",
       "track": "binary",
       "statute_section": "section1",
-      "furthest_stage": "LOWER",
+      "furthest_stage": "COMPLETE",
       "annotation_ok": true,
       "scope_ok": true,
-      "lower_ok": false,
-      "catala_emit_ok": false,
-      "catala_typecheck_ok": false,
-      "usvm_exec_ok": false,
+      "lower_ok": true,
+      "catala_emit_ok": true,
+      "catala_typecheck_ok": true,
+      "usvm_exec_ok": true,
       "cross_engine_equal": false,
-      "failure_code": "ERR_NO_BASE_OPERAND",
-      "failure_detail": "ERR_NO_BASE_OPERAND: the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount (''); the clause has no resolvable base amount ('')"
+      "failure_code": null,
+      "failure_detail": null
     }
   ]
 }

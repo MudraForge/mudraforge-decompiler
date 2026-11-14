@@ -406,16 +406,48 @@ def run_all_diagnostics(
         "| :--- | :---: | :---: | :--- |",
     ]
     for code, count in failure_codes.most_common():
-        desc = "Lowerer could not find computable clause head" if code == "ERR_NO_COMPUTATION" else (
-            "Model abstention or invalid sequence tagging" if code == "ERR_ANNOTATION_FAILED" else (
-                "Pipeline has no steps" if code == "ERR_EMPTY_PIPELINE" else (
-                    "AST cannot be lowered to Catala" if code == "ERR_CATALA_LOWERING" else "Evaluation error"
+        desc = (
+            "Multiple candidate base operands without explicit disambiguation (Gate A2.4)"
+            if code == "ERR_AMBIGUOUS_REFERENCE"
+            else (
+                "Clause has no computable rate-to-threshold head"
+                if code == "ERR_NO_RATE_HEAD"
+                else (
+                    "No base operand found or inherited"
+                    if code == "ERR_NO_BASE_OPERAND"
+                    else (
+                        "Lowerer could not find computable clause head"
+                        if code == "ERR_NO_COMPUTATION"
+                        else (
+                            "Model abstention or invalid sequence tagging"
+                            if code == "ERR_ANNOTATION_FAILED"
+                            else (
+                                "Pipeline has no steps"
+                                if code == "ERR_EMPTY_PIPELINE"
+                                else (
+                                    "AST cannot be lowered to Catala"
+                                    if code == "ERR_CATALA_LOWERING"
+                                    else "Evaluation error"
+                                )
+                            )
+                        )
+                    )
                 )
             )
         )
-        stage = "LOWER" if code in ("ERR_NO_COMPUTATION", "ERR_EMPTY_PIPELINE") else (
-            "CATALA_EMIT" if code == "ERR_CATALA_LOWERING" else (
-                "USVM_EXEC" if "USVM" in code else "ANNOTATION"
+        stage = (
+            "LOWER"
+            if code in (
+                "ERR_NO_COMPUTATION",
+                "ERR_EMPTY_PIPELINE",
+                "ERR_AMBIGUOUS_REFERENCE",
+                "ERR_NO_RATE_HEAD",
+                "ERR_NO_BASE_OPERAND",
+            )
+            else (
+                "CATALA_EMIT"
+                if code == "ERR_CATALA_LOWERING"
+                else ("USVM_EXEC" if "USVM" in code else "ANNOTATION")
             )
         )
         md_lines.append(f"| `{code}` | {count} | `{stage}` | {desc} |")

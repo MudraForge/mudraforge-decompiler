@@ -38,6 +38,7 @@ from compiler.neural.inference import parse_minor_units, parse_rate_bps, parse_u
 ERR_UNHANDLED_RELATION = "ERR_UNHANDLED_RELATION"
 ERR_CYCLIC_DEPENDENCY = "ERR_CYCLIC_DEPENDENCY"
 ERR_NO_BASE_OPERAND = "ERR_NO_BASE_OPERAND"
+ERR_AMBIGUOUS_REFERENCE = "ERR_AMBIGUOUS_REFERENCE"
 ERR_NO_RATE_HEAD = "ERR_NO_RATE_HEAD"
 ERR_NO_THRESHOLD = "ERR_NO_THRESHOLD"
 
@@ -153,6 +154,11 @@ _TRAILING_BASE_RE = re.compile(
     r"\b(?:of|on|to)\s+(?:the\s+|a\s+|an\s+|such\s+)?(?P<phrase>[A-Za-z][A-Za-z ]{2,40}?)\s*$",
     re.IGNORECASE,
 )
+_CONDITION_BASE_RE = re.compile(
+    r"\b(?:if|where)\s+(?:the\s+|a\s+|an\s+|such\s+)?(?P<phrase>[A-Za-z][A-Za-z ]{2,40}?)\s+"
+    r"(?:is\s+|are\s+)?(?:over|above|exceeding|more\s+than|not\s+over|not\s+exceeding|less\s+than)\b",
+    re.IGNORECASE,
+)
 
 
 def relation_sense(text_before: str) -> str:
@@ -179,6 +185,9 @@ def resolve_base_phrase(clause_text: str, threshold_node: SsaNode) -> str:
     if match:
         return match.group("phrase").strip()
     match = _TRAILING_BASE_RE.search(head)
+    if match:
+        return match.group("phrase").strip()
+    match = _CONDITION_BASE_RE.search(clause_text)
     if match:
         return match.group("phrase").strip()
     return ""
@@ -457,6 +466,8 @@ def compose_clause(
     currency_code: str | None = None,
     inputs: dict[str, dict] | None = None,
     registry: HandlerRegistry | None = None,
+    inherited_base_id: str | None = None,
+    candidate_bases: list[str] | None = None,
 ) -> tuple[list[dict], list[str], list[SsaDiagnostic]]:
     """Composes one clause into an ordered list of SSA assignments.
 
@@ -544,9 +555,26 @@ def compose_clause(
             continue
         source = by_index.get(edge.source)
         target = by_index.get(edge.target)
-        if source is not None and parse_rate_bps(source.text) is not None:
+        if (
+            source is not None
+            and parse_rate_bps(source.text) is not None
+            and parse_unit_and_type(source.text)[0] == "PERCENTAGE_RATE"
+        ):
             rate_node = source
             threshold_node = target
+            break
+        elif target is not None:
+            threshold_node = target
+
+    if rate_node is None and threshold_node is not None:
+        for node in nodes:
+            if (
+                parse_rate_bps(node.text) is not None
+                and parse_unit_and_type(node.text)[0] == "PERCENTAGE_RATE"
+            ):
+                rate_node = node
+                break
+
     if rate_node is None or threshold_node is None:
         diagnostics.append(
             SsaDiagnostic(
@@ -565,7 +593,17 @@ def compose_clause(
     if not base_phrase:
         base_phrase = resolve_base_phrase(clause_text, threshold_node)
     base_id = input_id_from_phrase(base_phrase, currency_code)
+    if not base_id and inherited_base_id:
+        base_id = inherited_base_id
     if not base_id:
+        if candidate_bases and len(candidate_bases) > 1:
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_AMBIGUOUS_REFERENCE,
+                    detail=f"clause has ambiguous candidate base amounts: {candidate_bases}",
+                )
+            )
+            return [], [], diagnostics
         diagnostics.append(
             SsaDiagnostic(
                 code=ERR_NO_BASE_OPERAND,
