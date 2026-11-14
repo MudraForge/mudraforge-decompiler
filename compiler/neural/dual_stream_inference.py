@@ -247,7 +247,9 @@ class DualStreamDecompilerInference:
             bio_preds = self._viterbi_decode(out["bio_logits"], tokens)
             bio_tags = [self.id2bio[p] for p in bio_preds]
 
-        if pred_modality == "MODALITY_ABSTAIN_UNRESOLVED":
+        if pred_modality == "MODALITY_ABSTAIN_UNRESOLVED" or (
+            self.architecture_version == "v2" and dom_abstain_prob >= 0.88
+        ):
             return {
                 "status": "UNRESOLVED_STATUTORY_AMBIGUITY",
                 "compiler": "DualStream-Generalist-Lab",
@@ -397,8 +399,10 @@ class DualStreamDecompilerInference:
                     "domainSignals": domain_signals,
                     "calibratedConfidence": 0.0,
                     "loweringError": str(exc),
+                    "classifiedSpansCount": len(classified_spans),
                     "classifiedSpans": classified_spans,
-                    "relationEdges": rel_edges,
+                    "relationalEdgesCount": len(rel_edges),
+                    "relationalEdges": rel_edges,
                     "clauseModalities": clause_modalities,
                     "statutoryInvariants": {
                         "isAuthorizedToDisburse": False,
@@ -406,6 +410,8 @@ class DualStreamDecompilerInference:
                     },
                     "isAuthorizedToDisburse": False,
                 }
+            if ast_package.get("status") == "UNRESOLVED_STATUTORY_AMBIGUITY":
+                return ast_package
         else:
             ast_package = synthesize_usvm_ast(
                 text=text,

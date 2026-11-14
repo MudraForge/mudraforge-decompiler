@@ -726,6 +726,82 @@ class TestModelV2Commit3(unittest.TestCase):
             self.assertEqual(res["results"]["Gold"]["values"]["eligible"], True)
             self.assertEqual(res["results"]["Silver"]["values"]["eligible"], False)
 
+    def test_v2_abstain_with_fiscal_keyword_and_relational_edges_key(self):
+        from unittest.mock import patch
+        from compiler.neural.statutory_neural_parser import (
+            RULE_MODALITIES,
+            V2_BIO2ID,
+            V2_RELATION_TYPES,
+        )
+
+        # Build an isolated v2 engine instance in-memory with a deterministic stub model
+        engine = object.__new__(DualStreamDecompilerInference)
+        engine.device = torch.device("cpu")
+        engine.architecture_version = "v2"
+        engine.vocab = {"<PAD>": 0, "<UNK>": 1, "tax": 2, "invoice": 3}
+        engine.id2bio = {i: b for i, b in enumerate(V2_BIO_TAGS)}
+        engine.id2role = dict(enumerate(V2_SEMANTIC_ROLES))
+        engine.id2rel = {i: r for i, r in enumerate(V2_RELATION_TYPES)}
+        engine.id2mod = {i: m for i, m in enumerate(RULE_MODALITIES)}
+        engine.id2unit = dict(enumerate(SPAN_UNITS))
+        engine.id2dom = {0: "DT_OPERATIVE_ENTITY"}
+        engine.transition_mask = torch.zeros((len(V2_BIO_TAGS), len(V2_BIO_TAGS)), dtype=torch.float32)
+
+        class _StubModel(torch.nn.Module):
+            def __init__(self, abstain_prob: float, mod_idx: int, unit_logits_vec: list[float]):
+                super().__init__()
+                self.abstain_prob = abstain_prob
+                self.mod_idx = mod_idx
+                self.unit_logits_vec = unit_logits_vec
+
+            def forward(self, raw_token_ids, logic_token_ids, suffix_ids=None, clause_spans=None, span_indices=None):
+                t = raw_token_ids.size(1)
+                mod_l = torch.full((1, len(RULE_MODALITIES)), -10.0)
+                mod_l[0, self.mod_idx] = 10.0
+                dom_p = torch.zeros((1, t, 8))
+                dom_p[0, :, 0] = 1.0
+                dom_a = torch.tensor([[1.0 - self.abstain_prob, self.abstain_prob]], dtype=torch.float32)
+                bio_l = torch.full((t, len(V2_BIO_TAGS)), -10.0)
+                bio_l[0, V2_BIO2ID["B-RATE"]] = 10.0
+                bio_l[1:, V2_BIO2ID["O"]] = 10.0
+                role_l = torch.zeros((1, len(V2_SEMANTIC_ROLES)))
+                role_l[0, 1] = 10.0
+                rel_l = torch.zeros((1, 1, len(V2_RELATION_TYPES)))
+                unit_l = torch.tensor([self.unit_logits_vec], dtype=torch.float32)
+                return {
+                    "modality_logits": mod_l,
+                    "clause_mod_logits": None,
+                    "domain_probs": dom_p,
+                    "domain_abstain_probs": dom_a,
+                    "bio_logits": bio_l,
+                    "role_logits": role_l,
+                    "rel_logits": rel_l,
+                    "unit_logits": unit_l,
+                }
+
+        # Case 1: Fiscal keywords present ("tax invoice") + non-abstain modality, but dom_abstain_prob=0.95 -> clean abstain
+        unit_vec = [-10.0] * len(SPAN_UNITS)
+        unit_vec[UNIT2ID["UNIT_RATE"]] = 10.0
+        engine.model = _StubModel(abstain_prob=0.95, mod_idx=0, unit_logits_vec=unit_vec)
+        out_abstain = engine.decompile_text("General policy tax invoice note without rates.")
+        self.assertEqual(out_abstain["status"], "UNRESOLVED_STATUTORY_AMBIGUITY")
+        self.assertFalse(out_abstain["isAuthorizedToDisburse"])
+
+        # Case 2: Defensive guard if synthesize_usvm_ast_v2 returns UNRESOLVED_STATUTORY_AMBIGUITY directly
+        engine.model = _StubModel(abstain_prob=0.05, mod_idx=0, unit_logits_vec=unit_vec)
+        with patch(
+            "compiler.neural.dual_stream_inference.synthesize_usvm_ast_v2",
+            return_value={"status": "UNRESOLVED_STATUTORY_AMBIGUITY", "isAuthorizedToDisburse": False},
+        ):
+            out_passthrough = engine.decompile_text("10% tax invoice note.")
+        self.assertEqual(out_passthrough["status"], "UNRESOLVED_STATUTORY_AMBIGUITY")
+
+        # Case 3: LOWERING_FAILED uses "relationalEdges" (matching SUCCESS schema)
+        out_fail = engine.decompile_text("nonnumeric tax invoice.")
+        self.assertEqual(out_fail["status"], "LOWERING_FAILED")
+        self.assertIn("relationalEdges", out_fail)
+        self.assertNotIn("relationEdges", out_fail)
+
 
 if __name__ == "__main__":
     unittest.main()
