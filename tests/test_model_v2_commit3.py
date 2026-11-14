@@ -1442,6 +1442,125 @@ class TestModelV2Commit3(unittest.TestCase):
         self.assertEqual(dom_ids[1], cite_cls)
         self.assertEqual(dom_ids[6], cite_cls)
 
+    def test_v2_universal_quant_guard_isolated_boilerplate_and_larger_window(self):
+        import torch
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.domain_sensor import DOMAIN_TOKEN_CLASSES
+        from compiler.neural.statutory_neural_parser import (
+            RULE_MODALITIES,
+            SPAN_UNITS,
+            V2_BIO_TAGS,
+            V2_RELATION_TYPES,
+            V2_SEMANTIC_ROLES,
+        )
+        from compiler.neural.tokenizer import tokenize_with_offsets
+
+        # 1. Window partitioning keeps 4-clause / 160-token brackets intact in 1 window
+        clause_ranges = [(0, 34), (35, 74), (75, 114), (115, 159)]
+        windows = DualStreamDecompilerInference._partition_clause_windows(clause_ranges, total_tokens=160)
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(len(windows[0]), 4)
+
+        # 2. Universal quantitative guard drops digitless 'than' (UNIT_RATE) and isolated 'defined'/'tax'/'maintaining',
+        #    while preserving date literals ('January 1, 2020') and real rates ('6 percent').
+        bio2id = {t: i for i, t in enumerate(V2_BIO_TAGS)}
+        role2id = {t: i for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        rel2id = {t: i for i, t in enumerate(V2_RELATION_TYPES)}
+        unit2id = {t: i for i, t in enumerate(SPAN_UNITS)}
+        mod2id = {t: i for i, t in enumerate(RULE_MODALITIES)}
+
+        text = "An excise tax defined as maintaining greater than 6 percent after January 1, 2020."
+        tokens, offsets = tokenize_with_offsets(text)
+        tax_idx = tokens.index("tax")
+        def_idx = tokens.index("defined")
+        maint_idx = tokens.index("maintaining")
+        than_idx = tokens.index("than")
+        pct6_idx = tokens.index("6")
+        jan_idx = tokens.index("January")
+
+        class _MockUniversalGuardModel(torch.nn.Module):
+            def forward(self, raw_token_ids, logic_token_ids, suffix_ids=None, span_indices=None, **kwargs):
+                seq_len = raw_token_ids.shape[1]
+                if span_indices is None:
+                    mod_logits = torch.full((1, len(RULE_MODALITIES)), -5.0)
+                    mod_logits[0, mod2id["MODALITY_COMPUTATIONAL_EXCESS"]] = 5.0
+                    bio_logits = torch.full((seq_len, len(V2_BIO_TAGS)), -5.0)
+                    bio_logits[:, bio2id["O"]] = 5.0
+                    for idx, btag in (
+                        (tax_idx, "B-PRECONDITION"),
+                        (def_idx, "B-PRECONDITION"),
+                        (maint_idx, "B-DEFINED_TERM"),
+                        (than_idx, "B-RATE"),
+                    ):
+                        bio_logits[idx, bio2id["O"]] = -5.0
+                        bio_logits[idx, bio2id[btag]] = 6.0
+                    bio_logits[pct6_idx, bio2id["O"]] = -5.0
+                    bio_logits[pct6_idx, bio2id["B-RATE"]] = 6.0
+                    bio_logits[pct6_idx + 1, bio2id["O"]] = -5.0
+                    bio_logits[pct6_idx + 1, bio2id["I-RATE"]] = 6.0
+                    bio_logits[jan_idx, bio2id["O"]] = -5.0
+                    bio_logits[jan_idx, bio2id["B-DEADLINE"]] = 6.0
+                    for k in range(jan_idx + 1, jan_idx + 4):
+                        bio_logits[k, bio2id["O"]] = -5.0
+                        bio_logits[k, bio2id["I-DEADLINE"]] = 6.0
+                    dom_probs = torch.zeros((1, seq_len, len(DOMAIN_TOKEN_CLASSES)))
+                    dom_probs[0, :, 0] = 1.0
+                    return {
+                        "modality_logits": mod_logits,
+                        "clause_mod_logits": None,
+                        "bio_logits": bio_logits,
+                        "domain_probs": dom_probs,
+                        "domain_abstain_probs": torch.tensor([[0.95, 0.05]]),
+                    }
+
+                n = len(span_indices)
+                role_logits = torch.full((n, len(V2_SEMANTIC_ROLES)), -5.0)
+                unit_logits = torch.full((n, len(SPAN_UNITS)), -5.0)
+                rel_logits = torch.full((n, n, len(V2_RELATION_TYPES)), -5.0)
+                rel_logits[:, :, rel2id["REL_NO_EDGE"]] = 2.0
+                # Order in text: tax, defined, maintaining, than, 6 percent, January 1, 2020
+                role_logits[0, role2id["ROLE_AGENT_STATE_PRECONDITION"]] = 6.0
+                unit_logits[0, unit2id["UNIT_BOOL_PREDICATE"]] = 6.0
+                role_logits[1, role2id["ROLE_AGENT_STATE_PRECONDITION"]] = 6.0
+                unit_logits[1, unit2id["UNIT_BOOL_PREDICATE"]] = 6.0
+                role_logits[2, role2id["ROLE_DEFINED_TERM"]] = 6.0
+                unit_logits[2, unit2id["UNIT_SYMBOL_VAR"]] = 6.0
+                role_logits[3, role2id["ROLE_STANDARD_STATUTORY_RATE"]] = 6.0
+                unit_logits[3, unit2id["UNIT_RATE"]] = 6.0
+                role_logits[4, role2id["ROLE_STANDARD_STATUTORY_RATE"]] = 6.0
+                unit_logits[4, unit2id["UNIT_RATE"]] = 6.0
+                role_logits[5, role2id["ROLE_TEMPORAL_CUTOVER_DATE"]] = 6.0
+                unit_logits[5, unit2id["UNIT_YEAR_DATE"]] = 6.0
+                return {"role_logits": role_logits, "unit_logits": unit_logits, "rel_logits": rel_logits}
+
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.architecture_version = "v2"
+        decompiler.model = _MockUniversalGuardModel()
+        decompiler.vocab = {"<PAD>": 0, "<UNK>": 1}
+        decompiler.bio2id = bio2id
+        decompiler.id2bio = {i: t for i, t in enumerate(V2_BIO_TAGS)}
+        decompiler.id2role = {i: t for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        decompiler.id2rel = {i: t for i, t in enumerate(V2_RELATION_TYPES)}
+        decompiler.id2unit = {i: t for i, t in enumerate(SPAN_UNITS)}
+        decompiler.id2mod = {i: t for i, t in enumerate(RULE_MODALITIES)}
+        decompiler.id2dom = {i: t for i, t in enumerate(DOMAIN_TOKEN_CLASSES)}
+        decompiler.transition_mask = torch.zeros((len(V2_BIO_TAGS), len(V2_BIO_TAGS)), dtype=torch.float32)
+
+        out = decompiler._annotate_window(
+            text=text,
+            tokens=tokens,
+            offsets=offsets,
+            raw_ids=[1] * len(tokens),
+            logic_ids=[1] * len(tokens),
+            suffix_ids=[0] * len(tokens),
+            window_clauses=[(0, 0, len(tokens) - 1)],
+            w_tok_start=0,
+            w_tok_end=len(tokens) - 1,
+        )
+        kept = [sp["span"] for sp in out["classified_spans"]]
+        self.assertEqual(kept, ["6 percent", "January 1, 2020"])
+
 
 if __name__ == "__main__":
     unittest.main()
