@@ -1754,6 +1754,28 @@ def compose_clause_v2(
     active_floor_minor: int | None = None
     active_ceiling_minor: int | None = None
 
+    def _consume_threshold_with_restatements(tid: int) -> None:
+        """Consume a floor/ceiling threshold span and co-consume identical restatements in the same clause."""
+        consumed_ids.add(tid)
+        t_minor = parsed_by_idx[tid].get("minor")
+        if t_minor is None:
+            return
+        for dup_id in topo_ids:
+            if dup_id in consumed_ids or dup_id == tid:
+                continue
+            pv_dup = parsed_by_idx[dup_id]
+            dup_role = str(span_by_idx[dup_id].get("role") or "")
+            if (
+                pv_dup["kind"] == "MONEY"
+                and pv_dup.get("unit") == "UNIT_MONEY"
+                and pv_dup.get("minor") == t_minor
+                and ("THRESHOLD" in dup_role or "BOUND" in dup_role)
+                and dup_id not in base_tax_ids
+                and dup_id not in credit_ids
+                and dup_id not in cap_ids
+            ):
+                consumed_ids.add(dup_id)
+
     # Identify primary floor threshold (MONEY connected by REL_RATE_TO_THRESHOLD / REL_BRACKET_NEXT)
     # Never silently promote unlinked MONEY spans when rate_nodes are present.
     floor_ids: list[int] = []
@@ -1886,7 +1908,7 @@ def compose_clause_v2(
     if rate_nodes and (floor_ids or sym_floor_ref is not None):
         if floor_ids:
             floor_id = floor_ids[0]
-            consumed_ids.add(floor_id)
+            _consume_threshold_with_restatements(floor_id)
             floor_minor: int | None = parsed_by_idx[floor_id]["minor"]
             floor_role = span_by_idx[floor_id].get("role", "")
             floor_span_text = span_by_idx[floor_id].get("span", "")
@@ -1912,8 +1934,8 @@ def compose_clause_v2(
 
         # Bounded bracket ceiling (`REL_BRACKET_NEXT`)
         if ceiling_ids:
-            ceil_id = next(iter(ceiling_ids))
-            consumed_ids.add(ceil_id)
+            ceil_id = min(ceiling_ids)
+            _consume_threshold_with_restatements(ceil_id)
             ceil_minor = parsed_by_idx[ceil_id]["minor"]
             active_ceiling_minor = ceil_minor
             if floor_minor is not None:
@@ -2002,7 +2024,7 @@ def compose_clause_v2(
     elif floor_ids:
         # Pure value/threshold definition clause (e.g. "$4,400", "fifty lakh rupees")
         m_id = floor_ids[0]
-        consumed_ids.add(m_id)
+        _consume_threshold_with_restatements(m_id)
         m_minor = parsed_by_idx[m_id]["minor"]
         val_expr = {"op": "TO_PAISE", "value": str(m_minor)}
         if span_by_idx[m_id].get("role") == "ROLE_TRANSACTION_EXCESS_THRESHOLD":

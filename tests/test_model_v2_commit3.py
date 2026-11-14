@@ -1654,6 +1654,58 @@ class TestModelV2Commit3(unittest.TestCase):
             self.assertIs(resp["results"]["S1"]["values"][cat_key], True)
             self.assertIs(resp["results"]["S2"]["values"][cat_key], False)
 
+    def test_restated_identical_threshold_co_consumed_while_mismatched_fails_closed(self):
+        """Identical threshold restatements in the same clause co-consume cleanly; distinct amounts still raise ERR_UNCONSUMED_SPAN."""
+        from compiler.neural.ssa_walker import V2LoweringError
+
+        text = (
+            "Where value is over EUR 80,000 but not over EUR 132,250, "
+            "the liability is EUR 12,000 plus 8 per cent of the excess over EUR 80,000."
+        )
+        base_spans = [
+            {"spanIdx": 0, "clauseIdx": 0, "span": "value", "charRange": [6, 11], "role": "ROLE_COMPUTATION_OPERAND", "unit": "UNIT_SYMBOL_VAR"},
+            {"spanIdx": 1, "clauseIdx": 0, "span": "over EUR 80,000", "charRange": [15, 30], "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "unit": "UNIT_MONEY"},
+            {"spanIdx": 2, "clauseIdx": 0, "span": "not over EUR 132,250", "charRange": [35, 55], "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "unit": "UNIT_MONEY"},
+            {"spanIdx": 3, "clauseIdx": 0, "span": "EUR 12,000", "charRange": [74, 84], "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "unit": "UNIT_MONEY"},
+            {"spanIdx": 4, "clauseIdx": 0, "span": "8 per cent", "charRange": [90, 100], "role": "ROLE_STANDARD_STATUTORY_RATE", "unit": "UNIT_RATE"},
+            {"spanIdx": 5, "clauseIdx": 0, "span": "over EUR 80,000", "charRange": [115, 130], "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "unit": "UNIT_MONEY"},
+        ]
+        edges = [
+            {"sourceIdx": 1, "targetIdx": 2, "relationType": "REL_BRACKET_NEXT"},
+            {"sourceIdx": 3, "targetIdx": 4, "relationType": "REL_BASE_TAX_ADD"},
+            {"sourceIdx": 4, "targetIdx": 1, "relationType": "REL_RATE_TO_THRESHOLD"},
+            {"sourceIdx": 4, "targetIdx": 5, "relationType": "REL_RATE_TO_THRESHOLD"},
+            {"sourceIdx": 5, "targetIdx": 2, "relationType": "REL_BRACKET_NEXT"},
+        ]
+        ast = synthesize_usvm_ast_v2(
+            text=text,
+            spans=base_spans,
+            edges=edges,
+            clause_modalities=[{"clauseIdx": 0, "modality": "MODALITY_COMPUTATIONAL_EXCESS"}],
+            dominant_modality="MODALITY_COMPUTATIONAL_EXCESS",
+        )
+        comp = ast.get("computation") or {}
+        out_key = next(iter((comp.get("pipeline") or {}).get("output") or {}))
+        in_key = next(iter(ast.get("inputs", {})))
+        evaluator = CanonicalUsvmEvaluator()
+        # 100,000 EUR -> 12,000 + 8% * (100,000 - 80,000) = 13,600 EUR = 1,360,000 minor units
+        out = evaluator.evaluate(ast, {in_key: "10000000"})
+        self.assertEqual(out[out_key], 1360000)
+
+        # Mismatched second threshold amount (EUR 85,000 != EUR 80,000) must still fail closed
+        bad_text = text[:-16] + "over EUR 85,000."
+        bad_spans = [dict(sp) for sp in base_spans]
+        bad_spans[5]["span"] = "over EUR 85,000"
+        with self.assertRaises(V2LoweringError) as ctx:
+            synthesize_usvm_ast_v2(
+                text=bad_text,
+                spans=bad_spans,
+                edges=edges,
+                clause_modalities=[{"clauseIdx": 0, "modality": "MODALITY_COMPUTATIONAL_EXCESS"}],
+                dominant_modality="MODALITY_COMPUTATIONAL_EXCESS",
+            )
+        self.assertIn("ERR_UNCONSUMED_SPAN", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
