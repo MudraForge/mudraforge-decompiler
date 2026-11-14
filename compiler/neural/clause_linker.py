@@ -1638,6 +1638,11 @@ def build_clause_scoped_computation_v2(
             for sid, entry in resolved_corefs.items()
         }
 
+        cmod_by_idx = {
+            int(cm.get("clauseIdx", 0)): cm.get("modality")
+            for cm in (clause_modalities or [])
+            if isinstance(cm, dict)
+        }
         try:
             comp = compose_clause_v2(
                 clause_idx=cidx,
@@ -1648,6 +1653,7 @@ def build_clause_scoped_computation_v2(
                 symbol_env=visible_env,
                 resolved_corefs=live_corefs,
                 fallback_base_var=declaration_base_var,
+                clause_modality=cmod_by_idx.get(cidx),
             )
         except V2LoweringError:
             # Skip non-operative header clauses only when other operative clauses exist; re-raise fatal errors

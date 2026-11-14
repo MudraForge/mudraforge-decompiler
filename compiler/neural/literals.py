@@ -268,22 +268,29 @@ def parse_comparison_operator(text: str):
     low = text.lower()
     if re.search(
         r"\b(?:not\s+less\s+than|at\s+least|at\s+or\s+above|minimum\s+of|no\s+less\s+than|no\s+fewer\s+than|"
-        r"equal\s+to\s+or\s+(?:greater|more)\s+than|not\s+below|or\s+more|or\s+greater|or\s+above)\b",
+        r"equal\s+to\s+or\s+(?:greater|more)\s+than|not\s+below|or\s+more|or\s+greater|or\s+above|"
+        r"on\s+or\s+after|commencing(?:\s+on)?|effective(?:\s+from)?)\b",
         low,
     ):
         return "GTE"
     if re.search(
         r"\b(?:not\s+exceeding|does\s+not\s+exceed|do\s+not\s+exceed|not\s+over|at\s+most|maximum\s+of|capped\s+at|"
-        r"up\s+to|equal\s+to\s+or\s+(?:less|fewer)\s+than|twelve\s+months\s+or\s+less|or\s+less|or\s+below|or\s+fewer|no\s+more\s+than)\b",
+        r"up\s+to|equal\s+to\s+or\s+(?:less|fewer)\s+than|twelve\s+months\s+or\s+less|or\s+less|or\s+below|or\s+fewer|"
+        r"no\s+more\s+than|on\s+or\s+before|within|not\s+later\s+than|no\s+later\s+than)\b",
         low,
     ):
         return "LTE"
     if re.search(
-        r"\b(?:strictly\s+greater\s+than|exceeding|exceeds|exceed|more\s+than|greater\s+than|in\s+excess\s+of|above|over)\b",
+        r"\b(?:strictly\s+greater\s+than|exceeding|exceeds|exceed|more\s+than|greater\s+than|in\s+excess\s+of|"
+        r"above|over|after|later\s+than|subsequent\s+to)\b",
         low,
     ):
         return "GT"
-    if re.search(r"\b(?:strictly\s+less\s+than|less\s+than|fewer\s+than|falls\s+short\s+of|below|under)\b", low):
+    if re.search(
+        r"\b(?:strictly\s+less\s+than|less\s+than|fewer\s+than|falls\s+short\s+of|below|under|"
+        r"before|prior\s+to|earlier\s+than)\b",
+        low,
+    ):
         return "LT"
     if re.search(r"\b(?:equal\s+to|equals|exactly)\b", low):
         return "EQ"
@@ -474,7 +481,15 @@ def parse_rate_bps(rate_str: str | None) -> int | None:
 def parse_iso_date_str(date_str: str | None) -> str | None:
     if not date_str:
         return None
-    clean = re.sub(r"(?<=\d)(st|nd|rd|th)", "", str(date_str).strip(), flags=re.IGNORECASE)
+    clean = re.sub(
+        r"^(?:on\s+or\s+after|on\s+or\s+before|prior\s+to|subsequent\s+to|not\s+later\s+than|no\s+later\s+than|"
+        r"earlier\s+than|later\s+than|commencing(?:\s+on)?|effective(?:\s+from)?|starting(?:\s+from)?|"
+        r"before|after|from|until|since|on)\s+",
+        "",
+        str(date_str).strip(),
+        flags=re.IGNORECASE,
+    )
+    clean = re.sub(r"(?<=\d)(st|nd|rd|th)", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"day\s+of", "", clean, flags=re.IGNORECASE).strip()
     clean = re.sub(r"\s+,", ",", clean)
     clean = re.sub(r",\s*", ", ", clean)
@@ -513,6 +528,8 @@ def parse_days_window(dur_str: str | None) -> int | None:
             return int(round(n * 30))
         if "year" in low:
             return int(round(n * 365))
+        if "week" in low:
+            return int(round(n * 7))
         if "hour" in low:
             return max(1, int(round(n / 24)))
         return int(round(n))

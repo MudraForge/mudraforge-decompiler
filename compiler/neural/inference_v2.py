@@ -51,8 +51,11 @@ def _is_compatible_triple(src_u: str, rel: str, tgt_u: str) -> bool:
         if src_u == "UNIT_RATE" and tgt_u == "UNIT_RATE":
             return True
         return src_u not in {"UNIT_RATE", "UNIT_YEAR_DATE", "UNIT_BOOL_PREDICATE"} and tgt_u not in {"UNIT_RATE", "UNIT_YEAR_DATE", "UNIT_BOOL_PREDICATE"}
-    if rel in ("REL_LOGICAL_AND", "REL_LOGICAL_OR", "REL_LOGICAL_NOT"):
-        return src_u != "UNIT_RATE" and tgt_u != "UNIT_RATE"
+    if rel == "REL_LOGICAL_NOT":
+        return tgt_u in {"UNIT_BOOL_PREDICATE", "UNIT_DURATION", "UNIT_YEAR_DATE", "UNIT_RATE", "UNIT_MONEY", "UNIT_SYMBOL_VAR"}
+    if rel in ("REL_LOGICAL_AND", "REL_LOGICAL_OR"):
+        _logic_atoms = {"UNIT_BOOL_PREDICATE", "UNIT_DURATION", "UNIT_YEAR_DATE", "UNIT_RATE", "UNIT_MONEY"}
+        return src_u in _logic_atoms and tgt_u in _logic_atoms
     return True
 
 

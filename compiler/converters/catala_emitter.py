@@ -104,9 +104,31 @@ def _catala_type(typ: str) -> str:
     return typ
 
 
-def _enum_constructor(enum_name: str, literal: str) -> str:
+def _default_enum_constructor(literal: str) -> str:
+    """Converts a bare uppercase/snake IR enum literal into a Catala UpperCamel constructor."""
+    parts = [p for p in literal.strip().split("_") if p]
+    if not parts:
+        raise CatalaLoweringError(f"Empty enumeration literal {literal!r}")
+    out_parts: list[str] = []
+    for part in parts:
+        if re.fullmatch(r"[A-Z]{2,3}", part) or re.fullmatch(r"[A-Z]\d[A-Za-z0-9]*", part):
+            out_parts.append(part)
+        else:
+            out_parts.append(part[0].upper() + part[1:].lower())
+    ctor = "".join(out_parts)
+    if not re.fullmatch(r"[A-Z][A-Za-z0-9_]*", ctor):
+        raise CatalaLoweringError(f"Invalid enumeration literal {literal!r} for Catala")
+    return ctor
+
+
+def _enum_constructor(
+    enum_name: str,
+    literal: str,
+    domains: dict[str, dict[str, str]] | None = None,
+) -> str:
     """Maps an IR literal to its declared Catala enumeration constructor."""
-    domain = _ENUM_DOMAINS.get(enum_name)
+    source = domains if domains is not None else _ENUM_DOMAINS
+    domain = source.get(enum_name)
     if domain is None:
         raise CatalaLoweringError(f"Unknown enumeration {enum_name!r}")
     constructor = domain.get(literal)
@@ -217,6 +239,10 @@ class CatalaEmitter:
         self._input_minor: set[str] = set()
         self._saw_inputs = False
         self._saw_facts = False
+        self._enum_domains: dict[str, dict[str, str]] = {
+            name: dict(cases) for name, cases in _ENUM_DOMAINS.items()
+        }
+        self._register_dynamic_enums(steps, outputs, scenarios)
 
         # Type inference pass over steps, then output expressions.
         step_types = []
@@ -299,8 +325,13 @@ class CatalaEmitter:
             typ[len("enum:"):] for typ in used_types if typ.startswith("enum:")
         )
         for enum_name in enum_names:
+            domain = self._enum_domains.get(enum_name)
+            if not domain:
+                raise CatalaLoweringError(
+                    f"Enumeration {enum_name!r} has no declared or inferred cases"
+                )
             lines.append(f"declaration enumeration {enum_name}:")
-            for constructor in _ENUM_DOMAINS[enum_name].values():
+            for constructor in domain.values():
                 lines.append(f"{self.indent}-- {constructor}")
             lines.append("")
 
@@ -418,8 +449,88 @@ class CatalaEmitter:
                 raise CatalaLoweringError(
                     f"Enumeration fact of type {typ} requires a string value, got {value!r}"
                 )
-            return _enum_constructor(typ[len("enum:"):], value)
+            return _enum_constructor(typ[len("enum:"):], value, domains=self._enum_domains)
         raise CatalaLoweringError(f"Unsupported fact type {typ!r}")
+
+    def _register_enum_case(self, enum_name: str, literal: str) -> None:
+        if not isinstance(literal, str):
+            return
+        stripped = literal.strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", stripped):
+            return
+        if stripped in ("true", "false") or stripped.startswith(("inputs.", "facts.", "vars.")):
+            return
+        domain = self._enum_domains.setdefault(enum_name, {})
+        if stripped not in domain:
+            domain[stripped] = _default_enum_constructor(stripped)
+
+    def _register_dynamic_enums(
+        self,
+        steps: list[dict[str, Any]],
+        outputs: dict[str, Any],
+        scenarios: list[dict[str, Any]] | None,
+    ) -> None:
+        input_enums: dict[str, str] = {}
+        for key, spec in self._input_specs.items():
+            raw_type = str(spec.get("type") or "").strip()
+            if raw_type.upper().startswith("ENUM:"):
+                enum_name = raw_type.split(":", 1)[1].strip()
+                if not enum_name:
+                    continue
+                self._enum_domains.setdefault(enum_name, {})
+                input_enums[key] = enum_name
+                spec_id = spec.get("id")
+                if isinstance(spec_id, str) and spec_id:
+                    input_enums[spec_id] = enum_name
+                for val in (spec.get("values") or spec.get("cases") or spec.get("enumValues") or []):
+                    self._register_enum_case(enum_name, val)
+
+        for k, spec in _FACT_BINDINGS.items():
+            ct = str(spec[1] if isinstance(spec, (tuple, list)) and len(spec) >= 2 else getattr(spec, "catala_type", "") or "")
+            if ct.startswith("enum:"):
+                input_enums.setdefault(k, ct[len("enum:"):])
+
+        def _enum_for_ref(operand: Any) -> str | None:
+            if not isinstance(operand, str):
+                return None
+            if operand.startswith("inputs."):
+                return input_enums.get(operand[len("inputs."):])
+            if operand.startswith("facts."):
+                return input_enums.get(operand[len("facts."):])
+            return None
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, list):
+                for item in node:
+                    _walk(item)
+                return
+            if not isinstance(node, dict):
+                return
+            op = node.get("op")
+            if op in ("EQ", "NEQ", "IN", "NOT_IN"):
+                left = node.get("left", node.get("value"))
+                right = node.get("right", node.get("values", node.get("items", node.get("list"))))
+                l_enum = _enum_for_ref(left)
+                r_enum = _enum_for_ref(right)
+                if l_enum and isinstance(right, str):
+                    self._register_enum_case(l_enum, right)
+                elif l_enum and isinstance(right, list):
+                    for item in right:
+                        if isinstance(item, str):
+                            self._register_enum_case(l_enum, item)
+                elif r_enum and isinstance(left, str):
+                    self._register_enum_case(r_enum, left)
+            for v in node.values():
+                _walk(v)
+
+        _walk(steps)
+        _walk(outputs)
+        for scenario in (scenarios or []):
+            facts = scenario.get("inputs") or scenario.get("facts") or {}
+            if isinstance(facts, dict):
+                for fk, fv in facts.items():
+                    if fk in input_enums and isinstance(fv, str):
+                        self._register_enum_case(input_enums[fk], fv)
 
     # ── Type inference ───────────────────────────────────────────────────────
 
@@ -905,7 +1016,7 @@ class CatalaEmitter:
         # Bare text literal. Catala has no string type: it is only valid as an
         # enumeration case, resolved against the compared operand's enum type.
         if typ.startswith("enum:") and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", stripped):
-            return _enum_constructor(typ[len("enum:"):], stripped)
+            return _enum_constructor(typ[len("enum:"):], stripped, domains=self._enum_domains)
         raise CatalaLoweringError(f"Unresolvable expression reference {path!r}")
 
     def _render_number(self, frac: Fraction, typ: str) -> str:

@@ -673,7 +673,51 @@ class CombinatorialAstComposer:
             "shall not disburse proceeds",
             "is prohibited from transferring collateral",
         ])
-        is_prohib = self.rng.random() < 0.50
+        mode_pick = self.rng.random()
+
+        if mode_pick < 0.30:
+            # Quantitative ratio + duration + boolean deontic gate (unseen compound rule coverage)
+            subj_var = self.rng.choice(["Qualifying reserve", "Liquidity buffer", "Statutory escrow"])
+            base_var = self.rng.choice(["net profits", "total exposure", "gross receipts"])
+            ratio_rate = self.rng.choice(["10%", "15%", "20%", "25%"])
+            rate_phrase = self.rng.choice([f"at least {ratio_rate}", f"not less than {ratio_rate}"])
+            dur_phrase = self.rng.choice([
+                "settlement window within 45 days",
+                "holding period under 3 years",
+                "filing delay not exceeding 30 days",
+            ])
+            spans = [
+                (subj_var, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+                (rate_phrase, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+                (base_var, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+                (dur_phrase, "ROLE_DEADLINE_WINDOW", "UNIT_DURATION"),
+                (pre_txt, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"),
+            ]
+            rels = [
+                (1, 2, "REL_RATE_TO_THRESHOLD"),
+                (1, 3, "REL_LOGICAL_AND"),
+                (3, 4, "REL_LOGICAL_AND"),
+            ]
+            if formulation == 0:
+                text = f"Party {prohib_txt} unless {subj_var} is {rate_phrase} of {base_var} and {dur_phrase} and {pre_txt}."
+            elif formulation == 1:
+                text = f"No authorization exists unless {subj_var} equals {rate_phrase} of {base_var}, {dur_phrase}, and {pre_txt}."
+            elif formulation == 2:
+                text = f"Subject to {subj_var} meeting {rate_phrase} of {base_var} with {dur_phrase} and {pre_txt}, otherwise entity {prohib_txt}."
+            else:
+                text = f"Provided {subj_var} is {rate_phrase} of {base_var} alongside {dur_phrase} and {pre_txt}, restriction ceases; else party {prohib_txt}."
+            return {
+                "stype": "V2_AST_DEONTIC_GATE",
+                "modality_name": "MODALITY_DEONTIC_PROHIBITION",
+                "formulation": formulation,
+                "text": text,
+                "spans_with_units": spans,
+                "relations": rels,
+                "clauses": [text],
+                "dag": {"kind": "DEONTIC_QUANT_GATE", "prohibition": True, "depth": len(spans)},
+            }
+
+        is_prohib = mode_pick < 0.65
 
         if is_prohib:
             spans = [
@@ -773,6 +817,44 @@ class CombinatorialAstComposer:
         op_name = self.rng.choice(_BASE_OPERANDS)
         rate = self.rng.choice(_RATES)
         floor_amt = _fmt_money(self.rng, self.rng.choice([8000, 20000, 45000]), currency=currency)
+        if self.rng.random() < 0.30:
+            # Node-scoped conditional fixed surcharge: excess(base, floor) * rate + (surcharge if durationCond else 0)
+            fee_amt = _fmt_money(self.rng, self.rng.choice([1200, 3500, 5000]), currency=currency)
+            dur_cond = self.rng.choice([
+                "settlement occurs after 30 days",
+                "reporting delay exceeds 45 days",
+                "payment completes after 14 days",
+            ])
+            spans_sc: list[tuple[str, str, str]] = [
+                (rate, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+                (op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+                (floor_amt, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"),
+                (fee_amt, "ROLE_TRANSACTION_CLIFF_THRESHOLD", "UNIT_MONEY"),
+                (dur_cond, "ROLE_DEADLINE_WINDOW", "UNIT_DURATION"),
+            ]
+            rels_sc: list[tuple[int, int, str]] = [
+                (0, 2, "REL_RATE_TO_THRESHOLD"),
+                (3, 0, "REL_BASE_TAX_ADD"),
+                (4, 3, "REL_CONDITION_TO_GATE"),
+            ]
+            if formulation == 0:
+                text = f"Levy is {rate} on {op_name} exceeding {floor_amt}, plus {fee_amt} where {dur_cond}."
+            elif formulation == 1:
+                text = f"Charge {rate} of excess {op_name} over {floor_amt} together with {fee_amt} if {dur_cond}."
+            elif formulation == 2:
+                text = f"Amount due equals {rate} above {floor_amt} on {op_name}, augmented by {fee_amt} when {dur_cond}."
+            else:
+                text = f"Where {dur_cond}, add {fee_amt} onto {rate} assessed on {op_name} above {floor_amt}."
+            return {
+                "stype": "V2_AST_GATED_ARITHMETIC",
+                "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+                "formulation": formulation,
+                "text": text,
+                "spans_with_units": spans_sc,
+                "relations": rels_sc,
+                "clauses": [text],
+                "dag": {"kind": "NODE_SCOPED_SURCHARGE", "depth": 3},
+            }
         use_not = self.rng.random() < 0.50
         op_join = self.rng.choice(["AND", "OR"])
 

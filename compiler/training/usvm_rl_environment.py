@@ -338,11 +338,13 @@ class StatutoryRlEnvironment:
                 except (TypeError, ValueError):
                     pass
             elif op in ("GT", "GTE", "LT", "LTE", "EQ", "NEQ", "SUB", "ADD", "MIN", "MAX"):
+                left_ref = str(node.get("left") or "")
+                is_cmp_int = op in ("GT", "GTE", "LT", "LTE", "EQ", "NEQ") and left_ref != "inputs.taxYear"
                 for arg_k in ("left", "right", "value"):
                     v = node.get(arg_k)
                     if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
                         iv = int(v)
-                        if iv <= 1000:
+                        if iv <= 1000 or (is_cmp_int and iv <= 50000):
                             count_thresholds.append(iv)
                         else:
                             minor_thresholds.append(iv)

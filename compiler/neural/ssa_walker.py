@@ -1034,6 +1034,8 @@ from .literals import (
     derive_logic_fact_key as _v2_derive_logic_key,
     infer_rule_currency_info as _v2_infer_currency,
     parse_comparison_operator as _v2_parse_cmp_op,
+    parse_days_window as _v2_parse_days_window,
+    parse_iso_date_str as _v2_parse_iso_date,
     parse_minor_units as _v2_parse_minor_units,
     parse_numeric_quantity as _v2_parse_num,
     parse_rate_bps as _v2_parse_rate_bps,
@@ -1073,6 +1075,22 @@ def _v2_norm_edge(edge: dict, valid_indices: set[int]) -> tuple[int, int, str] |
     return int(s), int(t), str(rel)
 
 
+def _v2_derive_duration_key(raw_text: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", (raw_text or "").lower())
+    drop = {
+        "after", "before", "within", "under", "below", "above", "over", "less", "more", "than",
+        "exceeding", "exceeds", "exceed", "not", "no", "at", "least", "most", "up", "to", "prior",
+        "subsequent", "earlier", "later", "for", "of", "the", "a", "an", "days", "day", "months",
+        "month", "years", "year", "weeks", "week", "hours", "hour", "taxable",
+    }
+    words = [w for w in cleaned.split() if not w.isdigit() and w not in drop and len(w) > 1]
+    if not words:
+        return "durationDays"
+    chosen = words[:3]
+    camel = chosen[0] + "".join(w.capitalize() for w in chosen[1:])
+    return camel if camel.endswith("Days") else f"{camel}Days"
+
+
 def _v2_parse_span_value(span_dict: dict) -> dict:
     """Extracts typed literal value purely from neural `unit` + deterministic literal parser."""
     text = str(span_dict.get("span") or "").strip()
@@ -1082,19 +1100,38 @@ def _v2_parse_span_value(span_dict: dict) -> dict:
     # Reject non-monetary spans strictly by neural unit class before touching money parsers
     if unit == "UNIT_MONEY":
         minor = _v2_parse_minor_units(text)
-        return {"kind": "MONEY", "minor": minor, "text": text, "unit": unit, "role": role}
+        return {"kind": "MONEY", "minor": minor, "cmpOp": _v2_parse_cmp_op(text), "text": text, "unit": unit, "role": role}
     if unit == "UNIT_RATE":
         bps = _v2_parse_rate_bps(text)
-        return {"kind": "RATE", "rateBps": bps, "text": text, "unit": unit, "role": role}
+        return {"kind": "RATE", "rateBps": bps, "cmpOp": _v2_parse_cmp_op(text), "text": text, "unit": unit, "role": role}
     if unit == "UNIT_DURATION":
         qty = _v2_parse_num(text)
-        return {"kind": "DURATION", "num": qty, "text": text, "unit": unit, "role": role}
+        days = _v2_parse_days_window(text)
+        return {
+            "kind": "DURATION",
+            "num": qty,
+            "days": days,
+            "cmpOp": _v2_parse_cmp_op(text),
+            "key": _v2_derive_duration_key(text),
+            "text": text,
+            "unit": unit,
+            "role": role,
+        }
     if unit == "UNIT_YEAR_DATE":
+        iso_date = _v2_parse_iso_date(text)
         years = []
         for tok in text.replace(",", " ").replace(".", " ").split():
             if tok.isdigit() and len(tok) == 4 and 1800 <= int(tok) <= 2200:
                 years.append(int(tok))
-        return {"kind": "YEAR_DATE", "years": years, "text": text, "unit": unit, "role": role}
+        return {
+            "kind": "YEAR_DATE",
+            "isoDate": iso_date,
+            "years": years,
+            "cmpOp": _v2_parse_cmp_op(text),
+            "text": text,
+            "unit": unit,
+            "role": role,
+        }
     if unit == "UNIT_COUNT":
         qty = _v2_parse_num(text)
         return {"kind": "COUNT", "num": int(round(float(qty))) if qty is not None else None, "text": text, "unit": unit, "role": role}
@@ -1156,6 +1193,7 @@ def compose_clause_v2(
     symbol_env: dict[str, dict] | None = None,
     resolved_corefs: dict[int, dict] | None = None,
     fallback_base_var: str | None = None,
+    clause_modality: str | None = None,
 ) -> dict:
     """Regex-free bottom-up topological SSA composer for a single v2 clause.
 
@@ -1180,12 +1218,57 @@ def compose_clause_v2(
     if not sorted_spans:
         raise V2LoweringError("ERR_NO_COMPUTATION: clause has zero spans")
 
+    all_ids = {int(sp.get("spanIdx", pos)) for pos, sp in enumerate(sorted_spans)}
+    ignored_ids = {
+        int(sp.get("spanIdx", pos))
+        for pos, sp in enumerate(sorted_spans)
+        if sp.get("role") == "ROLE_IGNORE"
+    }
+    for e in all_edges:
+        ne_all = _v2_norm_edge(e, all_ids)
+        if ne_all is not None and (ne_all[0] in ignored_ids or ne_all[1] in ignored_ids):
+            raise V2LoweringError(
+                f"ERR_EDGE_TO_IGNORED_SPAN: edge {ne_all[2]} touches ROLE_IGNORE span {ne_all[0]}->{ne_all[1]}"
+            )
+
+    active_spans = [
+        sp for pos, sp in enumerate(sorted_spans)
+        if int(sp.get("spanIdx", pos)) not in ignored_ids
+    ]
+    if not active_spans:
+        raise V2LoweringError("ERR_NO_COMPUTATION: all clause spans have ROLE_IGNORE")
+
     span_by_idx: dict[int, dict] = {}
     parsed_by_idx: dict[int, dict] = {}
-    for pos, sp in enumerate(sorted_spans):
+    for pos, sp in enumerate(active_spans):
         sid = int(sp.get("spanIdx", pos))
         span_by_idx[sid] = sp
-        parsed_by_idx[sid] = _v2_parse_span_value(sp)
+        pv = _v2_parse_span_value(sp)
+        if pv["kind"] == "RATE" and pv["rateBps"] is None:
+            raise V2LoweringError(f"ERR_UNPARSEABLE_RATE: span '{pv['text']}' has UNIT_RATE without numeric value")
+        if pv["kind"] == "MONEY" and pv["minor"] is None:
+            if pv["role"] in (
+                "ROLE_COMPUTATION_OPERAND",
+                "ROLE_REGULATED_OBJECT_OR_STATUS_SCOPE",
+                "ROLE_TAX_BASE",
+                "ROLE_SUBJECT_PRINCIPAL",
+            ):
+                pv = {
+                    "kind": "SYMBOL",
+                    "key": _v2_fact_key_camel(pv["text"], "metricValue"),
+                    "text": pv["text"],
+                    "unit": pv["unit"],
+                    "role": pv["role"],
+                }
+            else:
+                raise V2LoweringError(f"ERR_UNPARSEABLE_MONEY: span '{pv['text']}' has UNIT_MONEY without monetary value")
+        if pv["kind"] == "DURATION" and pv["days"] is None and pv["num"] is None:
+            raise V2LoweringError(f"ERR_UNPARSEABLE_DURATION: span '{pv['text']}' has UNIT_DURATION without duration")
+        if pv["kind"] == "YEAR_DATE" and pv["isoDate"] is None and not pv["years"]:
+            raise V2LoweringError(f"ERR_UNPARSEABLE_DATE: span '{pv['text']}' has UNIT_YEAR_DATE without date/year")
+        if pv["kind"] == "COUNT" and pv["num"] is None:
+            raise V2LoweringError(f"ERR_UNPARSEABLE_COUNT: span '{pv['text']}' has UNIT_COUNT without integer")
+        parsed_by_idx[sid] = pv
 
     valid_ids = set(span_by_idx.keys())
     in_clause_edges: list[tuple[int, int, str]] = []
@@ -1199,6 +1282,8 @@ def compose_clause_v2(
 
     adj = _v2_build_clause_dag(sorted(valid_ids), in_clause_edges)
     topo_ids = _v2_topo_sort_indices(adj)
+    consumed_ids: set[int] = set()
+    consumed_edges: set[tuple[int, int, str]] = set()
 
     incoming: dict[int, list[tuple[int, str]]] = {i: [] for i in valid_ids}
     outgoing: dict[int, list[tuple[int, str]]] = {i: [] for i in valid_ids}
@@ -1267,6 +1352,34 @@ def compose_clause_v2(
     money_nodes = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "MONEY" and parsed_by_idx[sid]["minor"] is not None]
     bool_nodes = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "BOOL"]
 
+    active_edge_endpoints = {s for s, _, _ in in_clause_edges} | {t for _, t, _ in in_clause_edges}
+    cond_temporal_roles = {"ROLE_DEADLINE_WINDOW", "ROLE_TEMPORAL_CUTOVER_DATE", "ROLE_TEMPORAL_SUNSET_DATE", "ROLE_PRESCRIPTION_DEADLINE"}
+    dur_cond_nodes = [
+        sid for sid in topo_ids
+        if parsed_by_idx[sid]["kind"] == "DURATION"
+        and (sid in active_edge_endpoints or span_by_idx[sid].get("role") in cond_temporal_roles)
+    ]
+    date_cond_nodes = [
+        sid for sid in topo_ids
+        if parsed_by_idx[sid]["kind"] == "YEAR_DATE"
+        and (sid in active_edge_endpoints or span_by_idx[sid].get("role") in cond_temporal_roles)
+    ]
+
+    must_consume_ids = {
+        sid for sid, pv in parsed_by_idx.items()
+        if pv["kind"] in ("RATE", "MONEY", "BOOL")
+        or (
+            pv["kind"] in ("DURATION", "YEAR_DATE", "COUNT")
+            and (sid in active_edge_endpoints or span_by_idx[sid].get("role") in cond_temporal_roles)
+        )
+    }
+
+    def _verify_affine_consumption() -> None:
+        leftover = sorted(must_consume_ids - consumed_ids)
+        if leftover:
+            details = [f"{u}:{parsed_by_idx[u]['unit']}({parsed_by_idx[u]['text']!r})" for u in leftover]
+            raise V2LoweringError(f"ERR_UNCONSUMED_SPAN: typed span(s) not lowered into AST: {', '.join(details)}")
+
     # Track node SSA bindings built bottom-up during topological traversal
     node_ssa: dict[int, str] = {}
     fold_var: str | None = None
@@ -1276,6 +1389,8 @@ def compose_clause_v2(
     # 1. Bounded Collection Fold Path (`SUM_OVER` / `COUNT`) — composes downstream into arithmetic if present
     if fold_edges:
         s_id, t_id, fold_rel = fold_edges[0]
+        consumed_ids.update((s_id, t_id))
+        consumed_edges.add(fold_edges[0])
         coll_key = _v2_pluralize_noun(parsed_by_idx[t_id]["text"])
         elem_key = _v2_fact_key_camel(parsed_by_idx[s_id]["text"], "amount")
         inputs.setdefault(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
@@ -1290,7 +1405,8 @@ def compose_clause_v2(
         fold_key = "countTotal" if op_name == "COUNT" else "sumTotalPaisa"
         fold_type = "INTEGER" if op_name == "COUNT" else "MONEY_MINOR"
         fold_var = _emit(fold_key, fold_expr, "fold")
-        if not rate_nodes and not money_nodes and not bool_nodes and not quant_edges:
+        if not rate_nodes and not money_nodes and not bool_nodes and not dur_cond_nodes and not date_cond_nodes and not quant_edges:
+            _verify_affine_consumption()
             return {
                 "clauseIdx": clause_idx,
                 "steps": steps,
@@ -1302,17 +1418,22 @@ def compose_clause_v2(
                 "resultType": fold_type,
             }
 
-    # 2. First-Order Quantifiers & Precedence-Aware Boolean DAG (`AND` binds tighter than `OR`)
+    # 2. First-Order Quantifiers & Unified Condition/Comparison DAG (`AND` binds tighter than `OR`)
     gate_cond_expr: Any = None
     quant_expr: Any = None
     if quant_edges:
         s_id, t_id, q_rel = quant_edges[0]
+        consumed_ids.update((s_id, t_id))
+        consumed_edges.add(quant_edges[0])
         coll_key = _v2_pluralize_noun(parsed_by_idx[t_id]["text"])
         pred_key = _v2_derive_logic_key(parsed_by_idx[s_id]["text"], "conditionMet")
-        has_q_not = any(
-            rel == "REL_LOGICAL_NOT" and (tid in (s_id, t_id) or (sid not in bool_nodes and sid not in (s_id, t_id)))
-            for sid, tid, rel in in_clause_edges
-        )
+        not_sources = [
+            sid for sid, tid, rel in in_clause_edges
+            if rel == "REL_LOGICAL_NOT" and (tid in (s_id, t_id) or (sid not in bool_nodes and sid not in (s_id, t_id)))
+        ]
+        for ns in not_sources:
+            consumed_ids.add(ns)
+        has_q_not = bool(not_sources)
         base_q = "FORALL" if q_rel == "REL_QUANTIFIER_FORALL" else "EXISTS"
         inputs.setdefault(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
         quant_expr = {
@@ -1321,9 +1442,10 @@ def compose_clause_v2(
             "collection": f"inputs.{coll_key}",
             "predicate": {"op": "EQ", "left": f"it.{pred_key}", "right": True},
         }
-        if has_q_not and not bool_nodes:
+        if has_q_not and not bool_nodes and not dur_cond_nodes and not date_cond_nodes:
             quant_expr = {"op": "NOT", "operand": quant_expr}
-        if not rate_nodes and not money_nodes and not bool_nodes and fold_var is None:
+        if not rate_nodes and not money_nodes and not bool_nodes and not dur_cond_nodes and not date_cond_nodes and fold_var is None:
+            _verify_affine_consumption()
             out_key = _v2_fact_key_camel(pred_key + "Satisfied", "ruleSatisfied")
             res_var = _emit(out_key, quant_expr, "quantifier-fold")
             return {
@@ -1338,19 +1460,128 @@ def compose_clause_v2(
             }
 
     bool_edges = [e for e in in_clause_edges if e[2] in ("REL_LOGICAL_AND", "REL_LOGICAL_OR", "REL_LOGICAL_NOT")]
-    if bool_nodes or bool_edges or quant_expr is not None:
-        # Build atomic predicate map with unary NOT (`tid == bid`)
-        atom_by_id: dict[int, Any] = {}
-        for bid in bool_nodes:
-            bk = parsed_by_idx[bid]["key"]
-            inputs.setdefault(bk, {"type": "BOOLEAN"})
-            expr: Any = f"inputs.{bk}"
-            if any(rel == "REL_LOGICAL_NOT" and tid == bid for sid, tid, rel in bool_edges):
-                expr = {"op": "NOT", "operand": expr}
-            atom_by_id[bid] = expr
+    base_tax_ids_pre = {
+        s for s, t, rel in in_clause_edges
+        if rel == "REL_BASE_TAX_ADD" and parsed_by_idx[s]["kind"] == "MONEY"
+    }
+    cap_ids_pre = {
+        s if parsed_by_idx[s]["kind"] == "MONEY" else t
+        for s, t, rel in in_clause_edges
+        if rel in ("REL_MIN_CAP", "REL_CAP_CEILING", "REL_COMBINATOR_MIN")
+        for s, t in [(s, t)]
+        if (parsed_by_idx[s]["kind"] == "MONEY") != (parsed_by_idx[t]["kind"] == "MONEY")
+        or (parsed_by_idx[s]["kind"] == "MONEY" and rel in ("REL_MIN_CAP", "REL_CAP_CEILING"))
+    }
+    credit_ids_pre = {
+        s if parsed_by_idx[s]["kind"] == "MONEY" else t
+        for s, t, rel in in_clause_edges
+        if rel == "REL_SUB_CREDIT"
+        for s, t in [(s, t)]
+        if parsed_by_idx[s]["kind"] == "MONEY" or parsed_by_idx[t]["kind"] == "MONEY"
+    }
+    ceiling_ids_pre = {
+        t for s, t, rel in in_clause_edges
+        if rel == "REL_BRACKET_NEXT" and parsed_by_idx[t]["kind"] == "MONEY"
+    }
 
-        # Group conjuncts (`REL_LOGICAL_AND`) before joining disjunctions (`REL_LOGICAL_OR`)
-        and_parent: dict[int, int] = {bid: bid for bid in bool_nodes}
+    is_deontic_modality = (
+        clause_modality in ("MODALITY_PROHIBITION", "MODALITY_PERMISSION", "MODALITY_OBLIGATION")
+        or str(clause_modality or "").startswith("MODALITY_DEONTIC_")
+    )
+    deontic_quant_mode = (
+        is_deontic_modality
+        and not base_tax_ids_pre
+        and not cap_ids_pre
+        and not credit_ids_pre
+        and not ceiling_ids_pre
+        and (bool_nodes or dur_cond_nodes or date_cond_nodes or quant_expr is not None)
+        and (bool(rate_nodes) or bool(money_nodes))
+    )
+
+    atom_by_id: dict[int, Any] = {}
+    cond_order: list[int] = []
+
+    def _register_atom(nid: int, expr: Any) -> None:
+        if any(rel == "REL_LOGICAL_NOT" and tid == nid for _, tid, rel in bool_edges):
+            for ns, tid, rel in bool_edges:
+                if rel == "REL_LOGICAL_NOT" and tid == nid:
+                    consumed_ids.add(ns)
+            expr = {"op": "NOT", "operand": expr}
+        atom_by_id[nid] = expr
+        if nid not in cond_order:
+            cond_order.append(nid)
+
+    for bid in bool_nodes:
+        bk = parsed_by_idx[bid]["key"]
+        inputs.setdefault(bk, {"type": "BOOLEAN"})
+        _register_atom(bid, f"inputs.{bk}")
+
+    for did in dur_cond_nodes:
+        pv = parsed_by_idx[did]
+        dk = pv.get("key") or "durationDays"
+        inputs.setdefault(dk, {"type": "INTEGER"})
+        dval = int(pv["days"] if pv["days"] is not None else round(float(pv["num"])))
+        _register_atom(did, {"op": pv["cmpOp"], "left": f"inputs.{dk}", "right": dval})
+
+    for dt_id in date_cond_nodes:
+        pv = parsed_by_idx[dt_id]
+        if pv.get("isoDate"):
+            inputs.setdefault("transactionDate", {"type": "DATE"})
+            _register_atom(dt_id, {"op": pv["cmpOp"], "left": "inputs.transactionDate", "right": pv["isoDate"]})
+        elif pv.get("years"):
+            inputs.setdefault("taxYear", {"type": "INTEGER"})
+            _register_atom(dt_id, {"op": pv["cmpOp"], "left": "inputs.taxYear", "right": int(pv["years"][0])})
+
+    if deontic_quant_mode:
+        if rate_nodes:
+            r_id = rate_nodes[0]
+            pv_r = parsed_by_idx[r_id]
+            sym_ids = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "SYMBOL"]
+            base_sid = next(
+                (t for s, t, rel in in_clause_edges if s == r_id and rel == "REL_RATE_TO_THRESHOLD" and parsed_by_idx[t]["kind"] == "SYMBOL"),
+                None,
+            )
+            if base_sid is not None:
+                op_key = parsed_by_idx[base_sid]["key"]
+                inputs.setdefault(op_key, {"type": "MONEY_MINOR", "currency": ccy})
+                op_ref = f"inputs.{op_key}"
+                consumed_ids.add(base_sid)
+            else:
+                op_ref, op_key = _resolve_operand_expr()
+            subj_sid = next((sid for sid in sym_ids if parsed_by_idx[sid]["key"] != op_key), None)
+            if subj_sid is not None:
+                subj_key = parsed_by_idx[subj_sid]["key"]
+                inputs.setdefault(subj_key, {"type": "MONEY_MINOR", "currency": ccy})
+                lhs_ref = f"inputs.{subj_key}"
+                consumed_ids.add(subj_sid)
+            else:
+                inputs.setdefault("measuredAmount", {"type": "MONEY_MINOR", "currency": ccy})
+                lhs_ref = "inputs.measuredAmount"
+            tgt_var = _emit(
+                "ratioThresholdPaisa",
+                {"op": "RATIONAL_MULTIPLY", "base": op_ref, "rateBps": int(pv_r["rateBps"]), "denominator": 10000},
+                "ratio-threshold",
+            )
+            _register_atom(r_id, {"op": pv_r["cmpOp"], "left": lhs_ref, "right": f"vars.{tgt_var}"})
+            consumed_ids.add(r_id)
+        elif money_nodes:
+            m_id = money_nodes[0]
+            pv_m = parsed_by_idx[m_id]
+            op_ref, _ = _resolve_operand_expr()
+            _register_atom(m_id, {"op": pv_m["cmpOp"], "left": op_ref, "right": {"op": "TO_PAISE", "value": str(pv_m["minor"])}})
+            consumed_ids.add(m_id)
+
+    # Identify node-scoped REL_CONDITION_TO_GATE targets (e.g. surcharge fixed fee gated by condition)
+    base_tax_gate_map: dict[int, list[int]] = {}
+    scoped_cond_ids: set[int] = set()
+    for s, t, rel in in_clause_edges:
+        if rel == "REL_CONDITION_TO_GATE" and t in base_tax_ids_pre and s in atom_by_id:
+            base_tax_gate_map.setdefault(t, []).append(s)
+            scoped_cond_ids.add(s)
+
+    def _combine_cond_subset(subset_ids: list[int], include_quant: bool = False) -> Any:
+        sub_set = set(subset_ids)
+        and_parent: dict[int, int] = {cid: cid for cid in subset_ids}
 
         def _find(x: int) -> int:
             while and_parent[x] != x:
@@ -1364,33 +1595,64 @@ def compose_clause_v2(
                 if rx != ry:
                     and_parent[max(rx, ry)] = min(rx, ry)
 
-        # Preserve topological/order appearance while folding each AND-component first
         comp_members: dict[int, list[int]] = {}
-        for bid in bool_nodes:
-            comp_members.setdefault(_find(bid), []).append(bid)
+        for cid in subset_ids:
+            comp_members.setdefault(_find(cid), []).append(cid)
 
         and_groups: list[Any] = []
-        for root_id in sorted(comp_members.keys(), key=lambda r: bool_nodes.index(r)):
+        for root_id in sorted(comp_members.keys(), key=lambda r: subset_ids.index(r)):
             members = comp_members[root_id]
             grp_expr = atom_by_id[members[0]]
             for m_id in members[1:]:
                 grp_expr = {"op": "AND", "left": grp_expr, "right": atom_by_id[m_id]}
             and_groups.append(grp_expr)
 
-        if quant_expr is not None:
+        if include_quant and quant_expr is not None:
             and_groups.append(quant_expr)
 
-        if and_groups:
-            has_or = any(rel == "REL_LOGICAL_OR" for _, _, rel in bool_edges)
-            join_top = "OR" if has_or else "AND"
-            gate_cond_expr = and_groups[0]
-            for nxt in and_groups[1:]:
-                gate_cond_expr = {"op": join_top, "left": gate_cond_expr, "right": nxt}
+        if not and_groups:
+            return None
+        has_or = any(
+            rel == "REL_LOGICAL_OR" and (sid in sub_set or tid in sub_set)
+            for sid, tid, rel in bool_edges
+        )
+        join_top = "OR" if has_or else "AND"
+        expr_out = and_groups[0]
+        for nxt in and_groups[1:]:
+            expr_out = {"op": join_top, "left": expr_out, "right": nxt}
+        return expr_out
 
-    # Pure boolean/quantifier rule when there are zero downstream arithmetic/fold outputs
-    if not rate_nodes and not money_nodes and fold_var is None:
+    if scoped_cond_ids:
+        # Expand scoped surcharge conditions across any AND-linked companion predicates
+        changed = True
+        while changed:
+            changed = False
+            for sid, tid, rel in bool_edges:
+                if rel in ("REL_LOGICAL_AND", "REL_LOGICAL_OR"):
+                    if sid in scoped_cond_ids and tid in atom_by_id and tid not in scoped_cond_ids:
+                        scoped_cond_ids.add(tid)
+                        for bt_k, lst in base_tax_gate_map.items():
+                            if sid in lst and tid not in lst:
+                                lst.append(tid)
+                        changed = True
+                    elif tid in scoped_cond_ids and sid in atom_by_id and sid not in scoped_cond_ids:
+                        scoped_cond_ids.add(sid)
+                        for bt_k, lst in base_tax_gate_map.items():
+                            if tid in lst and sid not in lst:
+                                lst.append(sid)
+                        changed = True
+
+    remaining_cond_ids = [cid for cid in cond_order if cid not in scoped_cond_ids]
+    if remaining_cond_ids or quant_expr is not None:
+        gate_cond_expr = _combine_cond_subset(remaining_cond_ids, include_quant=True)
+        for cid in remaining_cond_ids:
+            consumed_ids.add(cid)
+
+    # Pure boolean/quantifier/deontic predicate rule
+    if deontic_quant_mode or (not rate_nodes and not money_nodes and fold_var is None):
         if gate_cond_expr is None:
             raise V2LoweringError("ERR_NO_COMPUTATION: no computational or boolean predicate spans resolved")
+        _verify_affine_consumption()
         out_var = _emit("predicateResult", gate_cond_expr, "boolean-gate")
         return {
             "clauseIdx": clause_idx,
@@ -1473,14 +1735,15 @@ def compose_clause_v2(
     active_floor_minor: int | None = None
     active_ceiling_minor: int | None = None
 
-    # Identify primary floor threshold (MONEY connected by REL_RATE_TO_THRESHOLD / REL_BRACKET_NEXT / excess role)
+    # Identify primary floor threshold (MONEY connected by REL_RATE_TO_THRESHOLD / REL_BRACKET_NEXT)
+    # Never silently promote unlinked MONEY spans when rate_nodes are present.
     floor_ids: list[int] = []
     for s, t, rel in in_clause_edges:
         if rel == "REL_RATE_TO_THRESHOLD" and parsed_by_idx[t]["kind"] == "MONEY" and t not in cap_ids and t not in credit_ids and t not in base_tax_ids:
             floor_ids.append(t)
         elif rel == "REL_BRACKET_NEXT" and parsed_by_idx[s]["kind"] == "MONEY":
             floor_ids.append(s)
-    if not floor_ids:
+    if not floor_ids and not rate_nodes:
         for sid in topo_ids:
             if (
                 parsed_by_idx[sid]["kind"] == "MONEY"
@@ -1490,6 +1753,9 @@ def compose_clause_v2(
                 and sid not in ceiling_ids
             ):
                 floor_ids.append(sid)
+
+    if clause_modality == "MODALITY_COMPUTATIONAL_EXCESS" and rate_nodes and not floor_ids and sym_floor_ref is None:
+        raise V2LoweringError("ERR_NO_THRESHOLD: MODALITY_COMPUTATIONAL_EXCESS clause lacks connected floor threshold")
 
     # Emit bottom-up arithmetic following topological node order
     primary_rate_bps = parsed_by_idx[rate_nodes[0]]["rateBps"] if rate_nodes else None
@@ -1532,6 +1798,7 @@ def compose_clause_v2(
             "rate-on-base",
         )
         node_ssa[rate_nodes[0]] = f"vars.{t0}"
+        consumed_ids.add(rate_nodes[0])
         if dual_rate_mode == "conditional":
             bps_1 = int(parsed_by_idx[rate_nodes[1]]["rateBps"])
             t1 = _emit(
@@ -1545,6 +1812,7 @@ def compose_clause_v2(
                 "rate-on-base",
             )
             node_ssa[rate_nodes[1]] = f"vars.{t1}"
+            consumed_ids.add(rate_nodes[1])
             gate_consumed = True
             return _emit(
                 "branchedRateTaxPaisa",
@@ -1571,6 +1839,7 @@ def compose_clause_v2(
                     "rate-on-base",
                 )
                 node_ssa[r_extra] = f"vars.{te}"
+                consumed_ids.add(r_extra)
                 acc = _emit(
                     "additiveRatesTaxPaisa",
                     {"op": "ADD", "left": f"vars.{acc}", "right": f"vars.{te}"},
@@ -1582,6 +1851,7 @@ def compose_clause_v2(
     if rate_nodes and (floor_ids or sym_floor_ref is not None):
         if floor_ids:
             floor_id = floor_ids[0]
+            consumed_ids.add(floor_id)
             floor_minor: int | None = parsed_by_idx[floor_id]["minor"]
             floor_role = span_by_idx[floor_id].get("role", "")
             floor_span_text = span_by_idx[floor_id].get("span", "")
@@ -1608,6 +1878,7 @@ def compose_clause_v2(
         # Bounded bracket ceiling (`REL_BRACKET_NEXT`)
         if ceiling_ids:
             ceil_id = next(iter(ceiling_ids))
+            consumed_ids.add(ceil_id)
             ceil_minor = parsed_by_idx[ceil_id]["minor"]
             active_ceiling_minor = ceil_minor
             if floor_minor is not None:
@@ -1657,23 +1928,23 @@ def compose_clause_v2(
 
         current_var = _emit_rate_application(base_for_rate)
 
-        # Add explicit `REL_BASE_TAX_ADD` node if connected in graph (NO bracket regex!)
-        if base_tax_ids:
-            bt_id = next(iter(base_tax_ids))
-            bt_minor = parsed_by_idx[bt_id]["minor"]
-            added_var = _emit(
-                "bracketWithBaseTaxPaisa",
-                {
-                    "op": "ADD",
-                    "left": {"op": "TO_PAISE", "value": str(bt_minor)},
-                    "right": f"vars.{current_var}",
-                },
-                "bracket-base-tax",
-            )
-            current_var = added_var
-
-        # Window gate `(floor, ceiling]` when bounded bracket is specified
+        # Window gate `(floor, ceiling]` when bounded bracket is specified:
+        # unconditional bracket base taxes must sit inside the window gate so
+        # amounts below floor or above ceiling evaluate to 0.
         if active_ceiling_minor is not None and active_floor_minor is not None:
+            for sid in topo_ids:
+                if sid in base_tax_ids and sid not in base_tax_gate_map and parsed_by_idx[sid]["minor"] is not None:
+                    bt_minor = parsed_by_idx[sid]["minor"]
+                    consumed_ids.add(sid)
+                    current_var = _emit(
+                        "bracketWithBaseTaxPaisa",
+                        {
+                            "op": "ADD",
+                            "left": {"op": "TO_PAISE", "value": str(bt_minor)},
+                            "right": f"vars.{current_var}",
+                        },
+                        "bracket-base-tax",
+                    )
             gate_var = _emit(
                 "boundedBracketTaxPaisa",
                 {
@@ -1696,6 +1967,7 @@ def compose_clause_v2(
     elif floor_ids:
         # Pure value/threshold definition clause (e.g. "$4,400", "fifty lakh rupees")
         m_id = floor_ids[0]
+        consumed_ids.add(m_id)
         m_minor = parsed_by_idx[m_id]["minor"]
         val_expr = {"op": "TO_PAISE", "value": str(m_minor)}
         if span_by_idx[m_id].get("role") == "ROLE_TRANSACTION_EXCESS_THRESHOLD":
@@ -1706,6 +1978,7 @@ def compose_clause_v2(
             }
         def_key = f"{operand_key}Paisa" if not operand_key.endswith("Paisa") else operand_key
         current_var = _emit(def_key, val_expr, "definition-value")
+        _verify_affine_consumption()
         return {
             "clauseIdx": clause_idx,
             "steps": steps,
@@ -1721,9 +1994,37 @@ def compose_clause_v2(
     else:
         raise V2LoweringError("ERR_NO_COMPUTATION: no rate, money, or predicate structure to lower")
 
+    # Add explicit `REL_BASE_TAX_ADD` node(s) cleanly for both excess/bracket and flat rates;
+    # if targeted by `REL_CONDITION_TO_GATE`, gate only that surcharge node (`CONDITIONAL`).
+    for sid in topo_ids:
+        if sid in base_tax_ids and sid not in consumed_ids and parsed_by_idx[sid]["minor"] is not None:
+            bt_minor = parsed_by_idx[sid]["minor"]
+            consumed_ids.add(sid)
+            bt_expr: Any = {"op": "TO_PAISE", "value": str(bt_minor)}
+            if sid in base_tax_gate_map:
+                sc_test = _combine_cond_subset(base_tax_gate_map[sid], include_quant=False)
+                for cid in base_tax_gate_map[sid]:
+                    consumed_ids.add(cid)
+                bt_expr = {
+                    "op": "CONDITIONAL",
+                    "test": sc_test,
+                    "then": bt_expr,
+                    "else": {"op": "TO_PAISE", "value": "0"},
+                }
+            current_var = _emit(
+                "bracketWithBaseTaxPaisa",
+                {
+                    "op": "ADD",
+                    "left": bt_expr,
+                    "right": f"vars.{current_var}",
+                },
+                "bracket-base-tax",
+            )
+
     # Apply downstream topological reductions (`REL_SUB_CREDIT`) then caps (`REL_MIN_CAP`) in `topo_ids` order
     for sid in topo_ids:
         if sid in credit_ids and parsed_by_idx[sid]["minor"] is not None:
+            consumed_ids.add(sid)
             c_minor = parsed_by_idx[sid]["minor"]
             current_var = _emit(
                 "afterCreditPaisa",
@@ -1736,6 +2037,7 @@ def compose_clause_v2(
             )
     for sid in topo_ids:
         if sid in cap_ids and parsed_by_idx[sid]["minor"] is not None:
+            consumed_ids.add(sid)
             cap_minor = parsed_by_idx[sid]["minor"]
             current_var = _emit(
                 "afterCapPaisa",
@@ -1760,6 +2062,8 @@ def compose_clause_v2(
             },
             "boolean-gate",
         )
+
+    _verify_affine_consumption()
 
     out_type = fold_type if (fold_var is not None and not rate_nodes and not money_nodes) else "MONEY_MINOR"
     if out_type == "INTEGER":
