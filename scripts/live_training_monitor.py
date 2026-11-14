@@ -475,7 +475,191 @@ def load_telemetry(
         file_mtime=file_mtime,
     )
     payload["available_logs"] = available_logs
+    payload["comparison"] = build_version_comparison(
+        payload,
+        search_dirs=search_dirs,
+        pinned_log=default_log,
+    )
     return payload
+
+
+_VERSION_TAG_RE = re.compile(r"\b(?:feat|fix|model|run)\((v\d+(?:\.\d+)*)\)|\b(v2\.\d+)\b", re.IGNORECASE)
+_COMPARISON_CACHE: dict[tuple[str, float, int], dict[str, Any]] = {}
+
+
+def _infer_run_label(raw_text: str, parsed: dict[str, Any], log_name: str) -> str:
+    head = raw_text[:4096]
+    if m := _VERSION_TAG_RE.search(head):
+        tag = m.group(1) or m.group(2)
+        if tag:
+            return f"{tag} ({log_name})"
+    meta = parsed.get("metadata") or {}
+    vocab = meta.get("raw_vocab")
+    epochs = parsed.get("epochs") or []
+    total_ep = epochs[-1]["total_epochs"] if epochs else ((parsed.get("progress") or {}).get("total_epochs") or 0)
+    stem = Path(log_name).stem
+    if vocab is not None and total_ep:
+        return f"{stem} (v{vocab} | {total_ep}ep)"
+    if vocab is not None:
+        return f"{stem} (v{vocab})"
+    return stem
+
+
+def _is_temp_smoke_log(raw_text: str, parsed: dict[str, Any]) -> bool:
+    head = raw_text[:8192]
+    if "D:\\Temp\\tmp" in head or "/tmp/" in head:
+        return True
+    train_samples = (parsed.get("metadata") or {}).get("train_samples")
+    if train_samples is not None and train_samples < 500:
+        return True
+    return False
+
+
+def _cached_parse_log_file(path: Path, now_ts: float) -> tuple[str, dict[str, Any]] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path.resolve()), st.st_mtime, st.st_size)
+    cached = _COMPARISON_CACHE.get(key)
+    if cached is not None:
+        return cached["raw_text"], cached["parsed"]
+    try:
+        raw_text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    parsed = parse_training_log(
+        raw_text,
+        log_path=str(path.resolve()),
+        file_mtime=st.st_mtime,
+        now=now_ts,
+    )
+    _COMPARISON_CACHE[key] = {"raw_text": raw_text, "parsed": parsed}
+    if len(_COMPARISON_CACHE) > 64:
+        # Keep memory bounded without evicting recent items unnecessarily.
+        oldest = next(iter(_COMPARISON_CACHE))
+        _COMPARISON_CACHE.pop(oldest, None)
+    return raw_text, parsed
+
+
+def build_version_comparison(
+    active_payload: dict[str, Any],
+    *,
+    search_dirs: list[str] | None = None,
+    pinned_log: Path | None = None,
+    max_runs: int = 8,
+    min_epochs_for_historical: int = 5,
+) -> dict[str, Any]:
+    """Compare the active run against historical full v2 training runs."""
+    now_ts = time.time()
+    active_path = active_payload.get("log_path")
+    active_epoch = (active_payload.get("progress") or {}).get("current_epoch") or 0
+    active_latest = active_payload.get("latest")
+
+    candidate_paths: dict[str, tuple[float, Path]] = {}
+    if active_path:
+        p = Path(active_path)
+        if p.is_file():
+            candidate_paths[str(p.resolve())] = (p.stat().st_mtime, p.resolve())
+    if pinned_log is not None and pinned_log.is_file():
+        p = pinned_log.resolve()
+        candidate_paths[str(p)] = (p.stat().st_mtime, p)
+
+    for directory in _default_search_dirs(search_dirs):
+        try:
+            for item in directory.glob("*.log"):
+                if not item.is_file():
+                    continue
+                st = item.stat()
+                if st.st_size < 1024 and str(item.resolve()) != active_path:
+                    continue
+                candidate_paths[str(item.resolve())] = (st.st_mtime, item.resolve())
+        except OSError:
+            continue
+
+    ordered_paths = sorted(candidate_paths.values(), key=lambda pair: pair[0], reverse=True)
+    runs: list[dict[str, Any]] = []
+    for _, path in ordered_paths[:60]:
+        resolved_str = str(path)
+        is_active = bool(active_path and resolved_str == str(Path(active_path).resolve()))
+        loaded = _cached_parse_log_file(path, now_ts)
+        if loaded is None:
+            continue
+        raw_text, parsed = loaded
+        if not is_active and _is_temp_smoke_log(raw_text, parsed):
+            continue
+        epochs = parsed.get("epochs") or []
+        if not is_active and len(epochs) < min_epochs_for_historical:
+            continue
+        # Only compare runs on the standardized v2 metric schema (contain Unit & Disc fields).
+        if epochs and epochs[0].get("unit") is None:
+            continue
+        if not epochs and not is_active:
+            continue
+
+        matched_row = None
+        if active_epoch > 0:
+            for ep in epochs:
+                if ep["epoch"] == active_epoch:
+                    matched_row = ep
+                    break
+        if matched_row is None and epochs and len(epochs) >= active_epoch > 0:
+            matched_row = epochs[active_epoch - 1]
+
+        delta_vs_active: dict[str, float | int | None] = {}
+        if active_latest and matched_row and not is_active:
+            for key in ("nll", "val_bio", "val_rel_f1", "f1", "unit", "mod", "em", "sem_pass", "disc"):
+                a_val = active_latest.get(key)
+                r_val = matched_row.get(key)
+                if a_val is not None and r_val is not None:
+                    delta_vs_active[key] = round(a_val - r_val, 4)
+
+        meta = parsed.get("metadata") or {}
+        prog = parsed.get("progress") or {}
+        runs.append(
+            {
+                "label": _infer_run_label(raw_text, parsed, path.name),
+                "log_name": path.name,
+                "log_path": resolved_str,
+                "mtime": parsed.get("file_mtime"),
+                "mtime_utc": parsed.get("file_mtime_utc"),
+                "is_active": is_active,
+                "status": parsed.get("status"),
+                "raw_vocab": meta.get("raw_vocab"),
+                "train_samples": meta.get("train_samples"),
+                "val_samples": meta.get("val_samples"),
+                "completed_epochs": len(epochs),
+                "total_epochs": epochs[-1]["total_epochs"] if epochs else (prog.get("total_epochs") or 0),
+                "best_epoch": parsed.get("best_epoch"),
+                "final_epoch": epochs[-1] if epochs else None,
+                "matched_epoch": matched_row,
+                "delta_vs_active": delta_vs_active,
+                "curve": [
+                    {
+                        "epoch": e["epoch"],
+                        "nll": e["nll"],
+                        "val_bio": e["val_bio"],
+                        "val_rel_f1": e["val_rel_f1"],
+                        "f1": e["f1"],
+                        "unit": e["unit"],
+                        "mod": e["mod"],
+                        "em": e["em"],
+                        "sem_pass": e["sem_pass"],
+                        "disc": e["disc"],
+                    }
+                    for e in epochs
+                ],
+            }
+        )
+        if len(runs) >= max_runs:
+            break
+
+    # Put active run first, then newest -> older historical runs.
+    runs.sort(key=lambda r: (0 if r["is_active"] else 1, -(r["mtime"] or 0.0)))
+    return {
+        "active_epoch": active_epoch,
+        "runs": runs,
+    }
 
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -897,6 +1081,51 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="comparisonSection" class="chart-card" style="margin-bottom:14px;">
+    <div class="chart-head">
+      <div>
+        <span class="chart-title">Version-by-Version Comparison (Active Run vs Previous Runs)</span>
+        <div id="compSub" class="subtitle">Epoch-aligned delta vs active epoch plus best saved peak per run</div>
+      </div>
+      <div class="controls">
+        <select id="compMetricSelect" title="Overlay metric">
+          <option value="val_rel_f1">Val RelF1 (%)</option>
+          <option value="val_bio">Val BIO (%)</option>
+          <option value="em">Exact Match EM (%)</option>
+          <option value="sem_pass">SemPass (%)</option>
+          <option value="nll">NLL Loss</option>
+          <option value="f1">Role F1 (%)</option>
+          <option value="unit">Span Unit (%)</option>
+          <option value="disc">Discrepancies</option>
+        </select>
+      </div>
+    </div>
+    <div id="compLegend" class="legend" style="margin-bottom:8px;"></div>
+    <div class="canvas-wrap" style="height:245px;margin-bottom:12px;"><canvas id="chartComparison"></canvas></div>
+    <div class="table-wrap" style="max-height:260px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Run / Version</th>
+            <th>Vocab / Split</th>
+            <th>Progress</th>
+            <th id="compMatchedHdr">Matched @ Ep -</th>
+            <th>RelF1 @ Ep</th>
+            <th>BIO @ Ep</th>
+            <th>EM @ Ep</th>
+            <th>SemPass @ Ep</th>
+            <th>Disc @ Ep</th>
+            <th>Peak RelF1 (Best Ep)</th>
+            <th>Peak BIO</th>
+            <th>Peak EM</th>
+            <th>Best SemPass / Min Disc</th>
+          </tr>
+        </thead>
+        <tbody id="compTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div id="rlSection" class="chart-card hidden" style="margin-bottom:14px;">
     <div class="chart-head">
       <span class="chart-title">Stage 2 USVM Reinforcement Learning</span>
@@ -990,6 +1219,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     newestFirst: document.getElementById("newestFirst"),
     logFilter: document.getElementById("logFilter"),
     rlSection: document.getElementById("rlSection"),
+    compSub: document.getElementById("compSub"),
+    compMetricSelect: document.getElementById("compMetricSelect"),
+    compLegend: document.getElementById("compLegend"),
+    compMatchedHdr: document.getElementById("compMatchedHdr"),
+    compTableBody: document.getElementById("compTableBody"),
     tooltip: document.getElementById("tooltip")
   };
 
@@ -1403,6 +1637,192 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       : "No discrepancy JSONL records found alongside checkpoint.";
   }
 
+  const COMP_PALETTE = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#f472b6", "#2dd4bf", "#fb7185", "#94a3b8"];
+
+  function fmtRunDelta(diff, decimals = 2, suffix = "", lowerBetter = false) {
+    if (diff === null || diff === undefined || Number.isNaN(diff)) return "";
+    const sign = diff > 0 ? "+" : "";
+    const cls = Math.abs(diff) < 1e-6 ? "delta-flat" : ((lowerBetter ? diff < 0 : diff > 0) ? "delta-up" : "delta-down");
+    return ` <span class="${cls}">(${sign}${Number(diff).toFixed(decimals)}${suffix})</span>`;
+  }
+
+  function drawComparisonChart(data) {
+    const canvas = document.getElementById("chartComparison");
+    if (!canvas) return;
+    const comp = (data && data.comparison) || { active_epoch: 0, runs: [] };
+    const runs = comp.runs || [];
+    const metric = els.compMetricSelect ? els.compMetricSelect.value : "val_rel_f1";
+    const metaDef = {
+      val_rel_f1: { label: "Val RelF1", suffix: "%", min: 0, max: 100, dec: 1 },
+      val_bio: { label: "Val BIO", suffix: "%", min: 0, max: 100, dec: 1 },
+      em: { label: "Exact Match EM", suffix: "%", min: 0, max: 100, dec: 1 },
+      sem_pass: { label: "SemPass", suffix: "%", min: 0, max: 100, dec: 1 },
+      nll: { label: "NLL Loss", suffix: "", dec: 3 },
+      f1: { label: "Role F1", suffix: "%", min: 0, max: 100, dec: 1 },
+      unit: { label: "Span Unit", suffix: "%", min: 0, max: 100, dec: 1 },
+      disc: { label: "Discrepancies", suffix: "", min: 0, dec: 0 }
+    }[metric] || { label: metric, suffix: "", dec: 2 };
+
+    els.compLegend.innerHTML = runs.map((r, idx) => {
+      const color = COMP_PALETTE[idx % COMP_PALETTE.length];
+      const tag = r.is_active ? " [ACTIVE]" : "";
+      return `<span class="legend-item"><i class="swatch" style="background:${color};${r.is_active ? "height:4px;" : ""}"></i>${r.label}${tag}</span>`;
+    }).join("");
+
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.max(260, Math.floor(rect.width));
+    const h = Math.max(190, Math.floor(rect.height));
+    if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { left: 48, right: 18, top: 12, bottom: 26 };
+    const pw = Math.max(40, w - pad.left - pad.right);
+    const ph = Math.max(40, h - pad.top - pad.bottom);
+
+    ctx.strokeStyle = "#1e2942";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + (ph * i) / 4;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(w - pad.right, y);
+      ctx.stroke();
+    }
+
+    let maxEp = 1;
+    let minV = Infinity;
+    let maxV = -Infinity;
+    for (const r of runs) {
+      for (const pt of r.curve || []) {
+        maxEp = Math.max(maxEp, pt.epoch);
+        const val = pt[metric];
+        if (val !== null && val !== undefined && !Number.isNaN(val)) {
+          minV = Math.min(minV, val);
+          maxV = Math.max(maxV, val);
+        }
+      }
+    }
+    if (!Number.isFinite(minV)) {
+      ctx.fillStyle = "#8ea0c0";
+      ctx.font = "12px monospace";
+      ctx.fillText("No historical comparison runs found yet.", pad.left + 12, pad.top + ph / 2);
+      canvas._compMeta = null;
+      return;
+    }
+    if (metaDef.min !== undefined) minV = metaDef.min;
+    else minV = Math.max(0, minV - (maxV - minV) * 0.08);
+    if (metaDef.max !== undefined) maxV = metaDef.max;
+    else maxV = maxV + Math.max(0.2, (maxV - minV) * 0.08);
+    if (Math.abs(maxV - minV) < 1e-6) { maxV += 1; minV = Math.max(0, minV - 1); }
+
+    ctx.fillStyle = "#8ea0c0";
+    ctx.font = "10.5px monospace";
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 4; i++) {
+      const val = maxV - ((maxV - minV) * i) / 4;
+      ctx.fillText(val.toFixed(metaDef.dec === 0 ? 0 : 1), pad.left - 6, pad.top + (ph * i) / 4 + 3);
+    }
+
+    const xForEpoch = ep => maxEp <= 1 ? pad.left + pw / 2 : pad.left + (pw * (ep - 1)) / (maxEp - 1);
+    const yForVal = v => pad.top + ph - ((v - minV) / (maxV - minV)) * ph;
+
+    ctx.textAlign = "center";
+    const step = Math.max(1, Math.ceil(maxEp / 10));
+    for (let ep = 1; ep <= maxEp; ep += step) {
+      ctx.fillText("E" + ep, xForEpoch(ep), h - 8);
+    }
+    if (maxEp > 1 && (maxEp - 1) % step !== 0) {
+      ctx.fillText("E" + maxEp, xForEpoch(maxEp), h - 8);
+    }
+
+    if (comp.active_epoch > 0) {
+      const ax = xForEpoch(comp.active_epoch);
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.35)";
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(ax, pad.top);
+      ctx.lineTo(ax, pad.top + ph);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Draw historical runs first, active run on top.
+    const drawOrder = runs.map((r, idx) => ({ r, idx })).reverse();
+    for (const { r, idx } of drawOrder) {
+      const color = COMP_PALETTE[idx % COMP_PALETTE.length];
+      const curve = r.curve || [];
+      if (!curve.length) continue;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = r.is_active ? 2.8 : 1.7;
+      ctx.globalAlpha = r.is_active ? 1.0 : 0.78;
+      ctx.beginPath();
+      let started = false;
+      for (const pt of curve) {
+        const v = pt[metric];
+        if (v === null || v === undefined) continue;
+        const x = xForEpoch(pt.epoch);
+        const y = yForVal(v);
+        if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+      }
+      ctx.stroke();
+      ctx.fillStyle = color;
+      for (const pt of curve) {
+        const v = pt[metric];
+        if (v === null || v === undefined) continue;
+        ctx.beginPath();
+        ctx.arc(xForEpoch(pt.epoch), yForVal(v), r.is_active ? 3.2 : 2.0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+
+    canvas._compMeta = { runs, metric, metaDef, maxEp, xForEpoch };
+  }
+
+  function renderComparison(data) {
+    const comp = (data && data.comparison) || { active_epoch: 0, runs: [] };
+    const runs = comp.runs || [];
+    const activeEp = comp.active_epoch || 0;
+    els.compMatchedHdr.textContent = activeEp > 0 ? `Ep ${activeEp} NLL` : "Matched NLL";
+    els.compSub.textContent = activeEp > 0
+      ? `Comparing active run at Epoch ${activeEp} against each historical run at Epoch ${activeEp} plus overall peak`
+      : "Comparing available training runs";
+
+    els.compTableBody.innerHTML = runs.map((r, idx) => {
+      const color = COMP_PALETTE[idx % COMP_PALETTE.length];
+      const m = r.matched_epoch;
+      const b = r.best_epoch || r.final_epoch;
+      const d = r.delta_vs_active || {};
+      const badge = r.is_active ? ' <span class="tag-best">ACTIVE</span>' : "";
+      const split = (r.train_samples && r.val_samples) ? `${r.train_samples}/${r.val_samples}` : "--";
+      return `
+        <tr class="${r.is_active ? "best-row" : ""}">
+          <td><i class="swatch" style="background:${color};margin-right:6px;vertical-align:middle;"></i>${r.label}${badge}</td>
+          <td>${r.raw_vocab || "--"}w | ${split}</td>
+          <td>${r.completed_epochs}/${r.total_epochs}</td>
+          <td>${m ? fmtNum(m.nll, 4) + fmtRunDelta(d.nll, 3, "", true) : "--"}</td>
+          <td>${m ? fmtNum(m.val_rel_f1, 2, "%") + fmtRunDelta(d.val_rel_f1, 2, "%") : "--"}</td>
+          <td>${m ? fmtNum(m.val_bio, 2, "%") + fmtRunDelta(d.val_bio, 2, "%") : "--"}</td>
+          <td>${m ? fmtNum(m.em, 2, "%") + fmtRunDelta(d.em, 2, "%") : "--"}</td>
+          <td>${m ? fmtNum(m.sem_pass, 1, "%") + fmtRunDelta(d.sem_pass, 1, "%") : "--"}</td>
+          <td>${m ? String(m.disc) + fmtRunDelta(d.disc, 0, "", true) : "--"}</td>
+          <td>${b ? `${fmtNum(b.val_rel_f1, 2, "%")} (E${b.epoch})` : "--"}</td>
+          <td>${b ? fmtNum(b.val_bio, 2, "%") : "--"}</td>
+          <td>${b ? fmtNum(b.em, 2, "%") : "--"}</td>
+          <td>${b ? `${fmtNum(b.sem_pass, 1, "%")} / ${b.disc}` : "--"}</td>
+        </tr>
+      `;
+    }).join("") || `<tr><td colspan="13" style="text-align:center;color:var(--muted);">No multi-epoch runs found for comparison</td></tr>`;
+
+    drawComparisonChart(data);
+  }
+
   function render(data) {
     state.data = data;
     updateLogSelector(data.available_logs, data.log_path);
@@ -1425,6 +1845,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     renderMeta(data);
     renderKpis(data);
     renderCharts(data);
+    renderComparison(data);
     renderTablesAndLogs(data);
   }
 
@@ -1451,6 +1872,41 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     attachChartHover(id);
   }
 
+  const compCanvas = document.getElementById("chartComparison");
+  if (compCanvas) {
+    compCanvas.addEventListener("mousemove", ev => {
+      const meta = compCanvas._compMeta;
+      if (!meta || !meta.runs.length) { els.tooltip.style.display = "none"; return; }
+      const rect = compCanvas.getBoundingClientRect();
+      const mx = ev.clientX - rect.left;
+      let bestEp = 1;
+      let bestDist = Infinity;
+      for (let ep = 1; ep <= meta.maxEp; ep++) {
+        const d = Math.abs(meta.xForEpoch(ep) - mx);
+        if (d < bestDist) { bestDist = d; bestEp = ep; }
+      }
+      const lines = [`Epoch ${bestEp} - ${meta.metaDef.label}`];
+      for (const r of meta.runs) {
+        const pt = (r.curve || []).find(p => p.epoch === bestEp);
+        if (pt && pt[meta.metric] !== undefined) {
+          lines.push(`${r.label}: ${Number(pt[meta.metric]).toFixed(meta.metaDef.dec)}${meta.metaDef.suffix}`);
+        }
+      }
+      els.tooltip.textContent = lines.join("\n");
+      els.tooltip.style.whiteSpace = "pre";
+      els.tooltip.style.display = "block";
+      els.tooltip.style.left = Math.min(window.innerWidth - 260, ev.clientX + 14) + "px";
+      els.tooltip.style.top = Math.max(8, ev.clientY - 24) + "px";
+    });
+    compCanvas.addEventListener("mouseleave", () => { els.tooltip.style.display = "none"; });
+  }
+
+  if (els.compMetricSelect) {
+    els.compMetricSelect.addEventListener("change", () => {
+      if (state.data) drawComparisonChart(state.data);
+    });
+  }
+
   els.logSelector.addEventListener("change", () => {
     state.selectedLog = els.logSelector.value;
     fetchMetrics();
@@ -1467,7 +1923,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     if (state.data) renderTablesAndLogs(state.data);
   });
   window.addEventListener("resize", () => {
-    if (state.data) renderCharts(state.data);
+    if (state.data) {
+      renderCharts(state.data);
+      drawComparisonChart(state.data);
+    }
   });
 
   for (const btn of document.querySelectorAll(".tab-btn")) {
@@ -1519,7 +1978,7 @@ def make_handler_class(
                 )
                 return
 
-            if parsed.path == "/api/metrics":
+            if parsed.path in ("/api/metrics", "/api/comparison"):
                 qs = parse_qs(parsed.query)
                 req_log = qs.get("log", ["default"])[0]
                 payload = load_telemetry(
@@ -1528,7 +1987,8 @@ def make_handler_class(
                     checkpoint_path=checkpoint_path,
                     search_dirs=search_dirs,
                 )
-                body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+                out = payload if parsed.path == "/api/metrics" else payload.get("comparison", {})
+                body = json.dumps(out, ensure_ascii=True).encode("utf-8")
                 self._send_bytes(HTTPStatus.OK, "application/json; charset=utf-8", body)
                 return
 

@@ -158,6 +158,41 @@ class TestLiveTrainingMonitor(unittest.TestCase):
                     search_dirs=[str(tmp)],
                 )
                 self.assertEqual(telemetry_direct["progress"]["current_epoch"], 4)
+
+                # Historical 5-epoch full run + temp smoke log (should exclude smoke log)
+                prev_log = tmp / "task-prev.log"
+                prev_lines = [
+                    "Architecture: v2 (Typed-Opcode + SpanUnit) | Raw Vocab: 639 | Logic Vocab: 298 tokens",
+                    "Train samples: 6400 | Val samples: 1600 | Eff Batch: 32",
+                ]
+                for ep in range(1, 6):
+                    prev_lines.append(
+                        f"Epoch {ep:02d}/25 (55.0s) | NLL: {2.0 - 0.1 * ep:.4f} | DomTok: 95.00% | "
+                        f"TrainBIO: 80.00% | TrainRelF1: 50.00% | BIO: {75.0 + ep:.2f}% | Mod: 98.00% | "
+                        f"F1: 80.00% | RelF1: {40.0 + 4.0 * ep:.2f}% | Unit: 97.00% | EM: 35.00% | "
+                        f"SemPass: 10.0% | Disc: 19" + (" [BEST SAVED]" if ep == 5 else "")
+                    )
+                prev_log.write_text("\n".join(prev_lines) + "\n", encoding="utf-8")
+
+                smoke_log = tmp / "task-smoke.log"
+                smoke_log.write_text(
+                    "Stage 1 Supervised complete in 1.2s -> D:\\Temp\\tmp_xyz\\v2_sup.pt\n"
+                    + SAMPLE_STAGE1_LOG,
+                    encoding="utf-8",
+                )
+
+                with urlopen(f"http://127.0.0.1:{port}/api/comparison", timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+                    comp = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(comp["active_epoch"], 4)
+                names = [r["log_name"] for r in comp["runs"]]
+                self.assertIn("run_live.log", names)
+                self.assertIn("task-prev.log", names)
+                self.assertNotIn("task-smoke.log", names)
+                prev_run = next(r for r in comp["runs"] if r["log_name"] == "task-prev.log")
+                self.assertEqual(prev_run["matched_epoch"]["epoch"], 4)
+                # Active Ep 4 RelF1=62.30 vs prev Ep 4 RelF1=56.00 -> +6.30
+                self.assertAlmostEqual(prev_run["delta_vs_active"]["val_rel_f1"], 6.3, places=2)
             finally:
                 server.shutdown()
                 server.server_close()
