@@ -193,6 +193,8 @@ def _output_key_from_assign(assign: str) -> str:
 
 def input_id_from_phrase(phrase: str, currency_code: str | None = None) -> str:
     """Derives an input id from a surface phrase, with a deterministic fallback."""
+    if re.search(r"\b(?:under|in)\s+(?:subparagraph|paragraph|subsection|section)\b", phrase or "", re.IGNORECASE):
+        return ""
     keys = build_operand_fact_keys(phrase, currency_code)
     if keys:
         return keys[0]
@@ -750,9 +752,12 @@ def build_clause_scoped_computation(
     def declare_input(input_id: str, input_type: str) -> str:
         if input_id not in inputs:
             if input_type == "money":
+                ccy = currency_code
+                if not ccy or ccy == "CURRENCY":
+                    ccy = "USD"
                 inputs[input_id] = {
                     "type": "MONEY_MINOR",
-                    "currency": currency_code or "USD",
+                    "currency": ccy,
                     "scale": 100,
                     "required": True,
                 }

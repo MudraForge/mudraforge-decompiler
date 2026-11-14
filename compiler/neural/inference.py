@@ -640,11 +640,18 @@ def infer_rule_currency_info(spans: list[dict], text: str) -> tuple[str | None, 
     for s in spans:
         st, dt, unit = parse_unit_and_type(s["span"])
         if st == "MONETARY_QUANTUM" and dt in ("CURRENCY_PAISA", "CURRENCY_CENTS", "CURRENCY_MINOR_UNITS"):
-            return unit, dt
+            if unit in ("USD", "INR", "EUR", "GBP"):
+                return unit, dt
     st, dt, unit = parse_unit_and_type(text)
-    if st == "MONETARY_QUANTUM":
+    if st == "MONETARY_QUANTUM" and unit in ("USD", "INR", "EUR", "GBP"):
         return unit, dt
-    return None, "CURRENCY_PAISA"
+    if re.search(r"₹|\b(?:rupees?|rs\.?|inr|crores?|lakhs?|lacs?|paisa|paise)\b", text, re.IGNORECASE):
+        return "INR", "CURRENCY_PAISA"
+    if re.search(r"€|\b(?:euros?|eur)\b", text, re.IGNORECASE):
+        return "EUR", "CURRENCY_CENTS"
+    if re.search(r"£|\b(?:pounds?|gbp|pence)\b", text, re.IGNORECASE):
+        return "GBP", "CURRENCY_MINOR_UNITS"
+    return "USD", "CURRENCY_CENTS"
 
 
 def build_operand_fact_keys(span_text: str, currency_code: str | None) -> list[str]:

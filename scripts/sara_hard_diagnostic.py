@@ -456,8 +456,9 @@ def run_all_diagnostics(
         "",
         "## 3. Methodological Note",
         "",
-        "This diagnostic reports strict compilation coverage across the pipeline without oracle fact mappings.",
-        "It contains no accuracy or correctness claim."
+        "This diagnostic reports strict syntactic compilation and cross-engine parity coverage across the pipeline without oracle fact mappings.",
+        "It verifies that lowered ASTs are well-formed, typecheck under INRIA's Catala compiler, and evaluate under USVM without runtime exceptions.",
+        "It contains no claim of substantive legal correctness of multi-section statutory formulas against external benchmark tax returns."
     ])
 
     with open(output_md, "w", encoding="utf-8") as f:

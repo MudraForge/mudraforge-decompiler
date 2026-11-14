@@ -93,9 +93,12 @@ class SsaBuilder:
 
     def declare_input(self, input_id: str) -> str:
         if input_id not in self.inputs:
+            ccy = self.currency_code
+            if not ccy or ccy == "CURRENCY":
+                ccy = "USD"
             self.inputs[input_id] = {
                 "type": "MONEY_MINOR",
-                "currency": self.currency_code or "USD",
+                "currency": ccy,
                 "scale": 100,
                 "required": True,
             }
@@ -609,15 +612,36 @@ def compose_clause(
 
     # 4b. Flat rate: statutory rate without a threshold (e.g. IRC § 68(a)(2) or § 3301)
     if rate_node is not None and threshold_node is None:
+        # Guard against silent degradation of an excess-over-threshold clause into a flat-rate clause.
+        # If the clause contains excess or comparative cues (e.g. § 68(a)(1) "excess of AGI over applicable amount"),
+        # dropping the threshold would falsely compute tax/reduction on the entire base.
+        if re.search(
+            r"\b(?:excess\s+(?:of)?|in\s+excess\s+of|over\s+the|over\s+such|exceeding|exceeds|more\s+than|greater\s+than)\b",
+            clause_text,
+            re.IGNORECASE,
+        ):
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_NO_THRESHOLD,
+                    detail="clause specifies an excess calculation over a threshold, but no valid threshold node or symbol could be resolved",
+                )
+            )
+            return [], [], diagnostics
+
         base_phrase = ""
         for node in nodes:
             if node.role == "ROLE_COMPUTATION_OPERAND":
                 base_phrase = node.text
                 break
         if not base_phrase:
-            base_phrase = base_phrase_after_rate(clause_text, rate_node.char_range[1])
+            rate_pos = clause_text.find(rate_node.text)
+            rate_end = (rate_pos + len(rate_node.text)) if rate_pos >= 0 else rate_node.char_range[1]
+            base_phrase = base_phrase_after_rate(clause_text, rate_end)
         base_id = input_id_from_phrase(base_phrase, currency_code)
-        if not base_id and inherited_base_id:
+        # Inherited base is only for clauses with no distinct local base phrase.
+        # If a clause explicitly names a base phrase that cannot be resolved (or refers to another paragraph/dollar amount),
+        # it must NOT blindly fall back to an arbitrary inherited income base (e.g. § 63 200% multiplying grossIncome).
+        if not base_id and not base_phrase and inherited_base_id:
             base_id = inherited_base_id
         if not base_id:
             if candidate_bases and len(candidate_bases) > 1:
@@ -712,7 +736,7 @@ def compose_clause(
     if not base_phrase:
         base_phrase = resolve_base_phrase(clause_text, threshold_node)
     base_id = input_id_from_phrase(base_phrase, currency_code)
-    if not base_id and inherited_base_id:
+    if not base_id and not base_phrase and inherited_base_id:
         base_id = inherited_base_id
     if not base_id:
         if candidate_bases and len(candidate_bases) > 1:
