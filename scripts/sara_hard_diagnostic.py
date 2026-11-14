@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -29,6 +30,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
 from compiler.neural.clause_linker import ClauseLinkingError
+from compiler.neural.inference import segment_clauses
+from compiler.neural.tokenizer import tokenize_with_offsets
 from compiler.converters.catala_emitter import CatalaLoweringError, emit_catala_code, _identifier
 from compiler.vm.usvm_evaluator import CanonicalUsvmEvaluator
 
@@ -62,12 +65,20 @@ class CaseDiagnosticResult:
     catala_typecheck_ok: bool = False
     usvm_exec_ok: bool = False
     cross_engine_equal: bool = False
+    lowered_clauses: int = 0
+    total_clauses: int = 0
+    skipped_clauses: int = 0
+    clause_coverage: str = "0/0"
     failure_code: str | None = None
     failure_detail: str | None = None
 
 
 def identify_statute_section(case_text: str, question: str, prolog: str) -> str:
     """Identifies the primary IRC section governing the case."""
+    q_low = (question or "").lower()
+    for sec_num in ("152", "3306", "3301", "7703", "151", "68", "63", "2", "1"):
+        if re.search(rf"\bsection\s+{sec_num}\b", q_low):
+            return f"section{sec_num}"
     combined = f"{case_text} {question} {prolog}".lower()
     if "section 1(" in combined or "tax_from_brackets" in combined:
         return "section1"
@@ -149,6 +160,12 @@ def run_diagnostic_on_case(
 
     res = CaseDiagnosticResult(case_id=cid, track=track, statute_section=sec, furthest_stage=STAGE_ANNOTATION)
 
+    toks, offs = tokenize_with_offsets(statute_text)
+    seg_ranges = segment_clauses(statute_text, toks, offs) if toks else []
+    res.total_clauses = len(seg_ranges)
+    res.skipped_clauses = res.total_clauses
+    res.clause_coverage = f"0/{res.total_clauses}"
+
     decomp = None
     # ── Stage 1: Neural Annotation & Stage 2: Scope ─────────────────────────
     try:
@@ -191,11 +208,22 @@ def run_diagnostic_on_case(
         return res
 
     comp = ast.get("computation") or {}
+    clause_scopes = comp.get("clauseScopes") or []
+    if clause_scopes:
+        res.total_clauses = len(clause_scopes)
+        res.lowered_clauses = sum(1 for cs in clause_scopes if cs.get("steps"))
+        res.skipped_clauses = res.total_clauses - res.lowered_clauses
+        res.clause_coverage = f"{res.lowered_clauses}/{res.total_clauses}"
     steps = (comp.get("pipeline") or {}).get("steps") or comp.get("steps")
     if not steps:
         res.failure_code = "ERR_EMPTY_PIPELINE"
         res.failure_detail = f"computation archetype={comp.get('archetype')} has no steps"
         return res
+    if not clause_scopes:
+        res.lowered_clauses = 1
+        res.total_clauses = max(res.total_clauses, 1)
+        res.skipped_clauses = res.total_clauses - res.lowered_clauses
+        res.clause_coverage = f"{res.lowered_clauses}/{res.total_clauses}"
 
     res.lower_ok = True
     res.furthest_stage = STAGE_CATALA_EMIT
@@ -224,11 +252,7 @@ def run_diagnostic_on_case(
         res.failure_code = "SKIPPED_CATALA_UNAVAILABLE"
         return res
 
-    scope_name = "Scope"
-    for line in source.splitlines():
-        if line.strip().startswith("declaration scope "):
-            scope_name = line.strip().split()[2].rstrip(":")
-            break
+    scope_name = "S"
 
     catala_minor = None
     try:
@@ -260,7 +284,7 @@ def run_diagnostic_on_case(
             if output_key and _identifier(output_key) in s_res.get("values", {}):
                 val = s_res["values"][_identifier(output_key)]
                 if isinstance(val, (int, float)):
-                    catala_minor = round(val * 100) if isinstance(val, float) else val
+                    catala_minor = round(float(val) * 100)
     except Exception as exc:
         res.failure_code = "ERR_CATALA_TYPECHECK_EXCEPTION"
         res.failure_detail = str(exc)
@@ -341,13 +365,15 @@ def run_all_diagnostics(
         if res.failure_code:
             failure_codes[res.failure_code] += 1
         print(f"[{idx:02d}/{len(cases)}] {c['id']:14s} ({track:7s}) -> stage: {res.furthest_stage:18s} "
-              f"code: {res.failure_code or 'OK'}")
+              f"clauses: {res.clause_coverage:6s} code: {res.failure_code or 'OK'}")
 
     if evaluator:
         evaluator.close()
 
     def _calc_stats(subset: list[CaseDiagnosticResult]):
         tot = len(subset)
+        low_c = sum(r.lowered_clauses for r in subset)
+        tot_c = sum(r.total_clauses for r in subset)
         return {
             "total": tot,
             "annotation_ok": sum(1 for r in subset if r.annotation_ok),
@@ -357,16 +383,35 @@ def run_all_diagnostics(
             "catala_typecheck_ok": sum(1 for r in subset if r.catala_typecheck_ok),
             "usvm_exec_ok": sum(1 for r in subset if r.usvm_exec_ok),
             "cross_engine_equal": sum(1 for r in subset if r.cross_engine_equal),
+            "lowered_clauses": low_c,
+            "total_clauses": tot_c,
+            "skipped_clauses": tot_c - low_c,
+            "clause_coverage": f"{low_c}/{tot_c}",
         }
 
     numeric_results = [r for r in results if r.track == "numeric"]
     binary_results = [r for r in results if r.track == "binary"]
+
+    section_clause_stats: dict[str, dict[str, Any]] = {}
+    for r in results:
+        sec = r.statute_section
+        if sec not in section_clause_stats:
+            section_clause_stats[sec] = {
+                "cases": 0,
+                "lowered_clauses": r.lowered_clauses,
+                "total_clauses": r.total_clauses,
+                "skipped_clauses": r.skipped_clauses,
+                "clause_coverage": r.clause_coverage,
+                "status": "LOWERED" if r.lower_ok else (r.failure_code or "FAILED"),
+            }
+        section_clause_stats[sec]["cases"] += 1
 
     summary = {
         "cases_total": len(cases),
         "compilation_coverage_all": _calc_stats(results),
         "compilation_coverage_numeric": _calc_stats(numeric_results),
         "compilation_coverage_binary": _calc_stats(binary_results),
+        "clause_coverage_by_section": section_clause_stats,
         "furthest_stage_distribution": dict(stages_count),
         "failure_codes_histogram": dict(failure_codes),
         "results": [asdict(r) for r in results],
@@ -395,16 +440,29 @@ def run_all_diagnostics(
         f"| **Neural Annotation** | **{c_all['annotation_ok']}/{c_all['total']} ({c_all['annotation_ok']/c_all['total']*100:.1f}%)** | {c_num['annotation_ok']}/{c_num['total']} ({c_num['annotation_ok']/c_num['total']*100:.1f}%) | {c_bin['annotation_ok']}/{c_bin['total']} ({c_bin['annotation_ok']/c_bin['total']*100:.1f}%) |",
         f"| **Clause Scoping** | **{c_all['scope_ok']}/{c_all['total']} ({c_all['scope_ok']/c_all['total']*100:.1f}%)** | {c_num['scope_ok']}/{c_num['total']} ({c_num['scope_ok']/c_num['total']*100:.1f}%) | {c_bin['scope_ok']}/{c_bin['total']} ({c_bin['scope_ok']/c_bin['total']*100:.1f}%) |",
         f"| **AST Lowering** | **{c_all['lower_ok']}/{c_all['total']} ({c_all['lower_ok']/c_all['total']*100:.1f}%)** | {c_num['lower_ok']}/{c_num['total']} ({c_num['lower_ok']/c_num['total']*100:.1f}%) | {c_bin['lower_ok']}/{c_bin['total']} ({c_bin['lower_ok']/c_bin['total']*100:.1f}%) |",
+        f"| **Clause Coverage (Lowered / Total)** | **{c_all['lowered_clauses']}/{c_all['total_clauses']} ({c_all['lowered_clauses']/max(1,c_all['total_clauses'])*100:.1f}%)** | {c_num['lowered_clauses']}/{c_num['total_clauses']} ({c_num['lowered_clauses']/max(1,c_num['total_clauses'])*100:.1f}%) | {c_bin['lowered_clauses']}/{c_bin['total_clauses']} ({c_bin['lowered_clauses']/max(1,c_bin['total_clauses'])*100:.1f}%) |",
         f"| **Catala Emitter** | **{c_all['catala_emit_ok']}/{c_all['total']} ({c_all['catala_emit_ok']/c_all['total']*100:.1f}%)** | {c_num['catala_emit_ok']}/{c_num['total']} ({c_num['catala_emit_ok']/c_num['total']*100:.1f}%) | {c_bin['catala_emit_ok']}/{c_bin['total']} ({c_bin['catala_emit_ok']/c_bin['total']*100:.1f}%) |",
         f"| **Catala Typecheck** | **{c_all['catala_typecheck_ok']}/{c_all['total']} ({c_all['catala_typecheck_ok']/c_all['total']*100:.1f}%)** | {c_num['catala_typecheck_ok']}/{c_num['total']} ({c_num['catala_typecheck_ok']/c_num['total']*100:.1f}%) | {c_bin['catala_typecheck_ok']}/{c_bin['total']} ({c_bin['catala_typecheck_ok']/c_bin['total']*100:.1f}%) |",
         f"| **USVM Execution** | **{c_all['usvm_exec_ok']}/{c_all['total']} ({c_all['usvm_exec_ok']/c_all['total']*100:.1f}%)** | {c_num['usvm_exec_ok']}/{c_num['total']} ({c_num['usvm_exec_ok']/c_num['total']*100:.1f}%) | {c_bin['usvm_exec_ok']}/{c_bin['total']} ({c_bin['usvm_exec_ok']/c_bin['total']*100:.1f}%) |",
         f"| **Cross-Engine Parity** | **{c_all['cross_engine_equal']}/{c_all['total']} ({c_all['cross_engine_equal']/c_all['total']*100:.1f}%)** | {c_num['cross_engine_equal']}/{c_num['total']} ({c_num['cross_engine_equal']/c_num['total']*100:.1f}%) | {c_bin['cross_engine_equal']}/{c_bin['total']} ({c_bin['cross_engine_equal']/c_bin['total']*100:.1f}%) |",
         "",
-        "## 2. Failure Code Histogram",
+        "## 2. Statute Clause Coverage (Lowered vs. Skipped Clauses)",
+        "",
+        "| Statute Section | Cases | Lowered / Total Clauses | Skipped Clauses | Status |",
+        "| :--- | :---: | :---: | :---: | :--- |",
+    ]
+    for sec, s_info in sorted(section_clause_stats.items()):
+        pct = s_info["lowered_clauses"] / max(1, s_info["total_clauses"]) * 100.0
+        md_lines.append(
+            f"| `{sec}` | {s_info['cases']} | **{s_info['clause_coverage']} ({pct:.1f}%)** | {s_info['skipped_clauses']} | `{s_info['status']}` |"
+        )
+    md_lines.extend([
+        "",
+        "## 3. Failure Code Histogram",
         "",
         "| Failure Code | Count | Stage | Description |",
         "| :--- | :---: | :---: | :--- |",
-    ]
+    ])
     for code, count in failure_codes.most_common():
         desc = (
             "Multiple candidate base operands without explicit disambiguation (Gate A2.4)"
@@ -419,15 +477,19 @@ def run_all_diagnostics(
                         "Lowerer could not find computable clause head"
                         if code == "ERR_NO_COMPUTATION"
                         else (
-                            "Model abstention or invalid sequence tagging"
-                            if code == "ERR_ANNOTATION_FAILED"
+                            "Clause specifies excess over threshold without a resolved monetary threshold"
+                            if code == "ERR_NO_THRESHOLD"
                             else (
-                                "Pipeline has no steps"
-                                if code == "ERR_EMPTY_PIPELINE"
+                                "Model abstention or invalid sequence tagging"
+                                if code == "ERR_ANNOTATION_FAILED"
                                 else (
-                                    "AST cannot be lowered to Catala"
-                                    if code == "ERR_CATALA_LOWERING"
-                                    else "Evaluation error"
+                                    "Pipeline has no steps"
+                                    if code == "ERR_EMPTY_PIPELINE"
+                                    else (
+                                        "AST cannot be lowered to Catala"
+                                        if code == "ERR_CATALA_LOWERING"
+                                        else "Evaluation error"
+                                    )
                                 )
                             )
                         )
@@ -443,6 +505,7 @@ def run_all_diagnostics(
                 "ERR_AMBIGUOUS_REFERENCE",
                 "ERR_NO_RATE_HEAD",
                 "ERR_NO_BASE_OPERAND",
+                "ERR_NO_THRESHOLD",
             )
             else (
                 "CATALA_EMIT"
@@ -454,7 +517,7 @@ def run_all_diagnostics(
 
     md_lines.extend([
         "",
-        "## 3. Methodological Note",
+        "## 4. Methodological Note",
         "",
         "This diagnostic reports strict syntactic compilation and cross-engine parity coverage across the pipeline without oracle fact mappings.",
         "It verifies that lowered ASTs are well-formed, typecheck under INRIA's Catala compiler, and evaluate under USVM without runtime exceptions.",

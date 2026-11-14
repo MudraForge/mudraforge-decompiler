@@ -366,6 +366,7 @@ _DATE_ROLES = {"ROLE_TEMPORAL_CUTOVER_DATE", "ROLE_TEMPORAL_SUNSET_DATE"}
 #: Relations composed by the RFC-012 Step 3 topological walk.
 _WALKED_RELATIONS = {
     "REL_RATE_TO_THRESHOLD",
+    "REL_BRACKET_NEXT",
     "REL_CAP_CEILING",
     "REL_SUBTRACTION_BASE",
     "REL_COMBINATOR_MIN",
@@ -375,11 +376,31 @@ _COMPARATIVE_RE = re.compile(
     r"\b(?:exceeding|exceeds|above|over|more\s+than|in\s+excess\s+of|greater\s+than)\b",
     re.IGNORECASE,
 )
+_QUANTITATIVE_TERM_RE = re.compile(
+    r"\b(?:amount|deduction|income|tax|credit|exemption|allowance|sum|rate|percentage|"
+    r"limit|threshold|ceiling|cap|value|liability|wages?|turnover|consideration|fee|payment)\b",
+    re.IGNORECASE,
+)
+
+
+def is_monetary_quantum_text(text: str | None) -> bool:
+    """Returns True only when text contains an explicit monetary currency symbol or unit."""
+    if not text:
+        return False
+    st, _dt, unit = parse_unit_and_type(text)
+    return st == "MONETARY_QUANTUM" and unit in ("USD", "INR", "EUR", "GBP")
+
+
+def parse_monetary_minor_units(text: str | None) -> int | None:
+    """Parses minor units strictly when text is a confirmed MONETARY_QUANTUM with currency."""
+    if not is_monetary_quantum_text(text):
+        return None
+    return parse_minor_units(text)
 
 
 def _definition_semantic_type(value_text: str) -> str:
     """The semantic type of a defined value."""
-    if parse_minor_units(value_text) is not None:
+    if parse_monetary_minor_units(value_text) is not None:
         return "money"
     if re.fullmatch(r"-?\d+(?:\.\d+)?", value_text.strip()):
         return "integer"
@@ -410,6 +431,14 @@ def extract_definitions(
                 continue
             if term in seen_terms:
                 continue
+            minor_val = parse_monetary_minor_units(value_text)
+            if pattern is _ASSIGN_RE:
+                verb_low = match.group("verb").strip().lower()
+                if verb_low in ("is", "are") and minor_val is None and parse_unit_and_type(value_text)[0] != "PERCENTAGE_RATE":
+                    # Boolean status predicates (e.g. "such individual is not married...")
+                    # are not quantitative assignments.
+                    if value_text.lower().startswith("not ") or not _QUANTITATIVE_TERM_RE.search(term):
+                        continue
             seen_terms.add(term)
             symbol = Symbol(
                 id=term,
@@ -420,7 +449,7 @@ def extract_definitions(
                 aliases=[term],
                 value_expr=value_text,
                 origin="definition",
-                minor=parse_minor_units(value_text),
+                minor=minor_val,
             )
             symbols.append(symbol)
             matches.append(
@@ -443,8 +472,8 @@ def detect_substitution(clause_text: str) -> dict | None:
     return {
         "new_text": match.group("new"),
         "old_text": match.group("old"),
-        "new_minor": parse_minor_units(match.group("new")),
-        "old_minor": parse_minor_units(match.group("old")),
+        "new_minor": parse_monetary_minor_units(match.group("new")),
+        "old_minor": parse_monetary_minor_units(match.group("old")),
     }
 
 
@@ -898,7 +927,7 @@ def build_clause_scoped_computation(
                 for span in scope.spans:
                     if span.role in ("ROLE_TRANSACTION_CLIFF_THRESHOLD",
                                      "ROLE_TRANSACTION_EXCESS_THRESHOLD"):
-                        candidate = parse_minor_units(span.text)
+                        candidate = parse_monetary_minor_units(span.text)
                         if candidate is not None and (
                             threshold is None or candidate > threshold
                         ):
@@ -1157,11 +1186,12 @@ def build_clause_scoped_computation(
 
     clause_scopes = []
     for plan in plans:
+        clause_kind = "lowered" if plan.steps else ("skipped" if plan.kind == "reference" else plan.kind)
         clause_scopes.append(
             {
                 "clauseIdx": plan.scope.index,
                 "charRange": list(plan.scope.char_range),
-                "kind": plan.kind,
+                "kind": clause_kind,
                 "standardRateBps": plan.rate_bps,
                 "handlers": list(plan.handlers),
                 "steps": [step["assign"] for step in plan.steps],
@@ -1182,9 +1212,16 @@ def build_clause_scoped_computation(
             }
         )
 
+    lowered_count = sum(1 for plan in plans if plan.steps)
+    total_count = len(plans)
     computation = {
         "archetype": "DECLARATIVE_PIPELINE",
         "clauseScopes": clause_scopes,
+        "clauseCoverage": {
+            "lowered": lowered_count,
+            "total": total_count,
+            "skipped": total_count - lowered_count,
+        },
         "pipeline": {"steps": steps, "output": outputs},
     }
     return computation, inputs, diagnostics

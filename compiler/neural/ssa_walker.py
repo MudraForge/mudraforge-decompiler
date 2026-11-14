@@ -29,7 +29,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from compiler.neural.clause_linker import base_phrase_after_rate, input_id_from_phrase, normalize_term
+from compiler.neural.clause_linker import (
+    base_phrase_after_rate,
+    input_id_from_phrase,
+    is_monetary_quantum_text,
+    normalize_term,
+)
 from compiler.neural.inference import parse_minor_units, parse_rate_bps, parse_unit_and_type
 
 
@@ -200,6 +205,8 @@ def resolve_base_phrase(clause_text: str, threshold_node: SsaNode) -> str:
 
 
 def _static_money(node: SsaNode) -> dict | None:
+    if not is_monetary_quantum_text(node.text):
+        return None
     minor = parse_minor_units(node.text)
     if minor is None:
         return None
@@ -454,6 +461,7 @@ def _combinator_base_name(
 def default_registry() -> HandlerRegistry:
     registry = HandlerRegistry()
     registry.register("REL_RATE_TO_THRESHOLD", _handle_rate_to_threshold)
+    registry.register("REL_BRACKET_NEXT", _handle_rate_to_threshold)
     registry.register("REL_CAP_CEILING", _handle_cap_ceiling)
     registry.register("REL_SUBTRACTION_BASE", _handle_subtraction_base)
     registry.register("REL_COMBINATOR_MIN", _handle_combinator_min)
@@ -600,6 +608,18 @@ def compose_clause(
             ):
                 rate_node = node
                 break
+
+    if threshold_node is None:
+        for node in nodes:
+            if node.role == "ROLE_TRANSACTION_EXCESS_THRESHOLD":
+                is_money = _static_money(node) is not None
+                is_known_sym = False
+                if known_symbols and node.text:
+                    norm_t = normalize_term(node.text)
+                    is_known_sym = any(k in norm_t or norm_t in k for k in known_symbols)
+                if is_money or is_known_sym:
+                    threshold_node = node
+                    break
 
     if rate_node is None:
         diagnostics.append(

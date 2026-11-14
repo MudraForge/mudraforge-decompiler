@@ -1,7 +1,7 @@
 # SARA-Hard Compilation Coverage Diagnostic (RFC-012 Step 5)
 
 - **Total Cases Evaluated**: 65 (35 Numeric + 30 Binary)
-- **Date**: 2026-11-14 03:53:06 UTC
+- **Date**: 2026-11-14 04:54:37 UTC
 
 ## 1. Stage Coverage Funnel
 
@@ -9,21 +9,35 @@
 | :--- | :---: | :---: | :---: |
 | **Neural Annotation** | **65/65 (100.0%)** | 35/35 (100.0%) | 30/30 (100.0%) |
 | **Clause Scoping** | **65/65 (100.0%)** | 35/35 (100.0%) | 30/30 (100.0%) |
-| **AST Lowering** | **53/65 (81.5%)** | 31/35 (88.6%) | 22/30 (73.3%) |
-| **Catala Emitter** | **53/65 (81.5%)** | 31/35 (88.6%) | 22/30 (73.3%) |
-| **Catala Typecheck** | **53/65 (81.5%)** | 31/35 (88.6%) | 22/30 (73.3%) |
-| **USVM Execution** | **53/65 (81.5%)** | 31/35 (88.6%) | 22/30 (73.3%) |
-| **Cross-Engine Parity** | **0/65 (0.0%)** | 0/35 (0.0%) | 0/30 (0.0%) |
+| **AST Lowering** | **36/65 (55.4%)** | 30/35 (85.7%) | 6/30 (20.0%) |
+| **Clause Coverage (Lowered / Total)** | **176/954 (18.4%)** | 92/442 (20.8%) | 84/512 (16.4%) |
+| **Catala Emitter** | **36/65 (55.4%)** | 30/35 (85.7%) | 6/30 (20.0%) |
+| **Catala Typecheck** | **36/65 (55.4%)** | 30/35 (85.7%) | 6/30 (20.0%) |
+| **USVM Execution** | **36/65 (55.4%)** | 30/35 (85.7%) | 6/30 (20.0%) |
+| **Cross-Engine Parity** | **36/65 (55.4%)** | 30/35 (85.7%) | 6/30 (20.0%) |
 
-## 2. Failure Code Histogram
+## 2. Statute Clause Coverage (Lowered vs. Skipped Clauses)
+
+| Statute Section | Cases | Lowered / Total Clauses | Skipped Clauses | Status |
+| :--- | :---: | :---: | :---: | :--- |
+| `section1` | 6 | **20/21 (95.2%)** | 1 | `LOWERED` |
+| `section151` | 1 | **0/12 (0.0%)** | 12 | `ERR_NO_RATE_HEAD` |
+| `section152` | 10 | **0/16 (0.0%)** | 16 | `ERR_NO_COMPUTATION` |
+| `section2` | 5 | **0/12 (0.0%)** | 12 | `ERR_NO_COMPUTATION` |
+| `section3301` | 4 | **1/2 (50.0%)** | 1 | `LOWERED` |
+| `section3306` | 7 | **0/24 (0.0%)** | 24 | `ERR_NO_COMPUTATION` |
+| `section63` | 26 | **2/15 (13.3%)** | 13 | `LOWERED` |
+| `section68` | 6 | **0/5 (0.0%)** | 5 | `ERR_NO_THRESHOLD` |
+
+## 3. Failure Code Histogram
 
 | Failure Code | Count | Stage | Description |
 | :--- | :---: | :---: | :--- |
-| `ERR_NO_THRESHOLD` | 5 | `ANNOTATION` | Evaluation error |
-| `ERR_NO_RATE_HEAD` | 4 | `LOWER` | Clause has no computable rate-to-threshold head |
-| `ERR_NO_COMPUTATION` | 3 | `LOWER` | Lowerer could not find computable clause head |
+| `ERR_NO_COMPUTATION` | 22 | `LOWER` | Lowerer could not find computable clause head |
+| `ERR_NO_THRESHOLD` | 6 | `LOWER` | Clause specifies excess over threshold without a resolved monetary threshold |
+| `ERR_NO_RATE_HEAD` | 1 | `LOWER` | Clause has no computable rate-to-threshold head |
 
-## 3. Methodological Note
+## 4. Methodological Note
 
 This diagnostic reports strict syntactic compilation and cross-engine parity coverage across the pipeline without oracle fact mappings.
 It verifies that lowered ASTs are well-formed, typecheck under INRIA's Catala compiler, and evaluate under USVM without runtime exceptions.

@@ -262,6 +262,49 @@ class TestRFC012Step3(unittest.TestCase):
                 self.assertIn(ccy, ("USD", "INR", "EUR", "GBP"), f"input {in_id} has invalid currency {ccy!r}")
                 self.assertNotEqual(ccy, "CURRENCY", f"input {in_id} leaked internal placeholder 'CURRENCY'")
 
+    def test_a3_7_non_monetary_number_never_becomes_paise_threshold(self):
+        """Bare non-monetary numbers ('1 taxable year', 'section 1', 'one') must never become TO_PAISE('100')."""
+        from compiler.neural.clause_linker import is_monetary_quantum_text, parse_monetary_minor_units
+        from compiler.neural.ssa_walker import SsaNode, _static_money
+
+        for non_money in ("1", "one", "1 taxable year", "section 1", "(2)", "35,928.50"):
+            self.assertFalse(is_monetary_quantum_text(non_money), f"{non_money!r} must not be MONETARY_QUANTUM")
+            self.assertIsNone(parse_monetary_minor_units(non_money), f"{non_money!r} must not parse to minor units")
+            node = SsaNode(index=0, role="ROLE_TRANSACTION_CLIFF_THRESHOLD", text=non_money, char_range=(0, len(non_money)))
+            self.assertIsNone(_static_money(node), f"{non_money!r} must not emit TO_PAISE")
+
+        for real_money, expected_minor in (("$1,000", 100000), ("fifty lakh rupees", 500000000), ("over $36,900", 3690000)):
+            self.assertTrue(is_monetary_quantum_text(real_money), f"{real_money!r} must be MONETARY_QUANTUM")
+            self.assertEqual(parse_monetary_minor_units(real_money), expected_minor)
+            node = SsaNode(index=0, role="ROLE_TRANSACTION_EXCESS_THRESHOLD", text=real_money, char_range=(0, len(real_money)))
+            self.assertEqual(_static_money(node), {"op": "TO_PAISE", "value": str(expected_minor)})
+
+    def test_a3_8_boolean_kinship_status_clause_never_emits_fake_money_threshold(self):
+        """Boolean marriage/kinship status clauses (e.g. IRC Section 2) must fail closed, never emitting $1.00 thresholds."""
+        text = (
+            "(b) Definition of head of household. "
+            "An individual shall be considered a head of a household if, and only if, "
+            "such individual is not married at the close of his taxable year, and "
+            "maintains as his home a household for more than one-half of such taxable year."
+        )
+        spans = [
+            {"spanIdx": 0, "clauseIdx": 0, "role": "ROLE_REGULATED_OBJECT_OR_STATUS_SCOPE", "span": "household", "charRange": [26, 35], "confidence": 0.99},
+            {"spanIdx": 1, "clauseIdx": 1, "role": "ROLE_PROHIBITION_GATE", "span": "not", "charRange": [129, 132], "confidence": 0.99},
+            {"spanIdx": 2, "clauseIdx": 1, "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "span": "one", "charRange": [228, 231], "confidence": 0.99},
+        ]
+        with self.assertRaises(Exception) as ctx:
+            synthesize_usvm_ast(
+                text=text,
+                spans=spans,
+                edges=[],
+                clause_modalities=[
+                    {"clauseIdx": 0, "charRange": [0, 36]},
+                    {"clauseIdx": 1, "charRange": [37, len(text)]},
+                ],
+                clause_scopes=True,
+            )
+        self.assertIn("ERR_NO_COMPUTATION", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
