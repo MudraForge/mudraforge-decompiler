@@ -1201,6 +1201,41 @@ class TestModelV2Commit3(unittest.TestCase):
         self.assertTrue(saw_period_o)
         self.assertTrue(saw_withholding_rate)
 
+    def test_viterbi_keeps_split_comma_money_together(self):
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.statutory_neural_parser import BIO_TAGS, decode_bio_spans
+        from compiler.neural.tokenizer import tokenize_with_offsets
+
+        bio2id = {t: i for i, t in enumerate(BIO_TAGS)}
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.bio2id = bio2id
+        decompiler.id2bio = {i: t for i, t in enumerate(BIO_TAGS)}
+        decompiler.transition_mask = torch.zeros((len(BIO_TAGS), len(BIO_TAGS)), dtype=torch.float32)
+
+        text = "Where annual turnover exceeds $ 500 , 000."
+        tokens, offsets = tokenize_with_offsets(text)
+        # Ensure we test exact split token sequence ['$', '500', ',', '000']
+        self.assertEqual(tokens[4:8], ["$", "500", ",", "000"])
+        logits = torch.full((len(tokens), len(BIO_TAGS)), -5.0)
+        for i in range(len(tokens)):
+            logits[i, bio2id["O"]] = 5.0
+        logits[4, bio2id["O"]] = -2.0
+        logits[4, bio2id["B-THRESHOLD"]] = 6.0
+        logits[5, bio2id["O"]] = 1.0
+        logits[5, bio2id["I-THRESHOLD"]] = 4.0
+        # Even if raw ',' logit slightly favors O, Viterbi currency-comma constraint keeps I-THRESHOLD
+        logits[6, bio2id["O"]] = 2.0
+        logits[6, bio2id["I-THRESHOLD"]] = 1.5
+        logits[7, bio2id["O"]] = -1.0
+        logits[7, bio2id["I-THRESHOLD"]] = 5.0
+
+        path = decompiler._viterbi_decode(logits, tokens)
+        tags = [decompiler.id2bio[p] for p in path]
+        self.assertEqual(tags[4:8], ["B-THRESHOLD", "I-THRESHOLD", "I-THRESHOLD", "I-THRESHOLD"])
+        spans = decode_bio_spans(tags, tokens, offsets, max_gap_bridge=0)
+        self.assertEqual([text[sp["char_start"]:sp["char_end"]] for sp in spans], ["$ 500 , 000"])
+
 
 if __name__ == "__main__":
     unittest.main()

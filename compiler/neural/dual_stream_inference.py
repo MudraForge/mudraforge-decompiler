@@ -136,13 +136,20 @@ class DualStreamDecompilerInference:
 
             prev_tok = tokens[t - 1] if t > 0 else ""
             prev_low = prev_tok.lower()
+            prev2_tok = tokens[t - 2] if t >= 2 else ""
             cur_tok = tokens[t]
             cur_low = cur_tok.lower()
-            next_low = tokens[t + 1].lower() if t + 1 < len(tokens) else ""
+            next_tok = tokens[t + 1] if t + 1 < len(tokens) else ""
+            next_low = next_tok.lower()
 
+            bind_split_comma_money = (
+                (cur_tok == "," and prev_tok.isdigit() and len(next_tok) == 3 and next_tok.isdigit())
+                or (prev_tok == "," and prev2_tok.isdigit() and len(cur_tok) == 3 and cur_tok.isdigit())
+            )
             bind_ccy_num = (
                 (prev_low in _VITERBI_CURRENCY_TOKENS and any(c.isdigit() for c in cur_tok))
                 or (any(c.isdigit() for c in prev_tok) and cur_low in _VITERBI_CURRENCY_TOKENS)
+                or bind_split_comma_money
             )
             if bind_ccy_num:
                 for tid, tag in self.id2bio.items():
@@ -306,7 +313,8 @@ class DualStreamDecompilerInference:
                 "rel_edges": [],
             }
 
-        discovered_spans = decode_bio_spans(bio_tags, w_tokens, w_offsets)
+        gap_bridge = 0 if self.architecture_version == "v2" else 2
+        discovered_spans = decode_bio_spans(bio_tags, w_tokens, w_offsets, max_gap_bridge=gap_bridge)
         if not discovered_spans:
             return {
                 "abstained": True,

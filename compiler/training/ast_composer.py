@@ -1002,7 +1002,7 @@ class CombinatorialAstComposer:
         rate = self.rng.choice(_RATES)
         floor_amt = _fmt_money(self.rng, self.rng.choice([8000, 20000, 45000]), currency=currency)
         gate_roll = self.rng.random()
-        if gate_roll < 0.28:
+        if gate_roll < 0.20:
             # Negated evidence gate -> withholding / tax / deduction rate on 3-word operand
             neg_noun = self.rng.choice(_TRAIL_NEG_NOUNS)
             trail_neg = self.rng.choice(_TRAIL_NEG_MARKERS)
@@ -1034,7 +1034,7 @@ class CombinatorialAstComposer:
                 "clauses": [text],
                 "dag": {"kind": "GATED_ARITHMETIC", "depth": 3, "gate": "NOT", "negated": True},
             }
-        if gate_roll < 0.52:
+        if gate_roll < 0.44:
             # Node-scoped conditional fixed surcharge: excess(base, floor) * rate + (surcharge if durationCond else 0)
             fee_amt = _fmt_money(self.rng, self.rng.choice([1200, 3500, 5000]), currency=currency)
             dur_cond = self.rng.choice([
@@ -1248,10 +1248,26 @@ class CombinatorialAstComposer:
 
     def _maybe_inject_distractor(self, sample: dict[str, Any], formulation: int) -> dict[str, Any]:
         # Inject numberless accounting/tax period nouns tagged `O` (not DEADLINE / UNIT_DURATION)
+        has_fronted_cite = False
         if self.rng.random() < 0.45:
+            cite = self.rng.choice(_CITATION_NOISE)
+            if self.rng.random() < 0.50:
+                # Fronted citation preamble so spans occur at shifted sentence positions
+                lead = "Pursuant to" if formulation in (0, 1) else "Subject to"
+                sample["text"] = f"{lead} {cite}, {sample['text']}"
+                if sample.get("clauses"):
+                    sample["clauses"] = [f"{lead} {cite}, {sample['clauses'][0]}"] + sample["clauses"][1:]
+                has_fronted_cite = True
+            else:
+                pfx = "Reference:" if formulation in (0, 1) else "See"
+                sample["text"] = f"{sample['text']} {pfx} {cite}."
+                if sample.get("clauses"):
+                    sample["clauses"][-1] = f"{sample['clauses'][-1]} {pfx} {cite}."
+            sample["spans_with_units"].append((cite, "ROLE_IGNORE", "UNIT_NONE"))
+        if self.rng.random() < 0.30:
             period_p = self.rng.choice(_PERIOD_SCOPE_PHRASES)
             txt = sample["text"]
-            if not txt.lstrip().startswith("(") and self.rng.random() < 0.35:
+            if not has_fronted_cite and not txt.lstrip().startswith("(") and self.rng.random() < 0.35:
                 cap_p = period_p[0].upper() + period_p[1:]
                 sample["text"] = f"{cap_p}, {txt}"
                 if sample.get("clauses"):
@@ -1266,18 +1282,4 @@ class CombinatorialAstComposer:
                         sample["clauses"][-1] = f"{last_c}, {period_p}"
             else:
                 sample["text"] = f"{txt}, {period_p}"
-        if self.rng.random() < 0.45:
-            cite = self.rng.choice(_CITATION_NOISE)
-            if self.rng.random() < 0.50:
-                # Fronted citation preamble so spans occur at shifted sentence positions
-                lead = "Pursuant to" if formulation in (0, 1) else "Subject to"
-                sample["text"] = f"{lead} {cite}, {sample['text']}"
-                if sample.get("clauses"):
-                    sample["clauses"] = [f"{lead} {cite}, {sample['clauses'][0]}"] + sample["clauses"][1:]
-            else:
-                pfx = "Reference:" if formulation in (0, 1) else "See"
-                sample["text"] = f"{sample['text']} {pfx} {cite}."
-                if sample.get("clauses"):
-                    sample["clauses"][-1] = f"{sample['clauses'][-1]} {pfx} {cite}."
-            sample["spans_with_units"].append((cite, "ROLE_IGNORE", "UNIT_NONE"))
         return sample
