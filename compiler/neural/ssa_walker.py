@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from compiler.neural.clause_linker import base_phrase_after_rate, input_id_from_phrase
+from compiler.neural.clause_linker import base_phrase_after_rate, input_id_from_phrase, normalize_term
 from compiler.neural.inference import parse_minor_units, parse_rate_bps, parse_unit_and_type
 
 
@@ -468,6 +468,7 @@ def compose_clause(
     registry: HandlerRegistry | None = None,
     inherited_base_id: str | None = None,
     candidate_bases: list[str] | None = None,
+    known_symbols: dict[str, str] | None = None,
 ) -> tuple[list[dict], list[str], list[SsaDiagnostic]]:
     """Composes one clause into an ordered list of SSA assignments.
 
@@ -561,10 +562,23 @@ def compose_clause(
             and parse_unit_and_type(source.text)[0] == "PERCENTAGE_RATE"
         ):
             rate_node = source
-            threshold_node = target
+            if target is not None:
+                is_money = _static_money(target) is not None
+                is_known_sym = False
+                if known_symbols and target.text:
+                    norm_t = normalize_term(target.text)
+                    is_known_sym = any(k in norm_t or norm_t in k for k in known_symbols)
+                if is_money or is_known_sym:
+                    threshold_node = target
             break
         elif target is not None:
-            threshold_node = target
+            is_money = _static_money(target) is not None
+            is_known_sym = False
+            if known_symbols and target.text:
+                norm_t = normalize_term(target.text)
+                is_known_sym = any(k in norm_t or norm_t in k for k in known_symbols)
+            if is_money or is_known_sym:
+                threshold_node = target
 
     if rate_node is None and threshold_node is not None:
         for node in nodes:
@@ -575,14 +589,119 @@ def compose_clause(
                 rate_node = node
                 break
 
-    if rate_node is None or threshold_node is None:
+    if rate_node is None:
+        for node in nodes:
+            if (
+                parse_rate_bps(node.text) is not None
+                and parse_unit_and_type(node.text)[0] == "PERCENTAGE_RATE"
+            ):
+                rate_node = node
+                break
+
+    if rate_node is None:
         diagnostics.append(
             SsaDiagnostic(
                 code=ERR_NO_RATE_HEAD,
-                detail="the clause has no rate-to-threshold relation to compose",
+                detail="the clause has no rate to compose",
             )
         )
         return [], [], diagnostics
+
+    # 4b. Flat rate: statutory rate without a threshold (e.g. IRC § 68(a)(2) or § 3301)
+    if rate_node is not None and threshold_node is None:
+        base_phrase = ""
+        for node in nodes:
+            if node.role == "ROLE_COMPUTATION_OPERAND":
+                base_phrase = node.text
+                break
+        if not base_phrase:
+            base_phrase = base_phrase_after_rate(clause_text, rate_node.char_range[1])
+        base_id = input_id_from_phrase(base_phrase, currency_code)
+        if not base_id and inherited_base_id:
+            base_id = inherited_base_id
+        if not base_id:
+            if candidate_bases and len(candidate_bases) > 1:
+                diagnostics.append(
+                    SsaDiagnostic(
+                        code=ERR_AMBIGUOUS_REFERENCE,
+                        detail=f"clause has ambiguous candidate base amounts: {candidate_bases}",
+                    )
+                )
+                return [], [], diagnostics
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_NO_BASE_OPERAND,
+                    detail=f"the clause has no resolvable base amount ({base_phrase!r})",
+                )
+            )
+            return [], [], diagnostics
+
+        ctx = WalkContext(
+            nodes=by_index,
+            edges=edges,
+            clause_text=clause_text,
+            builder=builder,
+        )
+        ctx.base_ref = builder.declare_input(base_id)
+        ctx.base_name = base_id
+
+        bps = parse_rate_bps(rate_node.text)
+        if not bps:
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_NO_RATE_HEAD,
+                    detail="the rate of the clause could not be resolved",
+                )
+            )
+            return [], [], diagnostics
+
+        expr = {
+            "op": "RATIONAL_MULTIPLY",
+            "base": ctx.base_ref,
+            "rateBps": bps,
+            "denominator": 10000,
+        }
+        rate_val = builder.emit(f"{ctx.base_name}Tax", expr, "flat-rate")
+        ctx.rate_value = rate_val
+
+        applied = [
+            edge for edge in edges
+            if edge.relation in ("REL_CAP_CEILING", "REL_SUBTRACTION_BASE")
+            and edge.target == rate_node.index
+        ]
+        reductions = []
+        caps = []
+        for edge in applied:
+            node = by_index.get(edge.source)
+            if node is None:
+                continue
+            text_before = clause_text[: node.char_range[0]]
+            sense = relation_sense(text_before)
+            if sense == "reduction":
+                reductions.append(node)
+            else:
+                caps.append(node)
+        reductions.sort(key=lambda n: n.char_range[0])
+        caps.sort(key=lambda n: n.char_range[0])
+
+        for node in reductions:
+            handler = registry.get("REL_CAP_CEILING")
+            if handler is not None:
+                handler(builder, node, [], ctx)
+            else:
+                _handle_subtraction_base(builder, node, [], ctx)
+        for node in caps:
+            handler = registry.get("REL_CAP_CEILING")
+            if handler is None:
+                continue
+            handler(builder, node, [], ctx)
+
+        builder.emit(
+            f"{ctx.base_name}TaxPaisa",
+            {"op": "MAX", "left": ctx.rate_value, "right": {"op": "TO_PAISE", "value": "0"}},
+            "floor-at-zero",
+        )
+        return builder.steps, builder.handlers_used, diagnostics
 
     # 5. the base the threshold applies to
     base_phrase = ""
@@ -623,6 +742,12 @@ def compose_clause(
 
     # 6. base arithmetic: the amount above the threshold
     threshold_amount = _static_money(threshold_node)
+    if threshold_amount is None and known_symbols:
+        norm_th = normalize_term(threshold_node.text)
+        for sym_k, sym_ref in known_symbols.items():
+            if sym_k in norm_th or norm_th in sym_k:
+                threshold_amount = sym_ref
+                break
     if threshold_amount is None:
         diagnostics.append(
             SsaDiagnostic(

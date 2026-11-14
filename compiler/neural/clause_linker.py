@@ -703,10 +703,23 @@ def build_clause_scoped_computation(
     # ── 3. identify section-level / parent base operand for inheritance ─────────
     # If prior clauses establish an unambiguous monetary base operand, child clauses
     # without an explicit local base can inherit it (preserving Gate A2.4).
+    # Defined output terms (e.g. LHS of "the term 'taxable income' means...") are
+    # outputs of the section, NOT candidate input bases for deductions or rates.
+    defined_term_cues = {
+        normalize_term(s.id) for s in all_symbols
+    } | {
+        normalize_term(s.name) for s in all_symbols
+    }
+    for match in re.finditer(r'the\s+term\s+["\']?([^"\']+)["\']?\s+means', text, re.IGNORECASE):
+        defined_term_cues.add(normalize_term(match.group(1)))
+
     candidate_bases = []
     for plan in plans:
         for span in plan.scope.spans:
             if span.role == "ROLE_COMPUTATION_OPERAND":
+                norm_span = normalize_term(span.text)
+                if norm_span in defined_term_cues:
+                    continue
                 bid = input_id_from_phrase(span.text, currency_code)
                 if bid and bid not in candidate_bases:
                     candidate_bases.append(bid)
@@ -721,6 +734,8 @@ def build_clause_scoped_computation(
             ("invoice", "invoiceAmount"),
             ("purchase", "purchaseAmount"),
         ):
+            if cue in defined_term_cues or normalize_term(canonical_id) in defined_term_cues:
+                continue
             if cue in header_text and canonical_id not in candidate_bases:
                 candidate_bases.append(canonical_id)
 
@@ -884,6 +899,18 @@ def build_clause_scoped_computation(
                         ):
                             threshold = candidate
                 if threshold is None:
+                    # If the definition references an external statutory provision (e.g. "under subsection...",
+                    # "under section..."), it declares an input parameter rather than failing closed.
+                    if re.search(r"\bunder\s+(?:subsection|section|paragraph|clause|subparagraph)\b", value_text, re.IGNORECASE):
+                        input_id = camel_name(symbol.id)
+                        name = ssa_name(scope.index, f"{symbol.name}Paisa", symbol.version)
+                        symbol.ssa_name = name
+                        in_ref = declare_input(input_id, "money")
+                        steps.append({"assign": name, "expr": in_ref})
+                        plan.steps.append({"assign": name, "expr": in_ref})
+                        emitted_symbols.append(symbol)
+                        assign_output(f"{symbol.name}Paisa", f"vars.{name}", symbol)
+                        continue
                     diagnostics.append(
                         Diagnostic(
                             code=ERR_UNRESOLVED_REFERENCE,
@@ -964,6 +991,13 @@ def build_clause_scoped_computation(
         #     composed relations.
         from compiler.neural.ssa_walker import SsaEdge, SsaNode, compose_clause
 
+        known_symbols = {}
+        for s in all_symbols:
+            if s.ssa_name:
+                known_symbols[normalize_term(s.id)] = f"vars.{s.ssa_name}"
+                if s.name:
+                    known_symbols[normalize_term(s.name)] = f"vars.{s.ssa_name}"
+
         arithmetic_edges = [
             e for e in scope.edges if e.relation in _WALKED_RELATIONS
         ]
@@ -994,6 +1028,7 @@ def build_clause_scoped_computation(
                 inputs=inputs,
                 inherited_base_id=unambiguous_base_id,
                 candidate_bases=candidate_bases,
+                known_symbols=known_symbols,
             )
             if walker_diagnostics:
                 for diagnostic in walker_diagnostics:
