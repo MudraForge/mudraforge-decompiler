@@ -1235,3 +1235,449 @@ def _threshold_text(scope: ClauseScope) -> str:
 
 
 
+
+
+# ============================================================================
+# Model v2 Lexical Scope Tree & Two-Pass Symbol Linker
+# ============================================================================
+
+from .literals import (
+    infer_rule_currency_info as _cl2_infer_currency,
+    parse_iso_date_str as _cl2_parse_iso_date,
+    parse_minor_units as _cl2_parse_minor_units,
+    _derive_fact_key_camel as _cl2_fact_key_camel,
+)
+from .ssa_walker import (
+    V2LoweringError,
+    _v2_norm_edge,
+    _v2_parse_span_value,
+    _v2_topo_sort_indices,
+    compose_clause_v2,
+)
+
+
+def _v2_detect_scope_level(clause_text: str) -> tuple[int, str]:
+    """Determines statutory structural indentation level from leading marker without hardcoded rules."""
+    stripped = (clause_text or "").lstrip()
+    if not stripped.startswith("("):
+        return 0, "section"
+    close_idx = stripped.find(")")
+    if close_idx <= 1 or close_idx > 6:
+        return 0, "section"
+    marker = stripped[1:close_idx]
+    if marker.isdigit():
+        return 2, "paragraph"
+    if marker.islower() and marker in {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"} and len(marker) >= 2:
+        return 3, "subparagraph"
+    if marker.islower() and marker.isalpha():
+        return 1, "subsection"
+    if marker.isupper() and marker.isalpha():
+        return 4, "clause"
+    return 0, "section"
+
+
+def _v2_build_lexical_scope_tree(clauses_meta: list[dict]) -> dict[int, dict]:
+    """Builds parent-pointer lexical scope tree (Section -> Subsection -> Paragraph -> Subparagraph)."""
+    tree: dict[int, dict] = {}
+    stack: list[tuple[int, int]] = []  # [(level, clause_idx)]
+    for cm in sorted(clauses_meta, key=lambda c: int(c["clauseIdx"])):
+        cidx = int(cm["clauseIdx"])
+        level, kind = _v2_detect_scope_level(cm.get("text", ""))
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent_idx = stack[-1][1] if stack else None
+        tree[cidx] = {
+            "clauseIdx": cidx,
+            "level": level,
+            "kind": kind,
+            "parent": parent_idx,
+            "symbols": {},  # norm_term -> symbol descriptor
+        }
+        stack.append((level, cidx))
+    return tree
+
+
+def _v2_lookup_scope_symbol(tree: dict[int, dict], clause_idx: int, norm_key: str) -> dict | None:
+    """Resolves a symbol up the lexical parent chain (local -> parent -> root)."""
+    cur = clause_idx
+    visited = set()
+    while cur is not None and cur in tree and cur not in visited:
+        visited.add(cur)
+        syms = tree[cur]["symbols"]
+        if norm_key in syms:
+            return syms[norm_key]
+        cur = tree[cur]["parent"]
+    return None
+
+
+def _v2_extract_year_window(clause_spans: list[dict], clause_text: str) -> tuple[int | None, int | None]:
+    """Extracts inclusive integer year window [start_year, end_year] from UNIT_YEAR_DATE spans."""
+    date_spans = [
+        sp for sp in sorted(clause_spans, key=lambda s: int((s.get("charRange") or [0, 0])[0]))
+        if sp.get("unit") == "UNIT_YEAR_DATE"
+    ]
+    if not date_spans:
+        return None, None
+    parsed_bounds: list[tuple[str, int, str]] = []
+    for sp in date_spans:
+        raw = str(sp.get("span") or "")
+        c_start = int((sp.get("charRange") or [0, 0])[0])
+        # Inspect immediate 20 chars before span for strict 'after'/'before' calendar wording
+        prefix = clause_text[max(0, c_start - 20):c_start].lower()
+        iso = _cl2_parse_iso_date(raw)
+        if iso:
+            yr, mo, dy = (int(p) for p in iso.split("-"))
+            if "after" in prefix:
+                bound_yr = yr + 1 if (mo == 12 and dy == 31) else yr
+                parsed_bounds.append(("LOWER", bound_yr, iso))
+            elif "before" in prefix:
+                bound_yr = yr - 1 if (mo == 1 and dy == 1) else yr
+                parsed_bounds.append(("UPPER", bound_yr, iso))
+            else:
+                parsed_bounds.append(("POINT", yr, iso))
+        else:
+            p = _v2_parse_span_value(sp)
+            for yr in p.get("years", []):
+                if "after" in prefix:
+                    parsed_bounds.append(("LOWER", yr, str(yr)))
+                elif "before" in prefix:
+                    parsed_bounds.append(("UPPER", yr, str(yr)))
+                else:
+                    parsed_bounds.append(("POINT", yr, str(yr)))
+
+    lowers = [b[1] for b in parsed_bounds if b[0] == "LOWER"]
+    uppers = [b[1] for b in parsed_bounds if b[0] == "UPPER"]
+    points = [b[1] for b in parsed_bounds if b[0] == "POINT"]
+    start_yr = lowers[0] if lowers else (points[0] if len(points) >= 1 else None)
+    end_yr = uppers[0] if uppers else (points[1] if len(points) >= 2 else None)
+    return start_yr, end_yr
+
+
+def build_clause_scoped_computation_v2(
+    text: str,
+    spans: list[dict],
+    edges: list[dict],
+    clause_modalities: list[dict] | None = None,
+    currency_code: str | None = None,
+) -> dict:
+    """Two-pass lexical-scope linker + bottom-up topological AST builder for Model v2."""
+    norm_spans = sorted(
+        [dict(s) for s in spans],
+        key=lambda sp: (
+            int((sp.get("charRange") or [0, 0])[0]),
+            int((sp.get("charRange") or [0, 0])[1]),
+            str(sp.get("role") or ""),
+            str(sp.get("unit") or ""),
+        ),
+    )
+    span_by_idx: dict[int, dict] = {}
+    for pos, sp in enumerate(norm_spans):
+        sid = int(sp.get("spanIdx", pos))
+        sp["spanIdx"] = sid
+        span_by_idx[sid] = sp
+
+    valid_ids = set(span_by_idx.keys())
+    norm_edges = []
+    seen_e = set()
+    for e in edges:
+        ne = _v2_norm_edge(e, valid_ids)
+        if ne is not None and ne not in seen_e:
+            seen_e.add(ne)
+            norm_edges.append(ne)
+    norm_edges.sort(key=lambda item: (item[2], item[0], item[1]))
+
+    clauses_meta = []
+    if clause_modalities:
+        for cm in sorted(clause_modalities, key=lambda c: int(c.get("clauseIdx", 0))):
+            cidx = int(cm.get("clauseIdx", 0))
+            cr = cm.get("charRange") or [0, len(text)]
+            clauses_meta.append({
+                "clauseIdx": cidx,
+                "charRange": cr,
+                "text": text[int(cr[0]):int(cr[1])],
+            })
+    else:
+        max_c = max((int(sp.get("clauseIdx", 0)) for sp in norm_spans), default=0)
+        for cidx in range(max_c + 1):
+            clauses_meta.append({"clauseIdx": cidx, "charRange": [0, len(text)], "text": text})
+
+    spans_by_clause: dict[int, list[dict]] = {int(cm["clauseIdx"]): [] for cm in clauses_meta}
+    for sp in norm_spans:
+        cidx = int(sp.get("clauseIdx", 0))
+        spans_by_clause.setdefault(cidx, []).append(sp)
+        if cidx not in {int(cm["clauseIdx"]) for cm in clauses_meta}:
+            clauses_meta.append({"clauseIdx": cidx, "charRange": [0, len(text)], "text": ""})
+
+    scope_tree = _v2_build_lexical_scope_tree(clauses_meta)
+    ccy = currency_code or _cl2_infer_currency(norm_spans, text)[0] or "USD"
+
+    # Identify pure header/operand-declaration clauses (e.g. "§1. Tax imposed on taxable income.")
+    declaration_base_var: str | None = None
+    declaration_clauses: set[int] = set()
+    for cidx, cspans in spans_by_clause.items():
+        units = {sp.get("unit", "UNIT_NONE") for sp in cspans}
+        roles = {sp.get("role", "ROLE_IGNORE") for sp in cspans}
+        has_calc_unit = bool(units & {"UNIT_MONEY", "UNIT_RATE", "UNIT_BOOL_PREDICATE", "UNIT_COUNT"})
+        has_operative_edge = any(
+            rel in (
+                "REL_DEFINED_TERM_OF",
+                "REL_SUBSTITUTE_WHEN",
+                "REL_AGGREGATE_SUM",
+                "REL_AGGREGATE_COUNT",
+                "REL_QUANTIFIER_FORALL",
+                "REL_QUANTIFIER_EXISTS",
+                "REL_LOGICAL_AND",
+                "REL_LOGICAL_OR",
+                "REL_LOGICAL_NOT",
+                "REL_RATE_TO_THRESHOLD",
+            )
+            and (span_by_idx[s].get("clauseIdx") == cidx or span_by_idx[t].get("clauseIdx") == cidx)
+            for s, t, rel in norm_edges
+        )
+        if cspans and not has_calc_unit and not has_operative_edge and "ROLE_COMPUTATION_OPERAND" in roles:
+            op_sp = next(sp for sp in cspans if sp.get("role") == "ROLE_COMPUTATION_OPERAND")
+            declaration_base_var = _cl2_fact_key_camel(op_sp.get("span", ""), "taxableIncome")
+            declaration_clauses.add(cidx)
+
+    # ── PASS 1: Harvest REL_DEFINED_TERM_OF & REL_SUBSTITUTE_WHEN + Scope Conflict Detection ──
+    defined_clause_targets: dict[int, dict] = {}
+    substitutions: list[dict] = []
+    symbol_versions: dict[str, int] = {}
+
+    def_edges = [e for e in norm_edges if e[2] == "REL_DEFINED_TERM_OF"]
+    for s_id, t_id, _ in def_edges:
+        sp_s, sp_t = span_by_idx[s_id], span_by_idx[t_id]
+        # Term side is UNIT_SYMBOL_VAR or ROLE_DEFINED_TERM; fallback earliest span
+        if sp_t.get("unit") == "UNIT_SYMBOL_VAR" and sp_s.get("unit") != "UNIT_SYMBOL_VAR":
+            term_sp, val_sp = sp_t, sp_s
+        else:
+            term_sp, val_sp = sp_s, sp_t
+        cidx = int(term_sp.get("clauseIdx", 0))
+        norm_key = _cl2_fact_key_camel(term_sp.get("span", ""), "definedValue")
+        existing_same = scope_tree[cidx]["symbols"].get(norm_key)
+        if existing_same is not None and existing_same["clauseIdx"] != cidx:
+            raise V2LoweringError(f"ERR_AMBIGUOUS_DEFINITION: symbol {norm_key!r} redefined in same lexical scope {cidx}")
+        # Also detect two separate top-level definitions of same term across sibling root scopes
+        for other_cidx, node in scope_tree.items():
+            if other_cidx != cidx and node["parent"] == scope_tree[cidx]["parent"] and norm_key in node["symbols"]:
+                # Allowed only if later clause has a REL_SUBSTITUTE_WHEN, checked below; for sibling definitions fail closed
+                is_sub = any(
+                    rel == "REL_SUBSTITUTE_WHEN" and (
+                        int(span_by_idx[es].get("clauseIdx", 0)) == cidx
+                        or int(span_by_idx[et].get("clauseIdx", 0)) == cidx
+                    )
+                    for es, et, rel in norm_edges
+                )
+                if not is_sub:
+                    raise V2LoweringError(
+                        f"ERR_AMBIGUOUS_DEFINITION: conflicting definitions of {norm_key!r} in sibling clauses {other_cidx} and {cidx}"
+                    )
+
+        ver = symbol_versions.get(norm_key, 0) + 1
+        symbol_versions[norm_key] = ver
+        base_out = f"{norm_key}Paisa" if not norm_key.endswith("Paisa") else norm_key
+        ssa_var = f"clause_{cidx}_{base_out}_v{ver}"
+        rec = {
+            "symbolKey": norm_key,
+            "exportKey": base_out,
+            "ref": f"vars.{ssa_var}",
+            "ssaVar": ssa_var,
+            "clauseIdx": cidx,
+            "version": ver,
+            "valSpanId": val_sp["spanIdx"],
+        }
+        scope_tree[cidx]["symbols"][norm_key] = rec
+        defined_clause_targets[cidx] = rec
+
+    sub_edges = [e for e in norm_edges if e[2] == "REL_SUBSTITUTE_WHEN"]
+    for s_id, t_id, _ in sub_edges:
+        sp_s, sp_t = span_by_idx[s_id], span_by_idx[t_id]
+        src_c = int(sp_s.get("clauseIdx", 0))
+        tgt_c = int(sp_t.get("clauseIdx", 0))
+        override_sp = sp_s if sp_s.get("unit") == "UNIT_MONEY" else sp_t
+        sub_cidx = max(src_c, tgt_c)
+        minor_val = _cl2_parse_minor_units(override_sp.get("span"))
+        if minor_val is None:
+            continue
+        # Match target symbol via tgt span or nearest defined symbol
+        tgt_key = _cl2_fact_key_camel(sp_t.get("span", ""), "")
+        target_rec = defined_clause_targets.get(min(src_c, tgt_c))
+        if target_rec is None and tgt_key:
+            target_rec = _v2_lookup_scope_symbol(scope_tree, sub_cidx, tgt_key)
+        if target_rec is None and defined_clause_targets:
+            target_rec = next(iter(defined_clause_targets.values()))
+        if target_rec is None:
+            continue
+        substitutions.append({
+            "clauseIdx": sub_cidx,
+            "targetRec": target_rec,
+            "overrideMinor": minor_val,
+        })
+
+    # ── PASS 2: Window-Bounded Coref + Cross-Clause DAG & Topological Lowering ──
+    resolved_corefs: dict[int, dict] = {}
+    clause_adj: dict[int, set[int]] = {int(cm["clauseIdx"]): set() for cm in clauses_meta}
+
+    for s_id, t_id, rel in norm_edges:
+        sc = int(span_by_idx[s_id].get("clauseIdx", 0))
+        tc = int(span_by_idx[t_id].get("clauseIdx", 0))
+        if rel == "REL_COREF_LINK":
+            # Strictly bounded to same clause or immediately preceding clause (0 <= sc - tc <= 1)
+            if 0 <= (sc - tc) <= 1:
+                if tc in defined_clause_targets:
+                    rec = defined_clause_targets[tc]
+                    resolved_corefs[s_id] = {"refVar": rec["ref"], "baseKey": rec["symbolKey"]}
+                    if sc != tc:
+                        clause_adj[sc].add(tc)
+        elif sc != tc and rel in ("REL_DEFINED_TERM_OF", "REL_SUBSTITUTE_WHEN", "REL_RATE_TO_THRESHOLD", "REL_SUBTRACTION_BASE"):
+            direction = "target_before_source" if rel != "REL_SUBTRACTION_BASE" else "target_before_source"
+            if direction == "target_before_source":
+                clause_adj[sc].add(tc)
+
+    for sub in substitutions:
+        sc = sub["clauseIdx"]
+        tc = sub["targetRec"]["clauseIdx"]
+        if sc != tc:
+            clause_adj[sc].add(tc)
+
+    ordered_clauses = _v2_topo_sort_indices(clause_adj)
+
+    all_steps: list[dict] = []
+    all_inputs: dict[str, dict] = {}
+    all_outputs: dict[str, str] = {}
+    clause_scopes: list[dict] = []
+    sub_clause_set = {s["clauseIdx"] for s in substitutions}
+    clause_text_by_idx = {int(cm["clauseIdx"]): cm["text"] for cm in clauses_meta}
+
+    for cidx in ordered_clauses:
+        cspans = spans_by_clause.get(cidx, [])
+        if cidx in declaration_clauses:
+            clause_scopes.append({
+                "clauseIdx": cidx,
+                "scopeDepth": scope_tree[cidx]["level"],
+                "parentScope": scope_tree[cidx]["parent"],
+                "kind": "declaration",
+                "handlers": [],
+                "standardRateBps": None,
+            })
+            continue
+
+        if cidx in sub_clause_set:
+            sub = next(s for s in substitutions if s["clauseIdx"] == cidx)
+            tgt = sub["targetRec"]
+            start_yr, end_yr = _v2_extract_year_window(cspans, text)
+            all_inputs.setdefault("taxYear", {"type": "INTEGER"})
+            if start_yr is not None and end_yr is not None:
+                cond_expr = {
+                    "op": "AND",
+                    "left": {"op": "GTE", "left": "inputs.taxYear", "right": int(start_yr)},
+                    "right": {"op": "LTE", "left": "inputs.taxYear", "right": int(end_yr)},
+                }
+            else:
+                cond_expr = True
+            win_var = f"clause_{cidx}_inWindow_v1"
+            all_steps.append({"assign": win_var, "expr": cond_expr})
+
+            new_ver = symbol_versions.get(tgt["symbolKey"], 1) + 1
+            symbol_versions[tgt["symbolKey"]] = new_ver
+            new_var = f"clause_{cidx}_{tgt['exportKey']}_v{new_ver}"
+            all_steps.append({
+                "assign": new_var,
+                "expr": {
+                    "op": "CONDITIONAL",
+                    "test": f"vars.{win_var}",
+                    "then": {"op": "TO_PAISE", "value": str(sub["overrideMinor"])},
+                    "else": tgt["ref"],
+                },
+            })
+            all_outputs[tgt["exportKey"]] = f"vars.{new_var}"
+            tgt["ref"] = f"vars.{new_var}"
+            tgt["version"] = new_ver
+            clause_scopes.append({
+                "clauseIdx": cidx,
+                "scopeDepth": scope_tree[cidx]["level"],
+                "parentScope": scope_tree[cidx]["parent"],
+                "kind": "substitution",
+                "handlers": ["window", "substitution-bump"],
+                "standardRateBps": None,
+            })
+            continue
+
+        if not cspans:
+            continue
+
+        # Collect visible symbol environment walking up parent-pointer chain
+        visible_env: dict[str, dict] = {}
+        cur = cidx
+        visited = set()
+        while cur is not None and cur in scope_tree and cur not in visited:
+            visited.add(cur)
+            for k, rec in scope_tree[cur]["symbols"].items():
+                if k not in visible_env:
+                    visible_env[k] = rec
+            cur = scope_tree[cur]["parent"]
+
+        # Pass both in-clause edges and cross-clause edges whose endpoints map cleanly
+        in_edges = [
+            e for e in edges
+            if (
+                int(span_by_idx[int(e.get("sourceIdx", e.get("source", -1)))].get("clauseIdx", -1)) == cidx
+                and int(span_by_idx[int(e.get("targetIdx", e.get("target", -1)))].get("clauseIdx", -1)) == cidx
+            )
+            if (e.get("sourceIdx") is not None or e.get("source") is not None)
+            and (e.get("targetIdx") is not None or e.get("target") is not None)
+            and int(e.get("sourceIdx", e.get("source"))) in span_by_idx
+            and int(e.get("targetIdx", e.get("target"))) in span_by_idx
+        ]
+
+        try:
+            comp = compose_clause_v2(
+                clause_idx=cidx,
+                clause_spans=cspans,
+                all_edges=in_edges,
+                full_text=text,
+                currency_code=ccy,
+                symbol_env=visible_env,
+                resolved_corefs=resolved_corefs,
+                fallback_base_var=declaration_base_var,
+            )
+        except V2LoweringError:
+            # Skip non-operative header clauses only when other operative clauses exist; re-raise fatal errors
+            raise
+
+        all_steps.extend(comp["steps"])
+        all_inputs.update(comp["inputs"])
+        out_var_ref = f"vars.{comp['outputVar']}"
+        if cidx in defined_clause_targets:
+            rec = defined_clause_targets[cidx]
+            all_outputs[rec["exportKey"]] = out_var_ref
+            rec["ref"] = out_var_ref
+        else:
+            all_outputs[comp["outputKey"]] = out_var_ref
+
+        clause_scopes.append({
+            "clauseIdx": cidx,
+            "scopeDepth": scope_tree[cidx]["level"],
+            "parentScope": scope_tree[cidx]["parent"],
+            "kind": "computation",
+            "handlers": comp["handlers"],
+            "standardRateBps": comp["standardRateBps"],
+            "resultType": comp["resultType"],
+        })
+
+    if not all_steps or not all_outputs:
+        raise V2LoweringError("ERR_NO_COMPUTATION: no operative computation or predicate steps emitted")
+
+    return {
+        "inputs": all_inputs,
+        "computation": {
+            "archetype": "DECLARATIVE_PIPELINE",
+            "mode": "DECLARATIVE_PIPELINE",
+            "pipeline": {
+                "steps": all_steps,
+                "output": all_outputs,
+            },
+            "clauseScopes": sorted(clause_scopes, key=lambda s: int(s["clauseIdx"])),
+        },
+        "currency": ccy,
+    }

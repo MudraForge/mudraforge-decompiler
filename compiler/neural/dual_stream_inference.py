@@ -21,6 +21,7 @@ from .statutory_neural_parser import (
     RELATION_TYPES,
     BIO_TAGS,
     RULE_MODALITIES,
+    SPAN_UNITS,
     SUFFIX2ID,
     canonicalize_token,
     canonical_suffix,
@@ -34,6 +35,10 @@ from .inference import (
     parse_unit_and_type,
     stitch_classified_spans,
     synthesize_usvm_ast,
+)
+from .inference_v2 import (
+    apply_type_compatibility_mask,
+    synthesize_usvm_ast_v2,
 )
 from .domain_sensor import DOMAIN_TOKEN_CLASSES, ID2DOMAIN_CLASS
 from .logic_reasoner import (
@@ -55,12 +60,17 @@ class DualStreamDecompilerInference:
             ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
         except Exception:
             ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        cfg = ckpt.get("config", {})
+        self.architecture_version = cfg.get("architecture_version", "v1")
         self.vocab = ckpt["raw_vocab"]
         self.logic_vocab = ckpt.get("logic_vocab", LOGIC_VOCAB)
         self.roles = ckpt.get("roles", SEMANTIC_ROLES)
         self.relations = ckpt.get("relations", RELATION_TYPES)
         self.bio_tags = ckpt.get("bio_tags", BIO_TAGS)
         self.modalities = ckpt.get("modalities", RULE_MODALITIES)
+        self.span_units = ckpt.get("span_units", SPAN_UNITS)
+        self.num_span_units = int(cfg.get("num_span_units", 0))
+        self.id2unit = {i: u for i, u in enumerate(self.span_units)}
         self.domain_classes = ckpt.get("domain_classes", DOMAIN_TOKEN_CLASSES)
 
         self.id2role = {i: r for i, r in enumerate(self.roles)}
@@ -80,8 +90,13 @@ class DualStreamDecompilerInference:
                         self.transition_mask[prev_id, curr_id] = -1e9
 
         self.model = DualStreamStatutoryParser(
-            raw_vocab_size=ckpt["config"]["raw_vocab_size"],
-            logic_vocab_size=ckpt["config"]["logic_vocab_size"],
+            raw_vocab_size=cfg["raw_vocab_size"],
+            logic_vocab_size=cfg["logic_vocab_size"],
+            num_roles=len(self.roles),
+            num_relations=len(self.relations),
+            num_bio_tags=len(self.bio_tags),
+            num_modalities=len(self.modalities),
+            num_span_units=self.num_span_units,
             dropout=0.0,
         ).to(self.device)
         self.model.load_state_dict(ckpt["model_state_dict"])
@@ -270,9 +285,17 @@ class DualStreamDecompilerInference:
             )
             role_logits = out2["role_logits"]
             rel_logits = out2["rel_logits"]
+            unit_logits = out2.get("unit_logits")
             role_probs = torch.softmax(role_logits, dim=-1)
             pred_roles = role_logits.argmax(dim=-1).cpu().tolist()
             pred_confs = role_probs.max(dim=-1).values.cpu().tolist()
+            if unit_logits is not None and unit_logits.numel() > 0:
+                unit_probs = torch.softmax(unit_logits, dim=-1)
+                pred_units = unit_logits.argmax(dim=-1).cpu().tolist()
+                pred_unit_confs = unit_probs.max(dim=-1).values.cpu().tolist()
+            else:
+                pred_units = None
+                pred_unit_confs = None
 
         def _locate_clause_idx(ts: int, te: int) -> int:
             mid = (ts + te) // 2
@@ -284,7 +307,7 @@ class DualStreamDecompilerInference:
         classified_spans = []
         for i, s_info in enumerate(discovered_spans):
             cs, ce = s_info["char_start"], s_info["char_end"]
-            classified_spans.append({
+            entry = {
                 "span": text[cs:ce].strip(),
                 "bioType": s_info.get("type", "UNKNOWN"),
                 "role": self.id2role.get(pred_roles[i], "ROLE_IGNORE"),
@@ -292,30 +315,42 @@ class DualStreamDecompilerInference:
                 "charRange": [cs, ce],
                 "tokenRange": [s_info["token_start"], s_info["token_end"]],
                 "clauseIdx": _locate_clause_idx(s_info["token_start"], s_info["token_end"]),
-            })
+            }
+            if pred_units is not None:
+                entry["unit"] = self.id2unit.get(pred_units[i], "UNIT_NONE")
+                entry["unitConfidence"] = round(pred_unit_confs[i], 4)
+            classified_spans.append(entry)
 
-        stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
-        for curr_copy in stitched_spans:
-            # Prepositional Phrase & Excess constituent binding:
-            # If head is a computation operand like 'amount', 'sum', 'portion', 'part', 'excess'
-            # and is followed by 'of the [noun phrase]' before statutory verb/modal/threshold boundaries
-            if curr_copy.get("role") in ("ROLE_COMPUTATION_OPERAND", "ROLE_TRANSACTION_EXCESS_THRESHOLD", "ROLE_TRANSACTION_CLIFF_THRESHOLD") or curr_copy["span"].strip().lower() in ("amount", "sum", "portion", "part", "total", "aggregate", "excess"):
-                c_end = curr_copy["charRange"][1]
-                trailing = text[c_end:]
-                m_prep = re.match(r"^\s+of\s+(?:the\s+)?([a-zA-Z\s_]+?)(?=\s+(?:otherwise\s+allowable|allowable|for\s+such|shall|must|may|over|above|exceeding|,|\.))", trailing, re.IGNORECASE)
-                if m_prep:
-                    curr_copy["span"] = text[curr_copy["charRange"][0]:c_end + m_prep.end()].strip()
-                    curr_copy["charRange"] = [curr_copy["charRange"][0], c_end + m_prep.end()]
-                elif re.search(r"\bexcess(?:\s+of)?\b", curr_copy["span"], re.IGNORECASE):
-                    m_over = re.match(r"^\s+([a-zA-Z\s_]+?)(?=\s+(?:over|above|exceeding|more\s+than)\b)", trailing, re.IGNORECASE)
-                    if m_over:
-                        curr_copy["span"] = text[curr_copy["charRange"][0]:c_end + m_over.end()].strip()
-                        curr_copy["charRange"] = [curr_copy["charRange"][0], c_end + m_over.end()]
-        classified_spans = stitched_spans
+        if self.architecture_version == "v2":
+            stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
+            classified_spans = stitched_spans
+        else:
+            stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
+            for curr_copy in stitched_spans:
+                if curr_copy.get("role") in ("ROLE_COMPUTATION_OPERAND", "ROLE_TRANSACTION_EXCESS_THRESHOLD", "ROLE_TRANSACTION_CLIFF_THRESHOLD") or curr_copy["span"].strip().lower() in ("amount", "sum", "portion", "part", "total", "aggregate", "excess"):
+                    c_end = curr_copy["charRange"][1]
+                    trailing = text[c_end:]
+                    m_prep = re.match(r"^\s+of\s+(?:the\s+)?([a-zA-Z\s_]+?)(?=\s+(?:otherwise\s+allowable|allowable|for\s+such|shall|must|may|over|above|exceeding|,|\.))", trailing, re.IGNORECASE)
+                    if m_prep:
+                        curr_copy["span"] = text[curr_copy["charRange"][0]:c_end + m_prep.end()].strip()
+                        curr_copy["charRange"] = [curr_copy["charRange"][0], c_end + m_prep.end()]
+                    elif re.search(r"\bexcess(?:\s+of)?\b", curr_copy["span"], re.IGNORECASE):
+                        m_over = re.match(r"^\s+([a-zA-Z\s_]+?)(?=\s+(?:over|above|exceeding|more\s+than)\b)", trailing, re.IGNORECASE)
+                        if m_over:
+                            curr_copy["span"] = text[curr_copy["charRange"][0]:c_end + m_over.end()].strip()
+                            curr_copy["charRange"] = [curr_copy["charRange"][0], c_end + m_over.end()]
+            classified_spans = stitched_spans
 
         rel_edges = []
         seen_edges = set()
         if rel_logits is not None and rel_logits.numel() > 0:
+            if self.architecture_version == "v2" and pred_units is not None:
+                rel_logits = apply_type_compatibility_mask(
+                    rel_logits,
+                    pred_units,
+                    id2unit=self.id2unit,
+                    id2rel=self.id2rel,
+                )
             rel_preds = rel_logits.argmax(dim=-1).cpu().tolist()
             num_spans = len(discovered_spans)
             for src in range(num_spans):
@@ -337,18 +372,28 @@ class DualStreamDecompilerInference:
                                     "relationType": rel_name,
                                 })
 
-        ast_package = synthesize_usvm_ast(
-            text=text,
-            spans=classified_spans,
-            edges=rel_edges,
-            source_metadata=source_metadata,
-            predicted_modality=pred_modality,
-            modality_conf=modality_conf,
-            clause_modalities=clause_modalities,
-            rule_domain=req_domain,
-            typed_inputs=typed_inputs,
-            clause_scopes=clause_scopes,
-        )
+        if self.architecture_version == "v2":
+            ast_package = synthesize_usvm_ast_v2(
+                text=text,
+                spans=classified_spans,
+                edges=rel_edges,
+                clause_modalities=clause_modalities,
+                dominant_modality=pred_modality,
+                domain_abstain_prob=dom_abstain_prob,
+            )
+        else:
+            ast_package = synthesize_usvm_ast(
+                text=text,
+                spans=classified_spans,
+                edges=rel_edges,
+                source_metadata=source_metadata,
+                predicted_modality=pred_modality,
+                modality_conf=modality_conf,
+                clause_modalities=clause_modalities,
+                rule_domain=req_domain,
+                typed_inputs=typed_inputs,
+                clause_scopes=clause_scopes,
+            )
 
         fn_words = {"in", "of", "to", "for", "by", "on", "at", "from", "the", "a", "an", "and", "or", "be", "that", "with", "as", "whether", "has", "been"}
         subst = [s for s in classified_spans if s["role"] != "ROLE_IGNORE" and not (len(s["span"].split()) == 1 and s["span"].lower() in fn_words)]
@@ -359,6 +404,7 @@ class DualStreamDecompilerInference:
         return {
             "status": "SUCCESS",
             "compiler": "DualStream-Generalist-Lab",
+            "architectureVersion": self.architecture_version,
             "ruleDomain": ast_package.get("ruleDomain", req_domain),
             "predictedModality": pred_modality,
             "modalityConfidence": round(modality_conf, 4),

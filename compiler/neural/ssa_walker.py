@@ -1024,3 +1024,567 @@ def compose_clause(
     )
 
     return builder.steps, builder.handlers_used, diagnostics
+
+
+# ============================================================================
+# Model v2 Regex-Free Typed-Opcode Topological SSA Walker
+# ============================================================================
+
+from .literals import (
+    derive_logic_fact_key as _v2_derive_logic_key,
+    infer_rule_currency_info as _v2_infer_currency,
+    parse_comparison_operator as _v2_parse_cmp_op,
+    parse_minor_units as _v2_parse_minor_units,
+    parse_numeric_quantity as _v2_parse_num,
+    parse_rate_bps as _v2_parse_rate_bps,
+    pluralize_collection_noun as _v2_pluralize_noun,
+    _derive_fact_key_camel as _v2_fact_key_camel,
+)
+
+
+class V2LoweringError(ValueError):
+    """Fail-closed diagnostic error raised during v2 topological SSA lowering."""
+
+
+V2_EDGE_DIRECTION: dict[str, str] = {
+    **DEPENDENCY_DIRECTION,
+    "REL_MIN_CAP": "source_before_target",
+    "REL_SUB_CREDIT": "source_before_target",
+    "REL_AGGREGATE_COUNT": "target_before_source",
+    "REL_BASE_TAX_ADD": "source_before_target",
+    "REL_DEFINED_TERM_OF": "target_before_source",
+    "REL_SUBSTITUTE_WHEN": "target_before_source",
+    "REL_COREF_LINK": "target_before_source",
+}
+
+
+def _v2_norm_edge(edge: dict, valid_indices: set[int]) -> tuple[int, int, str] | None:
+    s = edge.get("sourceIdx")
+    if s is None:
+        s = edge.get("source")
+    t = edge.get("targetIdx")
+    if t is None:
+        t = edge.get("target")
+    rel = edge.get("relationType") or edge.get("relation") or "REL_NO_EDGE"
+    if s is None or t is None or rel == "REL_NO_EDGE":
+        return None
+    if int(s) not in valid_indices or int(t) not in valid_indices:
+        return None
+    return int(s), int(t), str(rel)
+
+
+def _v2_parse_span_value(span_dict: dict) -> dict:
+    """Extracts typed literal value purely from neural `unit` + deterministic literal parser."""
+    text = str(span_dict.get("span") or "").strip()
+    unit = str(span_dict.get("unit") or "UNIT_NONE")
+    role = str(span_dict.get("role") or "ROLE_IGNORE")
+
+    # Reject non-monetary spans strictly by neural unit class before touching money parsers
+    if unit == "UNIT_MONEY":
+        minor = _v2_parse_minor_units(text)
+        return {"kind": "MONEY", "minor": minor, "text": text, "unit": unit, "role": role}
+    if unit == "UNIT_RATE":
+        bps = _v2_parse_rate_bps(text)
+        return {"kind": "RATE", "rateBps": bps, "text": text, "unit": unit, "role": role}
+    if unit == "UNIT_DURATION":
+        qty = _v2_parse_num(text)
+        return {"kind": "DURATION", "num": qty, "text": text, "unit": unit, "role": role}
+    if unit == "UNIT_YEAR_DATE":
+        years = []
+        for tok in text.replace(",", " ").replace(".", " ").split():
+            if tok.isdigit() and len(tok) == 4 and 1800 <= int(tok) <= 2200:
+                years.append(int(tok))
+        return {"kind": "YEAR_DATE", "years": years, "text": text, "unit": unit, "role": role}
+    if unit == "UNIT_COUNT":
+        qty = _v2_parse_num(text)
+        return {"kind": "COUNT", "num": int(round(float(qty))) if qty is not None else None, "text": text, "unit": unit, "role": role}
+    if unit == "UNIT_BOOL_PREDICATE":
+        return {"kind": "BOOL", "key": _v2_derive_logic_key(text), "text": text, "unit": unit, "role": role}
+    if unit == "UNIT_SYMBOL_VAR":
+        return {"kind": "SYMBOL", "key": _v2_fact_key_camel(text, "metricValue"), "text": text, "unit": unit, "role": role}
+    return {"kind": "NONE", "text": text, "unit": unit, "role": role}
+
+
+def _v2_build_clause_dag(
+    span_indices: list[int],
+    norm_edges: list[tuple[int, int, str]],
+) -> dict[int, set[int]]:
+    """Constructs directed dependency adjacency (node -> prerequisites) and verifies acyclicity."""
+    adj: dict[int, set[int]] = {idx: set() for idx in span_indices}
+    for s, t, rel in norm_edges:
+        direction = V2_EDGE_DIRECTION.get(rel, "independent")
+        if direction == "independent":
+            continue
+        if s == t:
+            adj[s].add(t)
+        elif direction == "target_before_source":
+            adj[s].add(t)
+        elif direction == "source_before_target":
+            adj[t].add(s)
+    return adj
+
+
+def _v2_topo_sort_indices(adj: dict[int, set[int]]) -> list[int]:
+    """Kahn bottom-up topological sort (prerequisites first); raises ERR_CYCLIC_DEPENDENCY on cycles."""
+    in_deg = {node: len(deps) for node, deps in adj.items()}
+    dependents: dict[int, list[int]] = {node: [] for node in adj}
+    for node, deps in adj.items():
+        for dep in deps:
+            if dep in dependents:
+                dependents[dep].append(node)
+    ready = sorted([node for node, d in in_deg.items() if d == 0])
+    ordered: list[int] = []
+    while ready:
+        cur = ready.pop(0)
+        ordered.append(cur)
+        for nxt in sorted(dependents.get(cur, [])):
+            in_deg[nxt] -= 1
+            if in_deg[nxt] == 0:
+                ready.append(nxt)
+                ready.sort()
+    if len(ordered) != len(adj):
+        raise V2LoweringError("ERR_CYCLIC_DEPENDENCY: cyclic dependency detected in v2 relation graph")
+    return ordered
+
+
+def compose_clause_v2(
+    clause_idx: int,
+    clause_spans: list[dict],
+    all_edges: list[dict],
+    full_text: str,
+    currency_code: str | None = None,
+    symbol_env: dict[str, dict] | None = None,
+    resolved_corefs: dict[int, dict] | None = None,
+    fallback_base_var: str | None = None,
+) -> dict:
+    """Regex-free bottom-up topological SSA composer for a single v2 clause.
+
+    Reads predicted `SPAN_UNITS` + exact `V2_RELATION_TYPES` directly:
+      - No `_BRACKET_BASE_TAX_RE`, no `relation_sense()` regex, no heuristic
+        `is_monetary_quantum_text` guessing.
+      - Actually executes `topological_order` bottom-up over computation nodes.
+    """
+    symbol_env = symbol_env or {}
+    resolved_corefs = resolved_corefs or {}
+    ccy = currency_code or _v2_infer_currency(clause_spans, full_text)[0] or "USD"
+
+    sorted_spans = sorted(
+        clause_spans,
+        key=lambda sp: (
+            int((sp.get("charRange") or [0, 0])[0]),
+            int((sp.get("charRange") or [0, 0])[1]),
+            str(sp.get("role") or ""),
+            str(sp.get("unit") or ""),
+        ),
+    )
+    if not sorted_spans:
+        raise V2LoweringError("ERR_NO_COMPUTATION: clause has zero spans")
+
+    span_by_idx: dict[int, dict] = {}
+    parsed_by_idx: dict[int, dict] = {}
+    for pos, sp in enumerate(sorted_spans):
+        sid = int(sp.get("spanIdx", pos))
+        span_by_idx[sid] = sp
+        parsed_by_idx[sid] = _v2_parse_span_value(sp)
+
+    valid_ids = set(span_by_idx.keys())
+    in_clause_edges: list[tuple[int, int, str]] = []
+    seen_e = set()
+    for e in all_edges:
+        ne = _v2_norm_edge(e, valid_ids)
+        if ne is not None and ne not in seen_e:
+            seen_e.add(ne)
+            in_clause_edges.append(ne)
+    in_clause_edges.sort(key=lambda item: (item[2], item[0], item[1]))
+
+    adj = _v2_build_clause_dag(sorted(valid_ids), in_clause_edges)
+    topo_ids = _v2_topo_sort_indices(adj)
+
+    incoming: dict[int, list[tuple[int, str]]] = {i: [] for i in valid_ids}
+    outgoing: dict[int, list[tuple[int, str]]] = {i: [] for i in valid_ids}
+    for s, t, rel in in_clause_edges:
+        outgoing[s].append((t, rel))
+        incoming[t].append((s, rel))
+
+    steps: list[dict] = []
+    handlers: list[str] = []
+    inputs: dict[str, dict] = {}
+    ssa_ver: dict[str, int] = {}
+
+    def _emit(base_name: str, expr: dict, handler: str) -> str:
+        ver = ssa_ver.get(base_name, 0) + 1
+        ssa_ver[base_name] = ver
+        var_name = f"clause_{clause_idx}_{base_name}_v{ver}"
+        steps.append({"assign": var_name, "expr": expr})
+        handlers.append(handler)
+        return var_name
+
+    # Resolve operand base variable deterministically (explicit coref > symbol_env > operand span > fallback)
+    def _resolve_operand_expr(pref_id: int | None = None) -> tuple[str, str]:
+        candidates = ([pref_id] if pref_id is not None else []) + topo_ids
+        for sid in candidates:
+            if sid in resolved_corefs:
+                ref = resolved_corefs[sid]
+                return str(ref["refVar"]), str(ref["baseKey"])
+            p = parsed_by_idx[sid]
+            sp = span_by_idx[sid]
+            if p["kind"] == "SYMBOL" or sp.get("role") == "ROLE_COMPUTATION_OPERAND":
+                key = _v2_fact_key_camel(p["text"], fallback_base_var or "amount")
+                if key in symbol_env:
+                    return symbol_env[key]["ref"], key
+                inputs.setdefault(key, {"type": "MONEY_MINOR", "currency": ccy})
+                return f"inputs.{key}", key
+        base_key = fallback_base_var or "amount"
+        inputs.setdefault(base_key, {"type": "MONEY_MINOR", "currency": ccy})
+        return f"inputs.{base_key}", base_key
+
+    # Partition clause semantics strictly by predicted units & v2 edge opcodes (NO regex heuristics)
+    fold_edges = [e for e in in_clause_edges if e[2] in ("REL_AGGREGATE_SUM", "REL_AGGREGATE_COUNT")]
+    quant_edges = [e for e in in_clause_edges if e[2] in ("REL_QUANTIFIER_FORALL", "REL_QUANTIFIER_EXISTS")]
+    rate_nodes = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "RATE" and parsed_by_idx[sid]["rateBps"] is not None]
+    money_nodes = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "MONEY" and parsed_by_idx[sid]["minor"] is not None]
+    bool_nodes = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "BOOL"]
+
+    # Track node SSA bindings built bottom-up during topological traversal
+    node_ssa: dict[int, str] = {}
+
+    # 1. Bounded Collection Fold Path (`SUM_OVER` / `COUNT`)
+    if fold_edges:
+        s_id, t_id, fold_rel = fold_edges[0]
+        coll_key = _v2_pluralize_noun(parsed_by_idx[t_id]["text"])
+        elem_key = _v2_fact_key_camel(parsed_by_idx[s_id]["text"], "amount")
+        inputs.setdefault(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
+        op_name = "COUNT" if fold_rel == "REL_AGGREGATE_COUNT" else "SUM_OVER"
+        fold_expr = {
+            "op": op_name,
+            "iteratorVar": "it",
+            "collection": f"inputs.{coll_key}",
+            "predicate": True,
+            "body": f"it.{elem_key}" if op_name == "SUM_OVER" else 1,
+        }
+        res_key = "countTotal" if op_name == "COUNT" else "sumTotalPaisa"
+        res_var = _emit(res_key, fold_expr, "fold")
+        return {
+            "clauseIdx": clause_idx,
+            "steps": steps,
+            "handlers": handlers,
+            "outputVar": res_var,
+            "outputKey": res_key,
+            "inputs": inputs,
+            "standardRateBps": None,
+            "resultType": "INTEGER" if op_name == "COUNT" else "MONEY_MINOR",
+        }
+
+    # 2. First-Order Quantifier Path (`FORALL` / `EXISTS` / `NOT(FORALL)` / `NOT(EXISTS)`)
+    if quant_edges:
+        s_id, t_id, q_rel = quant_edges[0]
+        coll_key = _v2_pluralize_noun(parsed_by_idx[t_id]["text"])
+        pred_key = _v2_derive_logic_key(parsed_by_idx[s_id]["text"], "conditionMet")
+        has_not = any(rel == "REL_LOGICAL_NOT" for _, _, rel in in_clause_edges)
+        base_q = "FORALL" if q_rel == "REL_QUANTIFIER_FORALL" else "EXISTS"
+        inputs.setdefault(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
+        q_expr = {
+            "op": base_q,
+            "iteratorVar": "it",
+            "collection": f"inputs.{coll_key}",
+            "predicate": {"op": "EQ", "left": f"it.{pred_key}", "right": True},
+        }
+        if has_not:
+            q_expr = {"op": "NOT", "operand": q_expr}
+        out_key = _v2_fact_key_camel(pred_key + "Satisfied", "ruleSatisfied")
+        res_var = _emit(out_key, q_expr, "quantifier-fold")
+        return {
+            "clauseIdx": clause_idx,
+            "steps": steps,
+            "handlers": handlers,
+            "outputVar": res_var,
+            "outputKey": out_key,
+            "inputs": inputs,
+            "standardRateBps": None,
+            "resultType": "BOOLEAN",
+        }
+
+    # 3. Pure Boolean Gate Path (`AND` / `OR` / `NOT`) when zero money+rate nodes exist
+    if not rate_nodes and not money_nodes:
+        bool_edges = [e for e in in_clause_edges if e[2] in ("REL_LOGICAL_AND", "REL_LOGICAL_OR", "REL_LOGICAL_NOT")]
+        if not bool_nodes and not bool_edges:
+            raise V2LoweringError("ERR_NO_COMPUTATION: no computational or boolean predicate spans resolved")
+        terms = []
+        for bid in bool_nodes:
+            bk = parsed_by_idx[bid]["key"]
+            inputs.setdefault(bk, {"type": "BOOLEAN"})
+            expr = f"inputs.{bk}"
+            if any(rel == "REL_LOGICAL_NOT" and (sid == bid or tid == bid) for sid, tid, rel in bool_edges):
+                expr = {"op": "NOT", "operand": expr}
+            terms.append(expr)
+        if not terms:
+            raise V2LoweringError("ERR_NO_COMPUTATION: no boolean operands resolved")
+        join_op = "OR" if any(rel == "REL_LOGICAL_OR" for _, _, rel in bool_edges) else "AND"
+        combined = terms[0]
+        for nxt in terms[1:]:
+            combined = {"op": join_op, "left": combined, "right": nxt}
+        out_var = _emit("predicateResult", combined, "boolean-gate")
+        return {
+            "clauseIdx": clause_idx,
+            "steps": steps,
+            "handlers": handlers,
+            "outputVar": out_var,
+            "outputKey": "predicateResult",
+            "inputs": inputs,
+            "standardRateBps": None,
+            "resultType": "BOOLEAN",
+        }
+
+    # 4. Quantitative Arithmetic Pipeline (bottom-up walk over `topo_ids`)
+    # First check explicit excess-over-threshold safety invariant without silent flat degradation
+    excess_symbol_only = any(
+        span_by_idx[sid].get("role") == "ROLE_TRANSACTION_EXCESS_THRESHOLD" and parsed_by_idx[sid]["kind"] != "MONEY"
+        for sid in topo_ids
+    )
+    has_sub_base_edge = any(rel == "REL_SUBTRACTION_BASE" for _, _, rel in in_clause_edges)
+    if rate_nodes and not money_nodes and (excess_symbol_only or has_sub_base_edge):
+        # Verify whether symbol_env resolved a symbolic floor threshold; otherwise fail closed!
+        resolved_sym_floor = any(
+            parsed_by_idx[sid]["kind"] == "SYMBOL" and parsed_by_idx[sid]["key"] in symbol_env
+            for sid in topo_ids
+        )
+        if not resolved_sym_floor:
+            raise V2LoweringError("ERR_NO_THRESHOLD: excess-over-threshold clause has no resolved monetary threshold")
+
+    # Classify monetary spans cleanly using explicit v2 relation edges (zero text-guessing regexes)
+    cap_ids = {
+        s if parsed_by_idx[s]["kind"] == "MONEY" else t
+        for s, t, rel in in_clause_edges
+        if rel in ("REL_MIN_CAP", "REL_CAP_CEILING", "REL_COMBINATOR_MIN")
+        for s, t in [(s, t)]
+        if (parsed_by_idx[s]["kind"] == "MONEY") != (parsed_by_idx[t]["kind"] == "MONEY")
+        or (parsed_by_idx[s]["kind"] == "MONEY" and rel in ("REL_MIN_CAP", "REL_CAP_CEILING"))
+    }
+    credit_ids = {
+        s if parsed_by_idx[s]["kind"] == "MONEY" else t
+        for s, t, rel in in_clause_edges
+        if rel == "REL_SUB_CREDIT"
+        for s, t in [(s, t)]
+        if parsed_by_idx[s]["kind"] == "MONEY" or parsed_by_idx[t]["kind"] == "MONEY"
+    }
+    base_tax_ids = {
+        s
+        for s, t, rel in in_clause_edges
+        if rel == "REL_BASE_TAX_ADD" and parsed_by_idx[s]["kind"] == "MONEY"
+    }
+    ceiling_ids = {
+        t
+        for s, t, rel in in_clause_edges
+        if rel == "REL_BRACKET_NEXT" and parsed_by_idx[t]["kind"] == "MONEY"
+    }
+
+    operand_ref, operand_key = _resolve_operand_expr()
+    current_var: str | None = None
+    active_floor_minor: int | None = None
+    active_ceiling_minor: int | None = None
+
+    # Identify primary floor threshold (MONEY connected by REL_RATE_TO_THRESHOLD / REL_BRACKET_NEXT / excess role)
+    floor_ids: list[int] = []
+    for s, t, rel in in_clause_edges:
+        if rel == "REL_RATE_TO_THRESHOLD" and parsed_by_idx[t]["kind"] == "MONEY" and t not in cap_ids and t not in credit_ids and t not in base_tax_ids:
+            floor_ids.append(t)
+        elif rel == "REL_BRACKET_NEXT" and parsed_by_idx[s]["kind"] == "MONEY":
+            floor_ids.append(s)
+    if not floor_ids:
+        for sid in topo_ids:
+            if (
+                parsed_by_idx[sid]["kind"] == "MONEY"
+                and sid not in cap_ids
+                and sid not in credit_ids
+                and sid not in base_tax_ids
+                and sid not in ceiling_ids
+            ):
+                floor_ids.append(sid)
+
+    # Emit bottom-up arithmetic following topological node order
+    primary_rate_bps = parsed_by_idx[rate_nodes[0]]["rateBps"] if rate_nodes else None
+
+    if rate_nodes and floor_ids:
+        floor_id = floor_ids[0]
+        floor_minor = parsed_by_idx[floor_id]["minor"]
+        floor_role = span_by_idx[floor_id].get("role", "")
+        active_floor_minor = floor_minor
+        floor_expr = {"op": "TO_PAISE", "value": str(floor_minor)}
+
+        # Excess base = MAX(0, operand - floor)
+        excess_var = _emit(
+            "excessBasePaisa",
+            {
+                "op": "MAX",
+                "left": {"op": "TO_PAISE", "value": "0"},
+                "right": {"op": "SUB", "left": operand_ref, "right": floor_expr},
+            },
+            "base-arithmetic",
+        )
+        base_for_rate = f"vars.{excess_var}"
+
+        # Bounded bracket ceiling (`REL_BRACKET_NEXT`)
+        if ceiling_ids:
+            ceil_id = next(iter(ceiling_ids))
+            ceil_minor = parsed_by_idx[ceil_id]["minor"]
+            active_ceiling_minor = ceil_minor
+            width_minor = max(0, ceil_minor - floor_minor)
+            slice_var = _emit(
+                "bracketSlicePaisa",
+                {
+                    "op": "MIN",
+                    "left": base_for_rate,
+                    "right": {"op": "TO_PAISE", "value": str(width_minor)},
+                },
+                "bracket-next",
+            )
+            base_for_rate = f"vars.{slice_var}"
+        elif floor_role == "ROLE_TRANSACTION_CLIFF_THRESHOLD":
+            # Cliff threshold: tax applies to ENTIRE operand only if operand > floor
+            cmp_op = _v2_parse_cmp_op(span_by_idx[floor_id].get("span", ""))
+            if cmp_op == "GTE":
+                cliff_var = _emit(
+                    "cliffBasePaisa",
+                    {
+                        "op": "CONDITIONAL",
+                        "test": {"op": "GTE", "left": operand_ref, "right": floor_expr},
+                        "then": operand_ref,
+                        "else": {"op": "TO_PAISE", "value": "0"},
+                    },
+                    "base-arithmetic",
+                )
+            else:
+                cliff_var = _emit(
+                    "cliffBasePaisa",
+                    {
+                        "op": "CONDITIONAL",
+                        "test": {"op": "GT", "left": operand_ref, "right": floor_expr},
+                        "then": operand_ref,
+                        "else": {"op": "TO_PAISE", "value": "0"},
+                    },
+                    "base-arithmetic",
+                )
+            base_for_rate = f"vars.{cliff_var}"
+
+        # Marginal tax = RATIONAL_MULTIPLY(base, rateBps, 10000)
+        tax_var = _emit(
+            "taxAmountPaisa",
+            {
+                "op": "RATIONAL_MULTIPLY",
+                "base": base_for_rate,
+                "rateBps": int(primary_rate_bps),
+                "denominator": 10000,
+            },
+            "rate-on-base",
+        )
+        current_var = tax_var
+        node_ssa[rate_nodes[0]] = f"vars.{tax_var}"
+
+        # Add explicit `REL_BASE_TAX_ADD` node if connected in graph (NO bracket regex!)
+        if base_tax_ids:
+            bt_id = next(iter(base_tax_ids))
+            bt_minor = parsed_by_idx[bt_id]["minor"]
+            added_var = _emit(
+                "bracketWithBaseTaxPaisa",
+                {
+                    "op": "ADD",
+                    "left": {"op": "TO_PAISE", "value": str(bt_minor)},
+                    "right": f"vars.{current_var}",
+                },
+                "bracket-base-tax",
+            )
+            current_var = added_var
+
+        # Window gate `(floor, ceiling]` when bounded bracket is specified
+        if active_ceiling_minor is not None and active_floor_minor is not None:
+            gate_var = _emit(
+                "boundedBracketTaxPaisa",
+                {
+                    "op": "CONDITIONAL",
+                    "test": {
+                        "op": "AND",
+                        "left": {"op": "GT", "left": operand_ref, "right": {"op": "TO_PAISE", "value": str(active_floor_minor)}},
+                        "right": {"op": "LTE", "left": operand_ref, "right": {"op": "TO_PAISE", "value": str(active_ceiling_minor)}},
+                    },
+                    "then": f"vars.{current_var}",
+                    "else": {"op": "TO_PAISE", "value": "0"},
+                },
+                "bracket-window-gate",
+            )
+            current_var = gate_var
+
+    elif rate_nodes:
+        # Flat rate over operand (or standalone monetary/defined value)
+        current_var = _emit(
+            "taxAmountPaisa",
+            {
+                "op": "RATIONAL_MULTIPLY",
+                "base": operand_ref,
+                "rateBps": int(primary_rate_bps),
+                "denominator": 10000,
+            },
+            "rate-on-base",
+        )
+    elif floor_ids:
+        # Pure value/threshold definition clause (e.g. "$4,400", "fifty lakh rupees")
+        m_id = floor_ids[0]
+        m_minor = parsed_by_idx[m_id]["minor"]
+        val_expr = {"op": "TO_PAISE", "value": str(m_minor)}
+        if span_by_idx[m_id].get("role") == "ROLE_TRANSACTION_EXCESS_THRESHOLD":
+            val_expr = {
+                "op": "MAX",
+                "left": {"op": "TO_PAISE", "value": "0"},
+                "right": {"op": "SUB", "left": operand_ref, "right": val_expr},
+            }
+        def_key = f"{operand_key}Paisa" if not operand_key.endswith("Paisa") else operand_key
+        current_var = _emit(def_key, val_expr, "definition-value")
+        return {
+            "clauseIdx": clause_idx,
+            "steps": steps,
+            "handlers": handlers,
+            "outputVar": current_var,
+            "outputKey": def_key,
+            "inputs": inputs,
+            "standardRateBps": None,
+            "resultType": "MONEY_MINOR",
+        }
+    else:
+        raise V2LoweringError("ERR_NO_COMPUTATION: no rate, money, or predicate structure to lower")
+
+    # Apply downstream topological reductions (`REL_SUB_CREDIT`) then caps (`REL_MIN_CAP`) in `topo_ids` order
+    for sid in topo_ids:
+        if sid in credit_ids and parsed_by_idx[sid]["minor"] is not None:
+            c_minor = parsed_by_idx[sid]["minor"]
+            current_var = _emit(
+                "afterCreditPaisa",
+                {
+                    "op": "MAX",
+                    "left": {"op": "TO_PAISE", "value": "0"},
+                    "right": {"op": "SUB", "left": f"vars.{current_var}", "right": {"op": "TO_PAISE", "value": str(c_minor)}},
+                },
+                "reduction",
+            )
+    for sid in topo_ids:
+        if sid in cap_ids and parsed_by_idx[sid]["minor"] is not None:
+            cap_minor = parsed_by_idx[sid]["minor"]
+            current_var = _emit(
+                "afterCapPaisa",
+                {
+                    "op": "MIN",
+                    "left": f"vars.{current_var}",
+                    "right": {"op": "TO_PAISE", "value": str(cap_minor)},
+                },
+                "cap",
+            )
+
+    out_key = operand_key if operand_key.endswith("TaxPaisa") else f"{operand_key}TaxPaisa"
+    return {
+        "clauseIdx": clause_idx,
+        "steps": steps,
+        "handlers": handlers,
+        "outputVar": current_var,
+        "outputKey": out_key,
+        "inputs": inputs,
+        "standardRateBps": primary_rate_bps,
+        "resultType": "MONEY_MINOR",
+    }
