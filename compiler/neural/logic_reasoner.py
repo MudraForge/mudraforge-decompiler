@@ -134,19 +134,26 @@ def tokens_to_logic_ids(tokens: list[str]) -> list[int]:
         if low in LOGIC_VOCAB:
             out.append(LOGIC_VOCAB[low])
             continue
-        if not tok.isalpha():
+        # Handle hyphenated compounds ("cross-border") & possessives ("taxpayer's") instead of dropping to <UNK>
+        alpha_clean = low.replace("-", "").replace("'", "").replace("\u2019", "")
+        if not alpha_clean.isalpha():
             out.append(unk_id)
             continue
 
+        tail_part = low.split("-")[-1].rstrip("'s\u2019s")
         prev_low = prev_t.lower() if prev_t else ""
         prev_prev_low = prev_prev_t.lower() if prev_prev_t else ""
         if prev_low in MODAL_AND_AUX:
-            out.append(verb_id)
+            # Passive/copula ("is paid", "are exempt") vs nominal predicate ("is tax" / "is the")
+            if prev_low in {"is", "are", "was", "were", "be", "been", "being"} and tail_part.endswith(NOUN_SUFFIXES):
+                out.append(noun_id)
+            else:
+                out.append(verb_id)
         elif prev_prev_low in MODAL_AND_AUX and (prev_low.endswith("ly") or prev_low in ("not", "already", "previously", "directly")):
             out.append(verb_id)
-        elif low.endswith(VERB_SUFFIXES) and prev_low not in DETERMINERS_AND_PREP:
+        elif tail_part.endswith(VERB_SUFFIXES) and prev_low not in DETERMINERS_AND_PREP:
             out.append(verb_id)
-        elif prev_low in DETERMINERS_AND_PREP or low.endswith(NOUN_SUFFIXES):
+        elif prev_low in DETERMINERS_AND_PREP or tail_part.endswith(NOUN_SUFFIXES):
             out.append(noun_id)
         else:
             out.append(noun_id)

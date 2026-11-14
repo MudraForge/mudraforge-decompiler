@@ -48,6 +48,8 @@ def _is_compatible_triple(src_u: str, rel: str, tgt_u: str) -> bool:
     if rel in ("REL_AGGREGATE_COUNT", "REL_QUANTIFIER_FORALL", "REL_QUANTIFIER_EXISTS"):
         return src_u not in {"UNIT_RATE", "UNIT_YEAR_DATE"} and tgt_u not in {"UNIT_RATE", "UNIT_YEAR_DATE"}
     if rel == "REL_AGGREGATE_SUM":
+        if src_u == "UNIT_RATE" and tgt_u == "UNIT_RATE":
+            return True
         return src_u not in {"UNIT_RATE", "UNIT_YEAR_DATE", "UNIT_BOOL_PREDICATE"} and tgt_u not in {"UNIT_RATE", "UNIT_YEAR_DATE", "UNIT_BOOL_PREDICATE"}
     if rel in ("REL_LOGICAL_AND", "REL_LOGICAL_OR", "REL_LOGICAL_NOT"):
         return src_u != "UNIT_RATE" and tgt_u != "UNIT_RATE"

@@ -33,9 +33,9 @@ SPECIAL_TOKENS = {
 }
 
 _CURRENCY_SURFACE_TOKENS = {
-    "$", "₹", "€", "£", "inr", "usd", "eur", "gbp", "rs", "rs.",
+    "$", "₹", "€", "£", "¥", "inr", "usd", "eur", "gbp", "sgd", "aed", "chf", "cad", "aud", "jpy", "rs", "rs.",
     "rupee", "rupees", "dollar", "dollars", "euro", "euros", "pound", "pounds",
-    "paisa", "paise", "cents",
+    "yen", "dirham", "dirhams", "franc", "francs", "paisa", "paise", "cents",
 }
 _CURRENCY_CONTEXT_TOKENS = _CURRENCY_SURFACE_TOKENS | {
     "cent", "lakh", "lakhs", "lac", "lacs", "crore", "crores",

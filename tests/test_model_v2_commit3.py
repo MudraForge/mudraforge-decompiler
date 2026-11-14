@@ -242,6 +242,7 @@ class TestModelV2Commit3(unittest.TestCase):
             "V2_AST_FOLD_TO_ARITHMETIC",
             "V2_AST_GATED_ARITHMETIC",
             "V2_AST_MULTI_TIER_BRACKET",
+            "V2_AST_BRANCHED_RATES",
         }
         self.assertTrue(expected_families.issubset(stypes), f"Missing families: {expected_families - stypes}")
 
@@ -263,7 +264,9 @@ class TestModelV2Commit3(unittest.TestCase):
             seen_families = set()
             saw_conditional_gate = False
             saw_fold_to_arith = False
-            for i in range(80):
+            saw_branched_conditional = False
+            saw_branched_additive = False
+            for i in range(100):
                 sample = composer.sample_rule(formulation=i % 4)
                 seen_families.add(sample["stype"])
 
@@ -278,6 +281,10 @@ class TestModelV2Commit3(unittest.TestCase):
                     ccy_hits.add("EUR")
                 if "\u00a3" in txt_l or re.search(r"\b(pounds|gbp)\b", txt_l):
                     ccy_hits.add("GBP")
+                if re.search(r"\bsgd\b", txt_l):
+                    ccy_hits.add("SGD")
+                if re.search(r"\bchf\b", txt_l):
+                    ccy_hits.add("CHF")
                 self.assertLessEqual(
                     len(ccy_hits),
                     1,
@@ -346,17 +353,59 @@ class TestModelV2Commit3(unittest.TestCase):
                     saw_conditional_gate = True
                 if sample["stype"] == "V2_AST_FOLD_TO_ARITHMETIC" and ("SUM_OVER" in ast_json or "COUNT" in ast_json):
                     saw_fold_to_arith = True
+                if sample["stype"] == "V2_AST_BRANCHED_RATES":
+                    if "conditional-rate-branch" in ast_json and "'op': 'CONDITIONAL'" in ast_json:
+                        saw_branched_conditional = True
+                    if "additive-rate-sum" in ast_json and "'op': 'ADD'" in ast_json:
+                        saw_branched_additive = True
 
                 cands = env._build_v2_fact_candidates(ast)
                 self.assertGreaterEqual(len(cands), 3)
                 for _, cvec in cands:
                     out = ev.evaluate(ast, cvec)
                     self.assertIsNotNone(out)
-            self.assertEqual(len(seen_families), 9)
+            self.assertEqual(len(seen_families), 10)
             self.assertTrue(saw_conditional_gate)
             self.assertTrue(saw_fold_to_arith)
+            self.assertTrue(saw_branched_conditional or saw_branched_additive)
         finally:
             ev.close()
+
+    def test_stage_e_literals_currencies_segmentation_and_logic_vocab_pos(self):
+        from compiler.neural.literals import (
+            infer_rule_currency_info,
+            parse_comparison_operator,
+            segment_clauses,
+        )
+        from compiler.neural.logic_reasoner import LOGIC_VOCAB, tokens_to_logic_ids
+
+        self.assertEqual(parse_comparison_operator("does not exceed"), "LTE")
+        self.assertEqual(parse_comparison_operator("fewer than"), "LT")
+        self.assertEqual(parse_comparison_operator("at or above"), "GTE")
+        self.assertEqual(parse_comparison_operator("strictly greater than"), "GT")
+
+        self.assertEqual(infer_rule_currency_info([{"span": "SGD 25,000"}], "SGD 25,000")[0], "SGD")
+        self.assertEqual(infer_rule_currency_info([{"span": "CHF 10,000"}], "CHF 10,000")[0], "CHF")
+        self.assertEqual(infer_rule_currency_info([{"span": "AED 50,000"}], "AED 50,000")[0], "AED")
+
+        # Abbreviation & inline list references must not falsely split into tiny clauses
+        text = "Under Sec. 12 and Reg. 4 (a) and (b), an entity shall file notice."
+        toks = text.split()
+        offs = []
+        cursor = 0
+        for tk in toks:
+            idx = text.find(tk, cursor)
+            offs.append((idx, idx + len(tk)))
+            cursor = idx + len(tk)
+        segs = segment_clauses(text, toks, offs)
+        self.assertEqual(len(segs), 1)
+
+        # Hyphenated compound legal terms must map to <LEGAL_NOUN>/<LEGAL_VERB>, never <UNK>
+        ids = tokens_to_logic_ids(["cross-border", "shall", "re-verify", "taxpayer's", "allocation"])
+        self.assertNotIn(LOGIC_VOCAB["<UNK>"], ids)
+        self.assertEqual(ids[0], LOGIC_VOCAB["<LEGAL_NOUN>"])
+        self.assertEqual(ids[2], LOGIC_VOCAB["<LEGAL_VERB>"])
+        self.assertEqual(ids[3], LOGIC_VOCAB["<LEGAL_NOUN>"])
 
     def test_batched_amp_v2_train_smoke(self):
         import tempfile

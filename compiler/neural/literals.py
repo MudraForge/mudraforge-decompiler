@@ -35,7 +35,10 @@ def parse_numeric_quantity(text: str):
     cleaned = text.lower().replace(",", "")
     cleaned_no_pct = re.sub(r"\bper\s+cent(?:um)?\b", " ", cleaned)
     has_major_currency = bool(
-        re.search(r"₹|\$|€|£|\b(?:dollars?|rupees?|euros?|pounds?|usd|inr|eur|gbp)\b", cleaned_no_pct)
+        re.search(
+            r"₹|\$|€|£|¥|\b(?:dollars?|rupees?|euros?|pounds?|yen|dirhams?|francs?|usd|inr|eur|gbp|sgd|aed|chf|cad|aud|jpy)\b",
+            cleaned_no_pct,
+        )
     )
     is_standalone_minor = (
         bool(re.search(r"\b(?:cents?|paise|paisa|pence)\b", cleaned_no_pct))
@@ -214,6 +217,18 @@ def parse_unit_and_type(text: str):
     low_no_pct = re.sub(r"\bper\s+cent(?:um)?\b", " _pct_ ", low)
     if re.search(r"₹|\b(?:rupees?|rs\.?|inr|crores?|lakhs?|lacs?|paisa|paise)\b", low_no_pct):
         return "MONETARY_QUANTUM", "CURRENCY_PAISA", "INR"
+    if re.search(r"\b(?:sgd|singapore\s+dollars?|s\$)\b", low_no_pct):
+        return "MONETARY_QUANTUM", "CURRENCY_CENTS", "SGD"
+    if re.search(r"\b(?:cad|canadian\s+dollars?|c\$)\b", low_no_pct):
+        return "MONETARY_QUANTUM", "CURRENCY_CENTS", "CAD"
+    if re.search(r"\b(?:aud|australian\s+dollars?|a\$)\b", low_no_pct):
+        return "MONETARY_QUANTUM", "CURRENCY_CENTS", "AUD"
+    if re.search(r"\b(?:aed|dirhams?)\b", low_no_pct):
+        return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", "AED"
+    if re.search(r"\b(?:chf|swiss\s+francs?|francs?)\b", low_no_pct):
+        return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", "CHF"
+    if re.search(r"¥|\b(?:jpy|yen)\b", low_no_pct):
+        return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", "JPY"
     if re.search(r"\$|\b(?:dollars?|usd|cents?)\b", low_no_pct):
         return "MONETARY_QUANTUM", "CURRENCY_CENTS", "USD"
     if re.search(r"€|\b(?:euros?|eur)\b", low_no_pct):
@@ -234,7 +249,7 @@ def parse_unit_and_type(text: str):
         return "TEMPORAL_DURATION", "NUMBER", "HOURS"
     if re.search(r"\b(?:form|dir|msme|3ceb|certificate|affidavit|bill|declaration|challan|schedule|return|report)\b", low):
         return "DOCUMENT_VERIFICATION", "DOCUMENT_ID", "REGISTRY_VERIFICATION"
-    if re.search(r"^\s*[\$₹€£]?\s*[\d,]+(?:\.\d+)?\s*$", low):
+    if re.search(r"^\s*[\$₹€£¥]?\s*[\d,]+(?:\.\d+)?\s*$", low):
         if "$" in low:
             return "MONETARY_QUANTUM", "CURRENCY_CENTS", "USD"
         if "₹" in low:
@@ -243,19 +258,32 @@ def parse_unit_and_type(text: str):
             return "MONETARY_QUANTUM", "CURRENCY_CENTS", "EUR"
         if "£" in low:
             return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", "GBP"
+        if "¥" in low:
+            return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", "JPY"
         return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", None
     return "BOOLEAN_FLAG", "BOOLEAN", "FLAG"
 
 
 def parse_comparison_operator(text: str):
     low = text.lower()
-    if re.search(r"\b(?:not\s+less\s+than|at\s+least|minimum\s+of|no\s+less\s+than|or\s+more|or\s+greater|or\s+above)\b", low):
+    if re.search(
+        r"\b(?:not\s+less\s+than|at\s+least|at\s+or\s+above|minimum\s+of|no\s+less\s+than|no\s+fewer\s+than|"
+        r"equal\s+to\s+or\s+(?:greater|more)\s+than|not\s+below|or\s+more|or\s+greater|or\s+above)\b",
+        low,
+    ):
         return "GTE"
-    if re.search(r"\b(?:not\s+exceeding|not\s+over|at\s+most|maximum\s+of|twelve\s+months\s+or\s+less|or\s+less|or\s+below|or\s+fewer|no\s+more\s+than)\b", low):
+    if re.search(
+        r"\b(?:not\s+exceeding|does\s+not\s+exceed|do\s+not\s+exceed|not\s+over|at\s+most|maximum\s+of|capped\s+at|"
+        r"up\s+to|equal\s+to\s+or\s+(?:less|fewer)\s+than|twelve\s+months\s+or\s+less|or\s+less|or\s+below|or\s+fewer|no\s+more\s+than)\b",
+        low,
+    ):
         return "LTE"
-    if re.search(r"\b(?:exceeding|exceeds|exceed|more\s+than|greater\s+than|in\s+excess\s+of|above|over)\b", low):
+    if re.search(
+        r"\b(?:strictly\s+greater\s+than|exceeding|exceeds|exceed|more\s+than|greater\s+than|in\s+excess\s+of|above|over)\b",
+        low,
+    ):
         return "GT"
-    if re.search(r"\b(?:less\s+than|below|under)\b", low):
+    if re.search(r"\b(?:strictly\s+less\s+than|less\s+than|fewer\s+than|falls\s+short\s+of|below|under)\b", low):
         return "LT"
     if re.search(r"\b(?:equal\s+to|equals|exactly)\b", low):
         return "EQ"
@@ -300,11 +328,14 @@ def segment_clauses(text: str, tokens: list[str], offsets: list[tuple[int, int]]
         return []
 
     ABBREV_NO_SPLIT = {
-        "rs", "no", "nos", "sl", "sec", "art", "reg", "dr", "mr", "ms", "vs", "etc", "e", "g", "i",
+        "rs", "no", "nos", "sl", "sec", "secs", "art", "arts", "reg", "regs", "sub", "cl", "para",
+        "fig", "st", "dr", "mr", "ms", "vs", "etc", "e", "g", "i", "u.s", "u.k", "inc", "ltd", "llc",
+        "co", "corp", "viz",
     }
     REF_PREFIXES = {
-        "section", "sections", "clause", "clauses", "sub-section", "subsection",
-        "paragraph", "para", "rule", "rules", "of", "under", "to", "and", "or", "table", "sl",
+        "section", "sections", "sec", "sec.", "clause", "clauses", "cl", "cl.", "sub-section",
+        "subsection", "subparagraph", "paragraph", "para", "para.", "rule", "rules", "article", "art",
+        "art.", "regulation", "reg", "reg.", "of", "under", "to", "and", "or", "table", "sl", ",",
     }
 
     raw_segments = []
@@ -319,6 +350,7 @@ def segment_clauses(text: str, tokens: list[str], offsets: list[tuple[int, int]]
             i > seg_start + 1
             and re.match(r"^\([a-zA-Z0-9ivxIVX]{1,4}\)$", tok)
             and prev_low.rstrip(".") not in REF_PREFIXES
+            and next_low not in {"and", "or", "of", ",", ";"}
         ):
             raw_segments.append((seg_start, i - 1))
             seg_start = i
@@ -496,17 +528,32 @@ def parse_minor_units(text_val: str | None) -> int | None:
     return int(round(float(qty) * 100))
 
 
+_EXTENDED_CURRENCIES = ("USD", "INR", "EUR", "GBP", "SGD", "AED", "CHF", "CAD", "AUD", "JPY")
+
+
 def infer_rule_currency_info(spans: list[dict], text: str) -> tuple[str | None, str]:
     for s in spans:
         st, dt, unit = parse_unit_and_type(s["span"])
         if st == "MONETARY_QUANTUM" and dt in ("CURRENCY_PAISA", "CURRENCY_CENTS", "CURRENCY_MINOR_UNITS"):
-            if unit in ("USD", "INR", "EUR", "GBP"):
+            if unit in _EXTENDED_CURRENCIES:
                 return unit, dt
     st, dt, unit = parse_unit_and_type(text)
-    if st == "MONETARY_QUANTUM" and unit in ("USD", "INR", "EUR", "GBP"):
+    if st == "MONETARY_QUANTUM" and unit in _EXTENDED_CURRENCIES:
         return unit, dt
     if re.search(r"₹|\b(?:rupees?|rs\.?|inr|crores?|lakhs?|lacs?|paisa|paise)\b", text, re.IGNORECASE):
         return "INR", "CURRENCY_PAISA"
+    if re.search(r"\b(?:sgd|singapore\s+dollars?|s\$)\b", text, re.IGNORECASE):
+        return "SGD", "CURRENCY_CENTS"
+    if re.search(r"\b(?:cad|canadian\s+dollars?|c\$)\b", text, re.IGNORECASE):
+        return "CAD", "CURRENCY_CENTS"
+    if re.search(r"\b(?:aud|australian\s+dollars?|a\$)\b", text, re.IGNORECASE):
+        return "AUD", "CURRENCY_CENTS"
+    if re.search(r"\b(?:aed|dirhams?)\b", text, re.IGNORECASE):
+        return "AED", "CURRENCY_MINOR_UNITS"
+    if re.search(r"\b(?:chf|swiss\s+francs?|francs?)\b", text, re.IGNORECASE):
+        return "CHF", "CURRENCY_MINOR_UNITS"
+    if re.search(r"¥|\b(?:jpy|yen)\b", text, re.IGNORECASE):
+        return "JPY", "CURRENCY_MINOR_UNITS"
     if re.search(r"€|\b(?:euros?|eur)\b", text, re.IGNORECASE):
         return "EUR", "CURRENCY_CENTS"
     if re.search(r"£|\b(?:pounds?|gbp|pence)\b", text, re.IGNORECASE):
@@ -525,12 +572,13 @@ def build_operand_fact_keys(span_text: str, currency_code: str | None) -> list[s
         "allowable", "eligible", "qualifying", "covered", "paid", "received", "payable", "above", "over",
         "under", "below", "exceed", "exceeds", "exceeding", "not", "no", "more", "than", "less", "up",
         "slice", "part", "portion", "rupees", "rupee", "dollars", "dollar", "euros", "euro", "pounds",
-        "pound", "cents", "cent", "paise", "paisa", "inr", "usd", "eur", "gbp", "lakh", "lakhs", "lac",
-        "lacs", "crore", "crores", "thousand", "million", "billion",
+        "pound", "yen", "dirham", "dirhams", "franc", "francs", "cents", "cent", "paise", "paisa",
+        "inr", "usd", "eur", "gbp", "sgd", "aed", "chf", "cad", "aud", "jpy",
+        "lakh", "lakhs", "lac", "lacs", "crore", "crores", "thousand", "million", "billion",
     }
     words = [w for w in cleaned.split() if not w.isdigit() and w not in drop_words and len(w) > 1]
     camel = _derive_fact_key_camel(span_text, "")
-    ccy_suffix = currency_code.capitalize() if currency_code in ("USD", "EUR", "GBP", "INR") else ""
+    ccy_suffix = currency_code.capitalize() if currency_code in _EXTENDED_CURRENCIES else ""
     candidates = []
     if camel:
         candidates.append(camel)

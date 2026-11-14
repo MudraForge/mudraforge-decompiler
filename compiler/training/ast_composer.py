@@ -34,6 +34,19 @@ _BASE_OPERANDS = [
     "cumulative disbursement total",
     "net operating proceeds",
     "eligible claim pool",
+    "weighted emissions quota",
+    "cross-border settlement volume",
+    "insured cargo valuation",
+    "metered throughput receipts",
+]
+
+_OOD_MODIFIERS = [
+    "adjusted", "verified", "consolidated", "deferred", "residual", "audited",
+    "primary", "marginal", "cross-border", "unencumbered", "statutory", "net",
+]
+_OOD_HEAD_NOUNS = [
+    "allocation", "receivable", "exposure", "turnover", "contribution", "consideration",
+    "tariff", "premium", "disbursement", "remittance", "reserve", "principal",
 ]
 
 _DEFINED_TERMS = [
@@ -45,6 +58,8 @@ _DEFINED_TERMS = [
     "minimum threshold",
     "eligible credit pool",
     "primary allocation",
+    "statutory cap",
+    "benchmark quota",
 ]
 
 _BOOLEAN_PREDICATES = [
@@ -58,6 +73,8 @@ _BOOLEAN_PREDICATES = [
     ("material default remains uncured", "default uncured"),
     ("board ratification is recorded", "ratification recorded"),
     ("escrow confirmation is filed", "escrow filed"),
+    ("electronic attestation is countersigned", "attestation countersigned"),
+    ("continuous residency is proven", "residency proven"),
 ]
 
 _COLLECTION_ITEMS = [
@@ -67,6 +84,8 @@ _COLLECTION_ITEMS = [
     ("registered milestones", "payable fee"),
     ("active accounts", "reserved balance"),
     ("reporting units", "assessed charge"),
+    ("shipped consignments", "declared freight"),
+    ("settled contracts", "net consideration"),
 ]
 
 _COLLECTION_BOOL_PREDS = [
@@ -81,6 +100,8 @@ _CURRENCY_RENDERS_BY_CODE = {
     "INR": [lambda k: f"₹{k:,}", lambda k: f"INR {k:,}"],
     "EUR": [lambda k: f"€{k:,}", lambda k: f"EUR {k:,}"],
     "GBP": [lambda k: f"£{k:,}", lambda k: f"GBP {k:,}"],
+    "SGD": [lambda k: f"SGD {k:,}"],
+    "CHF": [lambda k: f"CHF {k:,}"],
 }
 
 _WORD_AMOUNTS_BY_CODE = {
@@ -112,7 +133,15 @@ _CITATION_NOISE = [
     "Rule 19 table II",
     "Subdivision 8(c)",
     "Circular No. 14",
+    "Article 7(b) Note",
+    "Annex III Table 2",
 ]
+
+
+def _pick_operand_phrase(rng: random.Random) -> str:
+    if rng.random() < 0.35:
+        return f"{rng.choice(_OOD_MODIFIERS)} {rng.choice(_OOD_HEAD_NOUNS)}"
+    return rng.choice(_BASE_OPERANDS)
 
 
 def _fmt_money(rng: random.Random, major_val: int, currency: str = "USD") -> str:
@@ -137,7 +166,7 @@ class CombinatorialAstComposer:
         """
         if formulation is None:
             formulation = self.rng.choice([0, 1]) if self.rng.random() < 0.80 else self.rng.choice([2, 3])
-        ccy = self.rng.choice(["USD", "INR", "EUR", "GBP"])
+        ccy = self.rng.choice(["USD", "INR", "EUR", "GBP", "SGD", "CHF"])
 
         family = self.rng.choices(
             [
@@ -150,8 +179,9 @@ class CombinatorialAstComposer:
                 "FOLD_TO_ARITHMETIC",
                 "GATED_ARITHMETIC",
                 "MULTI_TIER_BRACKET",
+                "BRANCHED_RATES",
             ],
-            weights=[0.20, 0.13, 0.14, 0.10, 0.10, 0.08, 0.09, 0.09, 0.07],
+            weights=[0.18, 0.11, 0.13, 0.09, 0.09, 0.07, 0.09, 0.08, 0.07, 0.09],
             k=1,
         )[0]
 
@@ -171,6 +201,8 @@ class CombinatorialAstComposer:
             sample = self._gen_gated_arithmetic(formulation, currency=ccy)
         elif family == "MULTI_TIER_BRACKET":
             sample = self._gen_multi_tier_bracket(formulation, currency=ccy)
+        elif family == "BRANCHED_RATES":
+            sample = self._gen_branched_rates(formulation, currency=ccy)
         else:
             sample = self._gen_deontic_gate(formulation)
 
@@ -179,7 +211,7 @@ class CombinatorialAstComposer:
     # ── Builder 1: Depth 1..5 Composed Arithmetic (`RATE`, `EXCESS`, `SUB_CREDIT`, `MIN_CAP`, `LET`) ──
 
     def _gen_composed_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
-        op_name = self.rng.choice(_BASE_OPERANDS)
+        op_name = _pick_operand_phrase(self.rng)
         rate = self.rng.choice(_RATES)
         use_excess = self.rng.random() < 0.65
         floor_amt = _fmt_money(self.rng, self.rng.choice([5000, 12500, 25000, 50000, 120000]), currency=currency)
@@ -837,12 +869,97 @@ class CombinatorialAstComposer:
             "dag": {"kind": "MULTI_TIER_BRACKET", "tiers": 2, "depth": 4},
         }
 
-    # ── Shared Distractor Injection (`ROLE_IGNORE` + `UNIT_NONE` citations) ────────────────────
+    # ── Builder 10: Conditional & Additive Dual-Rate Expressions (`IF cond THEN r1 ELSE r2` | `r1 + r2`)
+
+    def _gen_branched_rates(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
+        op_name = _pick_operand_phrase(self.rng)
+        mode = "conditional" if self.rng.random() < 0.65 else "additive"
+        r1 = self.rng.choice(["4%", "7.5%", "12%"])
+        r2 = self.rng.choice(["18%", "22%", "28%"])
+        use_excess = self.rng.random() < 0.55
+        floor_amt = _fmt_money(self.rng, self.rng.choice([10000, 25000, 50000]), currency=currency)
+
+        if mode == "conditional":
+            pred, _ = self.rng.choice(_BOOLEAN_PREDICATES)
+            spans: list[tuple[str, str, str]] = [
+                (pred, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"),
+                (r1, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+                (op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+            ]
+            rels: list[tuple[int, int, str]] = [(1, 0, "REL_CONDITION_TO_GATE")]
+            if use_excess:
+                idx_fl = len(spans)
+                spans.append((floor_amt, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"))
+                rels.append((1, idx_fl, "REL_RATE_TO_THRESHOLD"))
+            idx_r2 = len(spans)
+            spans.append((r2, "ROLE_PENALTY_OR_DEFAULT_OVERRIDE", "UNIT_RATE"))
+            rels.append((idx_r2, 1, "REL_OVERRIDE_TO_GUARD"))
+
+            base_phrase = f"{op_name} exceeding {floor_amt}" if use_excess else op_name
+            if formulation == 0:
+                text = f"If {pred}, apply {r1} to {base_phrase}; otherwise apply {r2}."
+            elif formulation == 1:
+                text = f"Where {pred}, charge equals {r1} of {base_phrase}, failing which {r2} applies."
+            elif formulation == 2:
+                text = f"The levy on {base_phrase} is {r1} whenever {pred}, or else {r2}."
+            else:
+                text = f"Provided {pred}, assess {r1} over {base_phrase}; in default thereof impose {r2}."
+            return {
+                "stype": "V2_AST_BRANCHED_RATES",
+                "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+                "formulation": formulation,
+                "text": text,
+                "spans_with_units": spans,
+                "relations": rels,
+                "clauses": [text],
+                "dag": {"kind": "BRANCHED_RATES", "mode": "conditional", "depth": 3},
+            }
+
+        # Additive dual-rate composition (`r1(base) + r2(base)`)
+        spans = [
+            (r1, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+            (op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+            (r2, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+        ]
+        rels = [(0, 2, "REL_AGGREGATE_SUM")]
+        if use_excess:
+            spans.append((floor_amt, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"))
+            rels.append((0, 3, "REL_RATE_TO_THRESHOLD"))
+        base_phrase = f"{op_name} above {floor_amt}" if use_excess else op_name
+        if formulation == 0:
+            text = f"Total charge equals the sum of {r1} and {r2} on {base_phrase}."
+        elif formulation == 1:
+            text = f"An obligation of {r1} plus an additional {r2} applies to {base_phrase}."
+        elif formulation == 2:
+            text = f"Compute {r1} of {base_phrase} added to {r2} thereof."
+        else:
+            text = f"Both {r1} and {r2} aggregate on {base_phrase}."
+        return {
+            "stype": "V2_AST_BRANCHED_RATES",
+            "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+            "formulation": formulation,
+            "text": text,
+            "spans_with_units": spans,
+            "relations": rels,
+            "clauses": [text],
+            "dag": {"kind": "BRANCHED_RATES", "mode": "additive", "depth": 2},
+        }
+
+    # ── Shared Distractor & Fronted/Trailing Clause Variation (`ROLE_IGNORE` + `UNIT_NONE`) ───
 
     def _maybe_inject_distractor(self, sample: dict[str, Any], formulation: int) -> dict[str, Any]:
         if self.rng.random() < 0.45:
             cite = self.rng.choice(_CITATION_NOISE)
-            pfx = "Reference:" if formulation in (0, 1) else "See"
-            sample["text"] = f"{sample['text']} {pfx} {cite}."
+            if self.rng.random() < 0.50:
+                # Fronted citation preamble so spans occur at shifted sentence positions
+                lead = "Pursuant to" if formulation in (0, 1) else "Subject to"
+                sample["text"] = f"{lead} {cite}, {sample['text']}"
+                if sample.get("clauses"):
+                    sample["clauses"] = [f"{lead} {cite}, {sample['clauses'][0]}"] + sample["clauses"][1:]
+            else:
+                pfx = "Reference:" if formulation in (0, 1) else "See"
+                sample["text"] = f"{sample['text']} {pfx} {cite}."
+                if sample.get("clauses"):
+                    sample["clauses"][-1] = f"{sample['clauses'][-1]} {pfx} {cite}."
             sample["spans_with_units"].append((cite, "ROLE_IGNORE", "UNIT_NONE"))
         return sample

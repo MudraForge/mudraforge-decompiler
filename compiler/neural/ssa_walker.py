@@ -1493,6 +1493,91 @@ def compose_clause_v2(
 
     # Emit bottom-up arithmetic following topological node order
     primary_rate_bps = parsed_by_idx[rate_nodes[0]]["rateBps"] if rate_nodes else None
+    gate_consumed = False
+
+    def _detect_dual_rate_mode() -> str | None:
+        if len(rate_nodes) < 2:
+            return None
+        r1, r2 = rate_nodes[0], rate_nodes[1]
+        is_cond_fork = (
+            gate_cond_expr is not None
+            and (
+                span_by_idx[r2].get("role") == "ROLE_PENALTY_OR_DEFAULT_OVERRIDE"
+                or any(
+                    rel in ("REL_OVERRIDE_TO_GUARD", "REL_SUBSTITUTE_WHEN", "REL_EXCEPTION_TO_PROHIBITION", "REL_CONDITION_TO_GATE")
+                    and (s == r2 or t == r2 or s == r1 or t == r1)
+                    for s, t, rel in in_clause_edges
+                )
+            )
+        )
+        if is_cond_fork:
+            return "conditional"
+        if any(rel == "REL_AGGREGATE_SUM" and {s, t} <= set(rate_nodes) for s, t, rel in in_clause_edges):
+            return "additive"
+        return None
+
+    dual_rate_mode = _detect_dual_rate_mode()
+
+    def _emit_rate_application(base_expr_ref: str) -> str:
+        nonlocal gate_consumed
+        bps_0 = int(parsed_by_idx[rate_nodes[0]]["rateBps"])
+        t0 = _emit(
+            "taxAmountPaisa",
+            {
+                "op": "RATIONAL_MULTIPLY",
+                "base": base_expr_ref,
+                "rateBps": bps_0,
+                "denominator": 10000,
+            },
+            "rate-on-base",
+        )
+        node_ssa[rate_nodes[0]] = f"vars.{t0}"
+        if dual_rate_mode == "conditional":
+            bps_1 = int(parsed_by_idx[rate_nodes[1]]["rateBps"])
+            t1 = _emit(
+                "altTaxAmountPaisa",
+                {
+                    "op": "RATIONAL_MULTIPLY",
+                    "base": base_expr_ref,
+                    "rateBps": bps_1,
+                    "denominator": 10000,
+                },
+                "rate-on-base",
+            )
+            node_ssa[rate_nodes[1]] = f"vars.{t1}"
+            gate_consumed = True
+            return _emit(
+                "branchedRateTaxPaisa",
+                {
+                    "op": "CONDITIONAL",
+                    "test": gate_cond_expr,
+                    "then": f"vars.{t0}",
+                    "else": f"vars.{t1}",
+                },
+                "conditional-rate-branch",
+            )
+        if dual_rate_mode == "additive":
+            acc = t0
+            for r_extra in rate_nodes[1:]:
+                bps_e = int(parsed_by_idx[r_extra]["rateBps"])
+                te = _emit(
+                    "extraRateTaxPaisa",
+                    {
+                        "op": "RATIONAL_MULTIPLY",
+                        "base": base_expr_ref,
+                        "rateBps": bps_e,
+                        "denominator": 10000,
+                    },
+                    "rate-on-base",
+                )
+                node_ssa[r_extra] = f"vars.{te}"
+                acc = _emit(
+                    "additiveRatesTaxPaisa",
+                    {"op": "ADD", "left": f"vars.{acc}", "right": f"vars.{te}"},
+                    "additive-rate-sum",
+                )
+            return acc
+        return t0
 
     if rate_nodes and (floor_ids or sym_floor_ref is not None):
         if floor_ids:
@@ -1570,19 +1655,7 @@ def compose_clause_v2(
                 )
             base_for_rate = f"vars.{cliff_var}"
 
-        # Marginal tax = RATIONAL_MULTIPLY(base, rateBps, 10000)
-        tax_var = _emit(
-            "taxAmountPaisa",
-            {
-                "op": "RATIONAL_MULTIPLY",
-                "base": base_for_rate,
-                "rateBps": int(primary_rate_bps),
-                "denominator": 10000,
-            },
-            "rate-on-base",
-        )
-        current_var = tax_var
-        node_ssa[rate_nodes[0]] = f"vars.{tax_var}"
+        current_var = _emit_rate_application(base_for_rate)
 
         # Add explicit `REL_BASE_TAX_ADD` node if connected in graph (NO bracket regex!)
         if base_tax_ids:
@@ -1618,17 +1691,8 @@ def compose_clause_v2(
             current_var = gate_var
 
     elif rate_nodes:
-        # Flat rate over operand (or standalone monetary/defined value)
-        current_var = _emit(
-            "taxAmountPaisa",
-            {
-                "op": "RATIONAL_MULTIPLY",
-                "base": operand_ref,
-                "rateBps": int(primary_rate_bps),
-                "denominator": 10000,
-            },
-            "rate-on-base",
-        )
+        # Flat or branched rate over operand (without floor subtraction)
+        current_var = _emit_rate_application(operand_ref)
     elif floor_ids:
         # Pure value/threshold definition clause (e.g. "$4,400", "fifty lakh rupees")
         m_id = floor_ids[0]
@@ -1683,7 +1747,7 @@ def compose_clause_v2(
                 "cap",
             )
 
-    if gate_cond_expr is not None:
+    if gate_cond_expr is not None and not gate_consumed:
         zero_expr: Any = 0 if (fold_type == "INTEGER" and not rate_nodes and not money_nodes) else {"op": "TO_PAISE", "value": "0"}
         gate_key = "gatedCount" if (fold_type == "INTEGER" and not rate_nodes and not money_nodes) else "gatedResultPaisa"
         current_var = _emit(
