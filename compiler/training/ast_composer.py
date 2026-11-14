@@ -23,6 +23,8 @@ from typing import Any
 # Domain-agnostic commercial, regulatory, governance & financial nouns
 _BASE_OPERANDS = [
     "gross invoice amount",
+    "total contract value",
+    "net settlement sum",
     "qualified revenue",
     "aggregate transaction value",
     "declared collateral balance",
@@ -38,6 +40,7 @@ _BASE_OPERANDS = [
     "cross-border settlement volume",
     "insured cargo valuation",
     "metered throughput receipts",
+    "assessed settlement base",
 ]
 
 _OOD_MODIFIERS = [
@@ -47,6 +50,7 @@ _OOD_MODIFIERS = [
 _OOD_HEAD_NOUNS = [
     "allocation", "receivable", "exposure", "turnover", "contribution", "consideration",
     "tariff", "premium", "disbursement", "remittance", "reserve", "principal",
+    "amount", "value", "base", "sum",
 ]
 
 _DEFINED_TERMS = [
@@ -152,6 +156,17 @@ _CITATION_NOISE = [
     "Circular No. 14",
     "Article 7(b) Note",
     "Annex III Table 2",
+]
+
+_PERIOD_SCOPE_PHRASES = [
+    "for the taxable year",
+    "for any taxable year",
+    "during each calendar year",
+    "in the calendar year",
+    "for any fiscal year",
+    "in the reporting year",
+    "at the close of his taxable year",
+    "for such taxable period",
 ]
 
 
@@ -345,13 +360,25 @@ class CombinatorialAstComposer:
         else:
             rels.append((idx_rate, idx_op, "REL_RATE_TO_THRESHOLD"))
             if formulation == 0:
-                core_s = f"{prefix}The obligation shall equal {rate_phrase} of {op_name}"
+                core_s = f"{prefix}" + self.rng.choice([
+                    f"The obligation shall equal {rate_phrase} of {op_name}",
+                    f"Impose a withholding rate of {rate_phrase} on {op_name}",
+                ])
             elif formulation == 1:
-                core_s = f"{prefix}An assessment of {rate_phrase} applies to {op_name}"
+                core_s = f"{prefix}" + self.rng.choice([
+                    f"An assessment of {rate_phrase} applies to {op_name}",
+                    f"Levy a tax rate of {rate_phrase} on {op_name}",
+                ])
             elif formulation == 2:
-                core_s = f"{prefix}Payable amount is calculated at {rate_phrase} on {op_name}"
+                core_s = f"{prefix}" + self.rng.choice([
+                    f"Payable amount is calculated at {rate_phrase} on {op_name}",
+                    f"Apply a deduction rate of {rate_phrase} to {op_name}",
+                ])
             else:
-                core_s = f"{prefix}Every obligor shall contribute {rate_phrase} of {op_name}"
+                core_s = f"{prefix}" + self.rng.choice([
+                    f"Every obligor shall contribute {rate_phrase} of {op_name}",
+                    f"Impose a withholding rate of {rate_phrase} on {op_name}",
+                ])
 
         tail_parts: list[str] = []
         # Compose arbitrary subset & order of SUB_CREDIT vs MIN_CAP opcodes
@@ -824,11 +851,22 @@ class CombinatorialAstComposer:
             }
 
         if mode_pick < 0.45:
-            # Deontic permission + retention rate + condition + optional trailing negation exception
+            # Deontic permission + retention/withholding rate + condition + optional trailing negation exception
             actor = self.rng.choice(["The recipient", "The custodian", "An obligor", "The taxpayer"])
-            verb = self.rng.choice(["must retain", "shall retain", "must maintain"])
-            ratio_rate = self.rng.choice(["5%", "8 per cent", "10%", "15%"])
-            base_var = self.rng.choice(["turnover", "net profits", "gross receipts", "total receipts"])
+            verb = self.rng.choice([
+                "must retain",
+                "shall retain",
+                "must maintain",
+                "shall impose a withholding rate of",
+                "must levy a tax rate of",
+                "shall apply a deduction rate of",
+            ])
+            prep_op = "to" if "apply a deduction" in verb else ("on" if "rate of" in verb else self.rng.choice(["of", "on"]))
+            ratio_rate = self.rng.choice(["5%", "8 per cent", "10%", "15%", "20%"])
+            if self.rng.random() < 0.65:
+                base_var = _pick_operand_phrase(self.rng, split=self._active_split)
+            else:
+                base_var = self.rng.choice(["turnover", "net profits", "gross receipts", "total receipts"])
             neg_noun = self.rng.choice([n for n in _TRAIL_NEG_NOUNS if n not in pre_txt])
             trail_neg = self.rng.choice(_TRAIL_NEG_MARKERS)
             spans = [
@@ -845,13 +883,13 @@ class CombinatorialAstComposer:
                 (3, 0, "REL_LOGICAL_AND"),
             ]
             if formulation == 0:
-                text = f"{actor} {verb} {ratio_rate} of {base_var} if {pre_txt}, unless {neg_noun} {trail_neg}."
+                text = f"{actor} {verb} {ratio_rate} {prep_op} {base_var} if {pre_txt}, unless {neg_noun} {trail_neg}."
             elif formulation == 1:
-                text = f"{actor} {verb} at least {ratio_rate} of {base_var} provided {pre_txt} and not where {neg_noun} {trail_neg}."
+                text = f"{actor} {verb} {ratio_rate} {prep_op} {base_var} provided {pre_txt} and not where {neg_noun} {trail_neg}."
             elif formulation == 2:
-                text = f"Provided {pre_txt} and unless {neg_noun} {trail_neg}, {actor.lower()} {verb} {ratio_rate} of {base_var}."
+                text = f"Provided {pre_txt} and unless {neg_noun} {trail_neg}, {actor.lower()} {verb} {ratio_rate} {prep_op} {base_var}."
             else:
-                text = f"{actor} {verb} {ratio_rate} on {base_var} whenever {pre_txt}, except when {neg_noun} {trail_neg}."
+                text = f"{actor} {verb} {ratio_rate} {prep_op} {base_var} whenever {pre_txt}, except when {neg_noun} {trail_neg}."
             return {
                 "stype": "V2_AST_DEONTIC_GATE",
                 "modality_name": "MODALITY_DEONTIC_PERMISSION",
@@ -960,10 +998,43 @@ class CombinatorialAstComposer:
 
     def _gen_gated_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
         preds = self.rng.sample(_BOOLEAN_PREDICATES, k=2)
-        op_name = self._pick_base_operand()
+        op_name = _pick_operand_phrase(self.rng, split=self._active_split)
         rate = self.rng.choice(_RATES)
         floor_amt = _fmt_money(self.rng, self.rng.choice([8000, 20000, 45000]), currency=currency)
-        if self.rng.random() < 0.30:
+        gate_roll = self.rng.random()
+        if gate_roll < 0.28:
+            # Negated evidence gate -> withholding / tax / deduction rate on 3-word operand
+            neg_noun = self.rng.choice(_TRAIL_NEG_NOUNS)
+            trail_neg = self.rng.choice(_TRAIL_NEG_MARKERS)
+            spans_nw: list[tuple[str, str, str]] = [
+                (neg_noun, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"),
+                (trail_neg, "ROLE_PROHIBITION_GATE", "UNIT_NONE"),
+                (rate, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+                (op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+            ]
+            rels_nw: list[tuple[int, int, str]] = [
+                (1, 0, "REL_LOGICAL_NOT"),
+                (2, 3, "REL_RATE_TO_THRESHOLD"),
+            ]
+            if formulation == 0:
+                text = f"If a {neg_noun} {trail_neg}, impose a withholding rate of {rate} on {op_name}."
+            elif formulation == 1:
+                text = f"Where a {neg_noun} {trail_neg}, levy a tax rate of {rate} on {op_name}."
+            elif formulation == 2:
+                text = f"When a {neg_noun} {trail_neg}, apply a deduction rate of {rate} to {op_name}."
+            else:
+                text = f"Whenever {neg_noun} {trail_neg}, impose a withholding rate of {rate} on {op_name}."
+            return {
+                "stype": "V2_AST_GATED_ARITHMETIC",
+                "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+                "formulation": formulation,
+                "text": text,
+                "spans_with_units": spans_nw,
+                "relations": rels_nw,
+                "clauses": [text],
+                "dag": {"kind": "GATED_ARITHMETIC", "depth": 3, "gate": "NOT", "negated": True},
+            }
+        if gate_roll < 0.52:
             # Node-scoped conditional fixed surcharge: excess(base, floor) * rate + (surcharge if durationCond else 0)
             fee_amt = _fmt_money(self.rng, self.rng.choice([1200, 3500, 5000]), currency=currency)
             dur_cond = self.rng.choice([
@@ -1176,6 +1247,25 @@ class CombinatorialAstComposer:
     # ── Shared Distractor & Fronted/Trailing Clause Variation (`ROLE_IGNORE` + `UNIT_NONE`) ───
 
     def _maybe_inject_distractor(self, sample: dict[str, Any], formulation: int) -> dict[str, Any]:
+        # Inject numberless accounting/tax period nouns tagged `O` (not DEADLINE / UNIT_DURATION)
+        if self.rng.random() < 0.45:
+            period_p = self.rng.choice(_PERIOD_SCOPE_PHRASES)
+            txt = sample["text"]
+            if not txt.lstrip().startswith("(") and self.rng.random() < 0.35:
+                cap_p = period_p[0].upper() + period_p[1:]
+                sample["text"] = f"{cap_p}, {txt}"
+                if sample.get("clauses"):
+                    sample["clauses"] = [f"{cap_p}, {sample['clauses'][0]}"] + sample["clauses"][1:]
+            elif txt.endswith("."):
+                sample["text"] = f"{txt[:-1]}, {period_p}."
+                if sample.get("clauses"):
+                    last_c = sample["clauses"][-1]
+                    if last_c.endswith("."):
+                        sample["clauses"][-1] = f"{last_c[:-1]}, {period_p}."
+                    else:
+                        sample["clauses"][-1] = f"{last_c}, {period_p}"
+            else:
+                sample["text"] = f"{txt}, {period_p}"
         if self.rng.random() < 0.45:
             cite = self.rng.choice(_CITATION_NOISE)
             if self.rng.random() < 0.50:

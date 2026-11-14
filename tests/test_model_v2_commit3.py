@@ -1087,6 +1087,120 @@ class TestModelV2Commit3(unittest.TestCase):
             [(1, 0), (3, 2), (5, 4), (7, 6)],
         )
 
+    def test_v2_filters_numberless_deadline_and_generates_period_o_and_withholding_phrasings(self):
+        import torch
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.domain_sensor import DOMAIN_TOKEN_CLASSES
+        from compiler.neural.logic_reasoner import LOGIC_VOCAB
+        from compiler.neural.statutory_neural_parser import (
+            BIO_TAGS,
+            RULE_MODALITIES,
+            SPAN_UNITS,
+            V2_RELATION_TYPES,
+            V2_SEMANTIC_ROLES,
+        )
+        from compiler.training.ast_composer import CombinatorialAstComposer, _PERIOD_SCOPE_PHRASES
+
+        bio2id = {t: i for i, t in enumerate(BIO_TAGS)}
+        role2id = {t: i for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        rel2id = {t: i for i, t in enumerate(V2_RELATION_TYPES)}
+        unit2id = {t: i for i, t in enumerate(SPAN_UNITS)}
+        mod2id = {t: i for i, t in enumerate(RULE_MODALITIES)}
+        cur_lid = LOGIC_VOCAB["<CURRENCY>"]
+        num_lid = LOGIC_VOCAB["<NUM_INT>"]
+        pct_lid = LOGIC_VOCAB["<PERCENT>"]
+
+        # 1. Verify runtime filter drops numberless DEADLINE / UNIT_DURATION ('taxable year') cleanly
+        # while remapping edges across valid spans ($1,000, 5%) without index corruption.
+        class _MockDurFilterModel:
+            def __call__(self, raw_token_ids, logic_token_ids, suffix_ids, clause_spans=None, span_indices=None):
+                seq_len = int(logic_token_ids.size(1))
+                lids = logic_token_ids[0].tolist()
+                if span_indices is None:
+                    mod_logits = torch.full((1, len(RULE_MODALITIES)), -5.0)
+                    mod_logits[0, mod2id["MODALITY_COMPUTATIONAL_EXCESS"]] = 6.0
+                    bio_logits = torch.full((seq_len, len(BIO_TAGS)), -5.0)
+                    bio_logits[:, bio2id["O"]] = 4.0
+                    # Tokens 2..3 ("taxable year") falsely emitted as B-DEADLINE I-DEADLINE
+                    bio_logits[2, bio2id["O"]] = -5.0
+                    bio_logits[2, bio2id["B-DEADLINE"]] = 6.0
+                    bio_logits[3, bio2id["O"]] = -5.0
+                    bio_logits[3, bio2id["I-DEADLINE"]] = 6.0
+                    for i in range(seq_len):
+                        if i + 1 < seq_len and lids[i] == cur_lid and lids[i + 1] == num_lid:
+                            bio_logits[i, bio2id["O"]] = -5.0
+                            bio_logits[i, bio2id["B-THRESHOLD"]] = 6.0
+                            bio_logits[i + 1, bio2id["O"]] = -5.0
+                            bio_logits[i + 1, bio2id["I-THRESHOLD"]] = 6.0
+                        elif i + 1 < seq_len and lids[i] == num_lid and lids[i + 1] == pct_lid:
+                            bio_logits[i, bio2id["O"]] = -5.0
+                            bio_logits[i, bio2id["B-RATE"]] = 6.0
+                            bio_logits[i + 1, bio2id["O"]] = -5.0
+                            bio_logits[i + 1, bio2id["I-RATE"]] = 6.0
+                    dom_probs = torch.zeros((1, seq_len, len(DOMAIN_TOKEN_CLASSES)))
+                    dom_probs[0, :, 0] = 1.0
+                    return {
+                        "modality_logits": mod_logits,
+                        "clause_mod_logits": None,
+                        "bio_logits": bio_logits,
+                        "domain_probs": dom_probs,
+                        "domain_abstain_probs": torch.tensor([[0.95, 0.05]]),
+                    }
+
+                n = len(span_indices)  # 3 spans: ['taxable year', '$1,000', '5%']
+                role_logits = torch.full((n, len(V2_SEMANTIC_ROLES)), -5.0)
+                unit_logits = torch.full((n, len(SPAN_UNITS)), -5.0)
+                rel_logits = torch.full((n, n, len(V2_RELATION_TYPES)), -5.0)
+                rel_logits[:, :, rel2id["REL_NO_EDGE"]] = 2.0
+                # Span 0: 'taxable year' -> DEADLINE / UNIT_DURATION
+                role_logits[0, role2id["ROLE_DEADLINE_WINDOW"]] = 6.0
+                unit_logits[0, unit2id["UNIT_DURATION"]] = 6.0
+                # Span 1: '$1,000' -> EXCESS_THRESHOLD / UNIT_MONEY
+                role_logits[1, role2id["ROLE_TRANSACTION_EXCESS_THRESHOLD"]] = 6.0
+                unit_logits[1, unit2id["UNIT_MONEY"]] = 6.0
+                # Span 2: '5%' -> RATE / UNIT_RATE -> REL_RATE_TO_THRESHOLD -> span 1
+                role_logits[2, role2id["ROLE_STANDARD_STATUTORY_RATE"]] = 6.0
+                unit_logits[2, unit2id["UNIT_RATE"]] = 6.0
+                rel_logits[2, 1, rel2id["REL_NO_EDGE"]] = -2.0
+                rel_logits[2, 1, rel2id["REL_RATE_TO_THRESHOLD"]] = 8.0
+                return {"role_logits": role_logits, "unit_logits": unit_logits, "rel_logits": rel_logits}
+
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.architecture_version = "v2"
+        decompiler.model = _MockDurFilterModel()
+        decompiler.vocab = {"<PAD>": 0, "<UNK>": 1}
+        decompiler.bio2id = bio2id
+        decompiler.id2bio = {i: t for i, t in enumerate(BIO_TAGS)}
+        decompiler.id2role = {i: t for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        decompiler.id2rel = {i: t for i, t in enumerate(V2_RELATION_TYPES)}
+        decompiler.id2unit = {i: t for i, t in enumerate(SPAN_UNITS)}
+        decompiler.id2mod = {i: t for i, t in enumerate(RULE_MODALITIES)}
+        decompiler.id2dom = {i: t for i, t in enumerate(DOMAIN_TOKEN_CLASSES)}
+        decompiler.transition_mask = torch.zeros((len(BIO_TAGS), len(BIO_TAGS)), dtype=torch.float32)
+
+        res = decompiler.decompile_text("For any taxable year, exceeding $1,000 bears 5%.")
+        self.assertEqual(res["status"], "SUCCESS", f"Expected compile after dropping numberless duration: {res}")
+        self.assertEqual([sp["span"] for sp in res["classifiedSpans"]], ["$1,000", "5%"])
+        self.assertEqual([(e["sourceIdx"], e["targetIdx"]) for e in res["relationalEdges"]], [(1, 0)])
+
+        # 2. Verify composer generates numberless period phrases tagged O and withholding-rate phrases
+        comp = CombinatorialAstComposer(seed=77)
+        saw_period_o = False
+        saw_withholding_rate = False
+        for _ in range(300):
+            s = comp.sample_rule(split="train")
+            txt_low = s["text"].lower()
+            span_strs = {sp[0].lower() for sp in s["spans_with_units"]}
+            if any(p in txt_low for p in _PERIOD_SCOPE_PHRASES) and not any(
+                "taxable year" in sp or "calendar year" in sp or "fiscal year" in sp for sp in span_strs
+            ):
+                saw_period_o = True
+            if "withholding rate of" in txt_low or "tax rate of" in txt_low or "deduction rate of" in txt_low:
+                saw_withholding_rate = True
+        self.assertTrue(saw_period_o)
+        self.assertTrue(saw_withholding_rate)
+
 
 if __name__ == "__main__":
     unittest.main()

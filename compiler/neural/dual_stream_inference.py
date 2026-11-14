@@ -368,8 +368,29 @@ class DualStreamDecompilerInference:
             classified_spans.append(entry)
 
         if self.architecture_version == "v2":
-            # v2 BIO boundaries are trained end-to-end without legacy stitch heuristics
-            old_to_new_span_idx = {i: i for i in range(len(classified_spans))}
+            # v2 BIO boundaries are trained end-to-end without legacy stitch heuristics;
+            # guard against digitless/numberless period nouns misclassified as DEADLINE / UNIT_DURATION.
+            kept_spans = []
+            old_to_new_span_idx = {}
+            for i, entry in enumerate(classified_spans):
+                is_dur = entry.get("bioType") == "DEADLINE" or entry.get("unit") == "UNIT_DURATION"
+                if is_dur and parse_numeric_quantity(entry.get("span", "")) is None:
+                    old_to_new_span_idx[i] = -1
+                else:
+                    old_to_new_span_idx[i] = len(kept_spans)
+                    kept_spans.append(entry)
+            classified_spans = kept_spans
+            if not classified_spans:
+                return {
+                    "abstained": True,
+                    "pred_modality": pred_modality,
+                    "modality_conf": modality_conf,
+                    "dom_abstain_prob": dom_abstain_prob,
+                    "domain_signals": domain_signals,
+                    "clause_modalities": clause_modalities,
+                    "classified_spans": [],
+                    "rel_edges": [],
+                }
         else:
             stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
             for curr_copy in stitched_spans:
