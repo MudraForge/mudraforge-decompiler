@@ -802,6 +802,115 @@ class TestModelV2Commit3(unittest.TestCase):
         self.assertIn("relationalEdges", out_fail)
         self.assertNotIn("relationEdges", out_fail)
 
+    def test_v2_decode_dag_relations_prunes_two_cycles_and_longer_cycles(self):
+        import torch
+        from compiler.neural.inference_v2 import decode_dag_relations_v2
+        from compiler.neural.statutory_neural_parser import RELATION_TYPES, ID2REL, REL2ID
+
+        n_rels = len(RELATION_TYPES)
+        logits = torch.full((3, 3, n_rels), -5.0)
+        logits[:, :, 0] = 0.0  # REL_NO_EDGE baseline
+
+        r_and = REL2ID["REL_LOGICAL_AND"]
+        r_or = REL2ID["REL_LOGICAL_OR"]
+        # Self-loop 0->0
+        logits[0, 0, r_and] = 10.0
+        # 2-cycle: 0->1 (margin 8.0) vs 1->0 (margin 2.0) -> keep 0->1, drop 1->0
+        logits[0, 1, r_and] = 8.0
+        logits[1, 0, r_and] = 2.0
+        # 3-cycle: 0->1 (8.0), 1->2 (6.0), 2->0 (1.5) -> drop weakest edge 2->0
+        logits[1, 2, r_or] = 6.0
+        logits[2, 0, r_and] = 1.5
+
+        preds = decode_dag_relations_v2(logits, id2rel=ID2REL)
+        self.assertEqual(preds[0][0], 0)
+        self.assertEqual(preds[0][1], r_and)
+        self.assertEqual(preds[1][0], 0)
+        self.assertEqual(preds[1][2], r_or)
+        self.assertEqual(preds[2][0], 0)
+
+    def test_v2_deontic_rate_without_edge_fails_closed_err_no_base_operand(self):
+        from compiler.neural.inference_v2 import synthesize_usvm_ast_v2
+        from compiler.neural.ssa_walker import V2LoweringError
+
+        text = "The recipient must retain 5% of turnover if compliance certificate is valid."
+        spans = [
+            {"spanIdx": 0, "clauseIdx": 0, "span": "5%", "role": "ROLE_STANDARD_STATUTORY_RATE", "unit": "UNIT_RATE", "charRange": [25, 27]},
+            {"spanIdx": 1, "clauseIdx": 0, "span": "turnover", "role": "ROLE_COMPUTATION_OPERAND", "unit": "UNIT_SYMBOL_VAR", "charRange": [31, 39]},
+            {"spanIdx": 2, "clauseIdx": 0, "span": "compliance certificate is valid", "role": "ROLE_AGENT_STATE_PRECONDITION", "unit": "UNIT_BOOL_PREDICATE", "charRange": [43, 74]},
+        ]
+        with self.assertRaises(V2LoweringError) as ctx:
+            synthesize_usvm_ast_v2(
+                text=text,
+                spans=spans,
+                edges=[],
+                clause_modalities=[{"clauseIdx": 0, "charRange": [0, len(text)], "modality": "MODALITY_DEONTIC_PERMISSION"}],
+                dominant_modality="MODALITY_DEONTIC_PERMISSION",
+            )
+        self.assertIn("ERR_NO_BASE_OPERAND", str(ctx.exception))
+
+    def test_v2_domain_sensor_targets_exceeds_connective_and_iso_currency(self):
+        from compiler.neural.domain_sensor import DOMAIN_CLASS2ID, derive_domain_token_targets
+        from compiler.neural.statutory_neural_parser import ROLE2ID, MODALITY2ID, ID2ROLE
+        from compiler.neural.tokenizer import tokenize_with_offsets
+
+        text = "Where delay exceeds 90 days and payment exceeds EUR 5,000"
+        tokens, offsets = tokenize_with_offsets(text)
+        # Put "exceeds 90 days" inside ROLE_DEADLINE_WINDOW (indices 2..4) and "EUR 5,000" outside spans
+        ex_idx = tokens.index("exceeds")
+        day_idx = tokens.index("days")
+        targets, abstain = derive_domain_token_targets(
+            raw_text=text,
+            tokens=tokens,
+            offsets=offsets,
+            span_boundaries=[(ex_idx, day_idx)],
+            role_labels=[ROLE2ID["ROLE_DEADLINE_WINDOW"]],
+            modality_id=MODALITY2ID["MODALITY_COMPUTATIONAL_EXCESS"],
+            id2role=ID2ROLE,
+        )
+        self.assertEqual(abstain, 0)
+        for idx, tok in enumerate(tokens):
+            if tok == "exceeds":
+                self.assertEqual(targets[idx], DOMAIN_CLASS2ID["DT_STRUCTURAL_CONNECTIVE"])
+            elif tok == "90":
+                self.assertEqual(targets[idx], DOMAIN_CLASS2ID["DT_TEMPORAL_CUTOFF"])
+            elif tok in ("EUR", "5,000"):
+                self.assertEqual(targets[idx], DOMAIN_CLASS2ID["DT_MONETARY_AMOUNT"])
+
+    def test_v2_viterbi_binds_iso_currency_and_per_cent(self):
+        import torch
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.statutory_neural_parser import BIO_TAGS
+
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.bio2id = {t: i for i, t in enumerate(BIO_TAGS)}
+        decompiler.id2bio = {i: t for i, t in enumerate(BIO_TAGS)}
+        decompiler.transition_mask = torch.zeros((len(BIO_TAGS), len(BIO_TAGS)), dtype=torch.float32)
+
+        tokens = ["EUR", "5,000", "and", "8", "per", "cent"]
+        logits = torch.full((len(tokens), len(BIO_TAGS)), -10.0)
+        b_th = decompiler.bio2id["B-THRESHOLD"]
+        i_th = decompiler.bio2id["I-THRESHOLD"]
+        b_rt = decompiler.bio2id["B-RATE"]
+        i_rt = decompiler.bio2id["I-RATE"]
+        o_id = decompiler.bio2id["O"]
+
+        # Even if raw emission prefers O or B-THRESHOLD on 5,000 and O on per/cent, Viterbi forces continuation
+        logits[0, b_th] = 5.0
+        logits[1, b_th] = 4.0
+        logits[1, i_th] = 1.0
+        logits[2, o_id] = 5.0
+        logits[3, b_rt] = 5.0
+        logits[4, o_id] = 4.0
+        logits[4, i_rt] = 1.0
+        logits[5, o_id] = 4.0
+        logits[5, i_rt] = 1.0
+
+        pred_ids = decompiler._viterbi_decode(logits, tokens)
+        pred_tags = [decompiler.id2bio[i] for i in pred_ids]
+        self.assertEqual(pred_tags, ["B-THRESHOLD", "I-THRESHOLD", "O", "B-RATE", "I-RATE", "I-RATE"])
+
 
 if __name__ == "__main__":
     unittest.main()

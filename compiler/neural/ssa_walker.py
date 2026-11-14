@@ -1538,16 +1538,23 @@ def compose_clause_v2(
             pv_r = parsed_by_idx[r_id]
             sym_ids = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "SYMBOL"]
             base_sid = next(
-                (t for s, t, rel in in_clause_edges if s == r_id and rel == "REL_RATE_TO_THRESHOLD" and parsed_by_idx[t]["kind"] == "SYMBOL"),
+                (t for s, t, rel in in_clause_edges if s == r_id and rel in ("REL_RATE_TO_THRESHOLD", "REL_APPLIED_TO_BASE") and parsed_by_idx[t]["kind"] == "SYMBOL"),
                 None,
             )
+            if base_sid is None:
+                base_sid = next(
+                    (s for s, t, rel in in_clause_edges if t == r_id and rel == "REL_APPLIED_TO_BASE" and parsed_by_idx[s]["kind"] == "SYMBOL"),
+                    None,
+                )
             if base_sid is not None:
                 op_key = parsed_by_idx[base_sid]["key"]
                 inputs.setdefault(op_key, {"type": "MONEY_MINOR", "currency": ccy})
                 op_ref = f"inputs.{op_key}"
                 consumed_ids.add(base_sid)
             else:
-                op_ref, op_key = _resolve_operand_expr()
+                raise V2LoweringError(
+                    "ERR_NO_BASE_OPERAND: rate span in deontic clause lacks connecting edge to base operand"
+                )
             subj_sid = next((sid for sid in sym_ids if parsed_by_idx[sid]["key"] != op_key), None)
             if subj_sid is not None:
                 subj_key = parsed_by_idx[subj_sid]["key"]
@@ -1567,6 +1574,11 @@ def compose_clause_v2(
         elif money_nodes:
             m_id = money_nodes[0]
             pv_m = parsed_by_idx[m_id]
+            has_edge = any(s == m_id or t == m_id for s, t, _ in in_clause_edges)
+            if not has_edge:
+                raise V2LoweringError(
+                    "ERR_NO_BASE_OPERAND: threshold span in deontic clause lacks connecting edge to target operand"
+                )
             op_ref, _ = _resolve_operand_expr()
             _register_atom(m_id, {"op": pv_m["cmpOp"], "left": op_ref, "right": {"op": "TO_PAISE", "value": str(pv_m["minor"])}})
             consumed_ids.add(m_id)
@@ -1756,6 +1768,22 @@ def compose_clause_v2(
 
     if clause_modality == "MODALITY_COMPUTATIONAL_EXCESS" and rate_nodes and not floor_ids and sym_floor_ref is None:
         raise V2LoweringError("ERR_NO_THRESHOLD: MODALITY_COMPUTATIONAL_EXCESS clause lacks connected floor threshold")
+
+    comp_sym_ids = [sid for sid in topo_ids if parsed_by_idx[sid]["kind"] == "SYMBOL"]
+    for r_id in rate_nodes:
+        if not any(s == r_id or t == r_id for s, t, _ in in_clause_edges):
+            raise V2LoweringError(
+                f"ERR_UNCONSUMED_SPAN: rate span at index {r_id} lacks required connecting edge"
+            )
+    if rate_nodes and len(money_nodes) >= 1 and comp_sym_ids:
+        for m_id in money_nodes:
+            if (
+                span_by_idx[m_id].get("role") in ("ROLE_TRANSACTION_EXCESS_THRESHOLD", "ROLE_TRANSACTION_CLIFF_THRESHOLD")
+                and not any(s == m_id or t == m_id for s, t, _ in in_clause_edges)
+            ):
+                raise V2LoweringError(
+                    f"ERR_UNCONSUMED_SPAN: threshold span at index {m_id} lacks required connecting edge"
+                )
 
     # Emit bottom-up arithmetic following topological node order
     primary_rate_bps = parsed_by_idx[rate_nodes[0]]["rateBps"] if rate_nodes else None

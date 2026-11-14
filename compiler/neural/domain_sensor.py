@@ -254,17 +254,40 @@ def derive_domain_token_targets(
                 else:
                     targets[t_i] = DOMAIN_CLASS2ID["DT_MONETARY_AMOUNT"]
             elif r_name in ("ROLE_TEMPORAL_CUTOVER_DATE", "ROLE_TEMPORAL_SUNSET_DATE", "ROLE_DEADLINE_WINDOW"):
-                targets[t_i] = DOMAIN_CLASS2ID["DT_TEMPORAL_CUTOFF"]
+                if tok_low in ("exceed", "exceeds", "exceeded", "exceeding", "over", "above", "under", "below", "not", "no", "up", "to", "less", "more", "than", "at", "most", "least"):
+                    targets[t_i] = DOMAIN_CLASS2ID["DT_STRUCTURAL_CONNECTIVE"]
+                else:
+                    targets[t_i] = DOMAIN_CLASS2ID["DT_TEMPORAL_CUTOFF"]
             elif r_name == "ROLE_REQUIRED_EVIDENCE":
                 targets[t_i] = DOMAIN_CLASS2ID["DT_DOCUMENT_EVIDENCE"]
             elif r_name == "ROLE_ACCOUNTING_DESTINATION":
                 targets[t_i] = DOMAIN_CLASS2ID["DT_ACCOUNTING_DEST"]
 
-    # Invariant: Numbers preceded or accompanied by currency symbols or relational comparators are DT_MONETARY_AMOUNT, NEVER citation ignore
+    # Invariant: Comparative threshold verbs remain DT_STRUCTURAL_CONNECTIVE, never DT_TEMPORAL_CUTOFF
     for t_i, tok in enumerate(tokens):
-        if tok in ("$", "₹", "€", "£") or any(ch.isdigit() for ch in tok):
-            prev_tok = tokens[t_i - 1].lower() if t_i > 0 else ""
-            if tok in ("$", "₹", "€", "£") or prev_tok in ("$", "₹", "€", "£", "exceeds", "exceeding", "over", "above", "under", "below"):
+        if tok.lower() in ("exceed", "exceeds", "exceeded", "exceeding", "over", "above", "under", "below", "less", "more", "than"):
+            targets[t_i] = DOMAIN_CLASS2ID["DT_STRUCTURAL_CONNECTIVE"]
+
+    # Invariant: Numbers preceded or accompanied by currency tokens (or non-duration/non-rate comparators) are DT_MONETARY_AMOUNT
+    _currency_toks = {"$","₹","€","£","¥","usd","inr","eur","gbp","sgd","aed","chf","cad","aud","jpy","rs","rs."}
+    _non_money_units = {"day","days","month","months","year","years","week","weeks","%","percent","per","percentum","bps"}
+    for t_i, tok in enumerate(tokens):
+        tok_low = tok.lower()
+        prev_tok = tokens[t_i - 1].lower() if t_i > 0 else ""
+        next_tok = tokens[t_i + 1].lower() if t_i + 1 < n_tok else ""
+        has_digit = any(ch.isdigit() for ch in tok)
+        if tok_low in _currency_toks and (
+            (t_i + 1 < n_tok and any(ch.isdigit() for ch in tokens[t_i + 1]))
+            or (t_i > 0 and any(ch.isdigit() for ch in tokens[t_i - 1]))
+            or tok in ("$", "₹", "€", "£", "¥")
+        ):
+            targets[t_i] = DOMAIN_CLASS2ID["DT_MONETARY_AMOUNT"]
+        elif has_digit and prev_tok in _currency_toks:
+            targets[t_i] = DOMAIN_CLASS2ID["DT_MONETARY_AMOUNT"]
+        elif has_digit and next_tok in _currency_toks:
+            targets[t_i] = DOMAIN_CLASS2ID["DT_MONETARY_AMOUNT"]
+        elif has_digit and prev_tok in ("exceeds", "exceeding", "over", "above", "under", "below"):
+            if next_tok not in _non_money_units and targets[t_i] != DOMAIN_CLASS2ID["DT_TEMPORAL_CUTOFF"] and targets[t_i] != DOMAIN_CLASS2ID["DT_PERCENT_RATE"]:
                 targets[t_i] = DOMAIN_CLASS2ID["DT_MONETARY_AMOUNT"]
 
     return targets, 0

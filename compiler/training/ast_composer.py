@@ -110,8 +110,25 @@ _WORD_AMOUNTS_BY_CODE = {
 }
 
 _RATES = [
-    "0.5%", "1.5%", "2%", "4%", "7.5%", "12%", "18%", "25%", "28%",
-    "3 percent", "8 per cent", "15 percent", "22 per cent",
+    "0.5%", "1.5%", "2%", "4%", "5%", "7.5%", "12%", "18%", "25%", "28%",
+    "3 percent", "5 per cent", "8 per cent", "12 per cent", "15 percent", "22 per cent",
+]
+
+_TRAIL_NEG_NOUNS = [
+    "verification report",
+    "compliance certificate",
+    "audit attestation",
+    "clearance record",
+    "escrow confirmation",
+    "tax certificate",
+    "statutory declaration",
+]
+
+_TRAIL_NEG_MARKERS = [
+    "is absent",
+    "is missing",
+    "is unavailable",
+    "is lacking",
 ]
 
 _DURATIONS = [
@@ -181,7 +198,7 @@ class CombinatorialAstComposer:
                 "MULTI_TIER_BRACKET",
                 "BRANCHED_RATES",
             ],
-            weights=[0.18, 0.11, 0.13, 0.09, 0.09, 0.07, 0.09, 0.08, 0.07, 0.09],
+            weights=[0.16, 0.10, 0.13, 0.12, 0.08, 0.12, 0.08, 0.08, 0.06, 0.07],
             k=1,
         )[0]
 
@@ -272,7 +289,7 @@ class CombinatorialAstComposer:
             else:
                 core_s = f"{prefix}A party shall remit {rate_phrase} of {op_name} {rel_join}"
         else:
-            rels.append((idx_rate, idx_op, "REL_APPLIED_TO_BASE"))
+            rels.append((idx_rate, idx_op, "REL_RATE_TO_THRESHOLD"))
             if formulation == 0:
                 core_s = f"{prefix}The obligation shall equal {rate_phrase} of {op_name}"
             elif formulation == 1:
@@ -455,14 +472,38 @@ class CombinatorialAstComposer:
         neg_edges: list[tuple[int, int]] = []
         for i, (p_text, _) in enumerate(preds):
             if neg_mask[i]:
-                neg_tok = neg_markers[i % len(neg_markers)]
-                idx_neg = len(spans)
-                spans.append((neg_tok, "ROLE_PROHIBITION_GATE", "UNIT_NONE"))
-                idx_p = len(spans)
-                spans.append((p_text, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"))
-                pred_indices.append(idx_p)
-                neg_edges.append((idx_neg, idx_p))
-                pred_clauses.append(f"it is {neg_tok} {p_text}")
+                if self.rng.random() < 0.50:
+                    if " is " in p_text:
+                        noun_p = p_text.split(" is ", 1)[0].strip()
+                    else:
+                        noun_p = self.rng.choice(_TRAIL_NEG_NOUNS)
+                    if self.rng.random() < 0.30:
+                        neg_tok = "without"
+                        idx_neg = len(spans)
+                        spans.append((neg_tok, "ROLE_PROHIBITION_GATE", "UNIT_NONE"))
+                        idx_p = len(spans)
+                        spans.append((noun_p, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"))
+                        pred_indices.append(idx_p)
+                        neg_edges.append((idx_neg, idx_p))
+                        pred_clauses.append(f"{neg_tok} {noun_p}")
+                    else:
+                        neg_tok = self.rng.choice(_TRAIL_NEG_MARKERS)
+                        idx_p = len(spans)
+                        spans.append((noun_p, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"))
+                        idx_neg = len(spans)
+                        spans.append((neg_tok, "ROLE_PROHIBITION_GATE", "UNIT_NONE"))
+                        pred_indices.append(idx_p)
+                        neg_edges.append((idx_neg, idx_p))
+                        pred_clauses.append(f"{noun_p} {neg_tok}")
+                else:
+                    neg_tok = neg_markers[i % len(neg_markers)]
+                    idx_neg = len(spans)
+                    spans.append((neg_tok, "ROLE_PROHIBITION_GATE", "UNIT_NONE"))
+                    idx_p = len(spans)
+                    spans.append((p_text, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"))
+                    pred_indices.append(idx_p)
+                    neg_edges.append((idx_neg, idx_p))
+                    pred_clauses.append(f"it is {neg_tok} {p_text}")
             else:
                 idx_p = len(spans)
                 spans.append((p_text, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"))
@@ -491,12 +532,17 @@ class CombinatorialAstComposer:
         if idx_def is not None:
             rels.append((idx_def, pred_indices[0], "REL_DEFINED_TERM_OF"))
 
-        # Inject a contrast duration/count clause in 40% of boolean rules so numbers don't trigger TO_PAISE
+        # Inject a contrast duration/count clause in 50% of boolean rules so numbers don't trigger TO_PAISE
         contrast = ""
-        if self.rng.random() < 0.40:
-            dur = self.rng.choice(_DURATIONS)
-            spans.append((dur, "ROLE_COUNT_QUANTIFIER", "UNIT_DURATION"))
-            contrast = f" throughout {dur}"
+        if self.rng.random() < 0.50:
+            if self.rng.random() < 0.60:
+                cnt = self.rng.choice(_COUNTS)
+                spans.append((cnt, "ROLE_COUNT_QUANTIFIER", "UNIT_COUNT"))
+                contrast = f" across {cnt}"
+            else:
+                dur = self.rng.choice(_DURATIONS)
+                spans.append((dur, "ROLE_COUNT_QUANTIFIER", "UNIT_DURATION"))
+                contrast = f" throughout {dur}"
 
         if use_def:
             if formulation == 0:
@@ -579,9 +625,15 @@ class CombinatorialAstComposer:
                     )
                 else:
                     text = (
-                        f"Every record in {coll_name} shall demonstrate {pred_text}."
+                        self.rng.choice([
+                            f"Every record in {coll_name} shall demonstrate {pred_text}.",
+                            f"All {coll_name} must maintain {pred_text}.",
+                        ])
                         if formulation in (0, 1)
-                        else f"All {coll_name} must maintain {pred_text}."
+                        else self.rng.choice([
+                            f"All {coll_name} must maintain {pred_text}.",
+                            f"Every entity in {coll_name} must uphold {pred_text}.",
+                        ])
                     )
             else:
                 rels.append((0, 1, "REL_QUANTIFIER_EXISTS"))
@@ -675,7 +727,7 @@ class CombinatorialAstComposer:
         ])
         mode_pick = self.rng.random()
 
-        if mode_pick < 0.30:
+        if mode_pick < 0.25:
             # Quantitative ratio + duration + boolean deontic gate (unseen compound rule coverage)
             subj_var = self.rng.choice(["Qualifying reserve", "Liquidity buffer", "Statutory escrow"])
             base_var = self.rng.choice(["net profits", "total exposure", "gross receipts"])
@@ -717,7 +769,47 @@ class CombinatorialAstComposer:
                 "dag": {"kind": "DEONTIC_QUANT_GATE", "prohibition": True, "depth": len(spans)},
             }
 
-        is_prohib = mode_pick < 0.65
+        if mode_pick < 0.45:
+            # Deontic permission + retention rate + condition + optional trailing negation exception
+            actor = self.rng.choice(["The recipient", "The custodian", "An obligor", "The taxpayer"])
+            verb = self.rng.choice(["must retain", "shall retain", "must maintain"])
+            ratio_rate = self.rng.choice(["5%", "8 per cent", "10%", "15%"])
+            base_var = self.rng.choice(["turnover", "net profits", "gross receipts", "total receipts"])
+            neg_noun = self.rng.choice([n for n in _TRAIL_NEG_NOUNS if n not in pre_txt])
+            trail_neg = self.rng.choice(_TRAIL_NEG_MARKERS)
+            spans = [
+                (ratio_rate, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+                (base_var, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+                (pre_txt, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"),
+                (neg_noun, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"),
+                (trail_neg, "ROLE_PROHIBITION_GATE", "UNIT_NONE"),
+            ]
+            rels = [
+                (0, 1, "REL_RATE_TO_THRESHOLD"),
+                (2, 0, "REL_CONDITION_TO_GATE"),
+                (4, 3, "REL_LOGICAL_NOT"),
+                (3, 0, "REL_LOGICAL_AND"),
+            ]
+            if formulation == 0:
+                text = f"{actor} {verb} {ratio_rate} of {base_var} if {pre_txt}, unless {neg_noun} {trail_neg}."
+            elif formulation == 1:
+                text = f"{actor} {verb} at least {ratio_rate} of {base_var} provided {pre_txt} and not where {neg_noun} {trail_neg}."
+            elif formulation == 2:
+                text = f"Provided {pre_txt} and unless {neg_noun} {trail_neg}, {actor.lower()} {verb} {ratio_rate} of {base_var}."
+            else:
+                text = f"{actor} {verb} {ratio_rate} on {base_var} whenever {pre_txt}, except when {neg_noun} {trail_neg}."
+            return {
+                "stype": "V2_AST_DEONTIC_GATE",
+                "modality_name": "MODALITY_DEONTIC_PERMISSION",
+                "formulation": formulation,
+                "text": text,
+                "spans_with_units": spans,
+                "relations": rels,
+                "clauses": [text],
+                "dag": {"kind": "DEONTIC_PERMISSION_RATE", "prohibition": False, "depth": len(spans)},
+            }
+
+        is_prohib = mode_pick < 0.72
 
         if is_prohib:
             spans = [

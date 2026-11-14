@@ -230,6 +230,8 @@ def _remap_v2_relation(rel_name: str, src_txt: str, tgt_txt: str, full_text: str
             return "REL_AGGREGATE_COUNT"
     if stype == "TEMPORAL_SUBSTITUTION_OVERRIDE_STYLE" and rel_name == "REL_EXCEPTION_TO_PROHIBITION":
         return "REL_SUBSTITUTE_WHEN"
+    if rel_name == "REL_APPLIED_TO_BASE":
+        return "REL_RATE_TO_THRESHOLD"
     return rel_name
 
 OPEN_CLASS_NOUNS = {

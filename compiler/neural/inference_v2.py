@@ -104,6 +104,120 @@ def apply_type_compatibility_mask(
     return rel_logits + mask
 
 
+def _find_directed_cycle(n: int, edges: dict[tuple[int, int], tuple[int, int, int, float]]) -> list[tuple[int, int]] | None:
+    """Return a list of directed graph keys (u, v) forming one cycle, or None if acyclic."""
+    adj: list[list[int]] = [[] for _ in range(n)]
+    for (u, v) in sorted(edges):
+        adj[u].append(v)
+
+    state = [0] * n  # 0=unvisited, 1=visiting, 2=visited
+    parent: dict[int, int] = {}
+
+    def dfs(u: int) -> list[tuple[int, int]] | None:
+        state[u] = 1
+        for v in adj[u]:
+            if state[v] == 1:
+                cycle = [(u, v)]
+                cur = u
+                while cur != v and cur in parent:
+                    prev = parent[cur]
+                    cycle.append((prev, cur))
+                    cur = prev
+                return cycle
+            if state[v] == 0:
+                parent[v] = u
+                res = dfs(v)
+                if res is not None:
+                    return res
+        state[u] = 2
+        return None
+
+    for node in range(n):
+        if state[node] == 0:
+            res = dfs(node)
+            if res is not None:
+                return res
+    return None
+
+
+def decode_dag_relations_v2(
+    rel_logits: torch.Tensor,
+    id2rel: dict[int, str] | None = None,
+) -> list[list[int]]:
+    """Decode an (N, N, R) relation logit tensor into an anti-symmetric DAG prediction matrix.
+
+    Enforces:
+    1. No self-loops (i == i -> 0).
+    2. Anti-symmetry across pairs: if both i->j and j->i predict non-zero relations,
+       keep only the direction with larger positive margin (logit[r] - logit[0]).
+    3. Acyclicity across both V2_EDGE_DIRECTION evaluation dependencies and raw directed
+       edges: iteratively drop the lowest-margin edge on any residual cycle.
+    """
+    if rel_logits is None or rel_logits.numel() == 0:
+        return []
+    n = int(rel_logits.size(0))
+    if n == 0:
+        return []
+
+    from .ssa_walker import V2_EDGE_DIRECTION
+
+    logits_cpu = rel_logits.detach().cpu()
+    preds: list[list[int]] = logits_cpu.argmax(dim=-1).tolist()
+
+    for i in range(n):
+        preds[i][i] = 0
+
+    def _margin(s: int, t: int, rid: int) -> float:
+        return float(logits_cpu[s, t, rid].item() - logits_cpu[s, t, 0].item())
+
+    # 1. Anti-symmetry: resolve any bidirectional 2-cycle (i->j and j->i)
+    for i in range(n):
+        for j in range(i + 1, n):
+            ri = preds[i][j]
+            rj = preds[j][i]
+            if ri != 0 and rj != 0:
+                mi = _margin(i, j, ri)
+                mj = _margin(j, i, rj)
+                if mi >= mj:
+                    preds[j][i] = 0
+                else:
+                    preds[i][j] = 0
+
+    # 2. Break any longer cycles on either V2_EDGE_DIRECTION eval graph or raw directed graph
+    while True:
+        eval_edges: dict[tuple[int, int], tuple[int, int, int, float]] = {}
+        raw_edges: dict[tuple[int, int], tuple[int, int, int, float]] = {}
+        for s in range(n):
+            for t in range(n):
+                rid = preds[s][t]
+                if rid == 0 or s == t:
+                    continue
+                m = _margin(s, t, rid)
+                raw_edges[(s, t)] = (s, t, rid, m)
+                rel_name = id2rel.get(rid, "REL_NO_EDGE") if id2rel else str(rid)
+                direction = V2_EDGE_DIRECTION.get(rel_name, "independent")
+                if direction == "source_before_target":
+                    eval_edges[(s, t)] = (s, t, rid, m)
+                elif direction == "target_before_source":
+                    eval_edges[(t, s)] = (s, t, rid, m)
+
+        cyc = _find_directed_cycle(n, eval_edges)
+        graph_used = eval_edges
+        if cyc is None:
+            cyc = _find_directed_cycle(n, raw_edges)
+            graph_used = raw_edges
+        if cyc is None:
+            break
+
+        weakest = min(
+            (graph_used[k] for k in cyc),
+            key=lambda item: (item[3], -item[0], -item[1]),
+        )
+        preds[weakest[0]][weakest[1]] = 0
+
+    return preds
+
+
 def synthesize_usvm_ast_v2(
     text: str,
     spans: list[dict],

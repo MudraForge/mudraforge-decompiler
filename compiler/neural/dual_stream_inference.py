@@ -40,9 +40,16 @@ from .literals import (
 )
 from .inference_v2 import (
     apply_type_compatibility_mask,
+    decode_dag_relations_v2,
     synthesize_usvm_ast_v2,
 )
 from .ssa_walker import V2LoweringError
+
+_VITERBI_CURRENCY_TOKENS = frozenset({
+    "$", "₹", "€", "£", "¥",
+    "usd", "inr", "eur", "gbp", "sgd", "aed", "chf", "cad", "aud", "jpy",
+    "rs", "rs.", "dollar", "dollars", "rupee", "rupees", "euro", "euros", "pound", "pounds",
+})
 from .domain_sensor import DOMAIN_TOKEN_CLASSES, ID2DOMAIN_CLASS
 from .logic_reasoner import (
     LOGIC_VOCAB,
@@ -127,13 +134,39 @@ class DualStreamDecompilerInference:
                         step_mask[:, tag_id] = -1e9
 
             prev_tok = tokens[t - 1] if t > 0 else ""
-            if prev_tok in ("$", "₹", "€", "£") and any(c.isdigit() for c in tokens[t]):
+            prev_low = prev_tok.lower()
+            cur_tok = tokens[t]
+            cur_low = cur_tok.lower()
+            next_low = tokens[t + 1].lower() if t + 1 < len(tokens) else ""
+
+            bind_ccy_num = (
+                (prev_low in _VITERBI_CURRENCY_TOKENS and any(c.isdigit() for c in cur_tok))
+                or (any(c.isdigit() for c in prev_tok) and cur_low in _VITERBI_CURRENCY_TOKENS)
+            )
+            if bind_ccy_num:
                 for tid, tag in self.id2bio.items():
                     if tag in ("B-THRESHOLD", "I-THRESHOLD"):
                         for next_tid, next_tag in self.id2bio.items():
                             if next_tag != "I-THRESHOLD":
                                 step_mask[tid, next_tid] = -1e9
                     elif tag in ("B-RATE", "I-RATE"):
+                        for next_tid, next_tag in self.id2bio.items():
+                            if next_tag != "I-RATE":
+                                step_mask[tid, next_tid] = -1e9
+
+            bind_rate_unit = (
+                (
+                    any(c.isdigit() for c in prev_tok)
+                    and (
+                        cur_low in ("%", "percent", "percentum", "bps")
+                        or (cur_low == "per" and next_low in ("cent", "centum"))
+                    )
+                )
+                or (prev_low == "per" and cur_low in ("cent", "centum"))
+            )
+            if bind_rate_unit:
+                for tid, tag in self.id2bio.items():
+                    if tag in ("B-RATE", "I-RATE"):
                         for next_tid, next_tag in self.id2bio.items():
                             if next_tag != "I-RATE":
                                 step_mask[tid, next_tid] = -1e9
@@ -356,7 +389,9 @@ class DualStreamDecompilerInference:
                     id2unit=self.id2unit,
                     id2rel=self.id2rel,
                 )
-            rel_preds = rel_logits.argmax(dim=-1).cpu().tolist()
+                rel_preds = decode_dag_relations_v2(rel_logits, id2rel=self.id2rel)
+            else:
+                rel_preds = rel_logits.argmax(dim=-1).cpu().tolist()
             num_spans = len(discovered_spans)
             for src in range(num_spans):
                 for tgt in range(num_spans):

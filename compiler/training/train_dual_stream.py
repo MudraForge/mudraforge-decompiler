@@ -270,6 +270,7 @@ def train_supervised_dual_stream(
 
     rel_weights = torch.ones(len(rels_list), device=device)
     if is_v2:
+        rel_weights[0] = 0.35
         freq = [0] * len(rels_list)
         for s in train_data:
             for row in s.get("rel_matrix", []):
@@ -292,7 +293,10 @@ def train_supervised_dual_stream(
 
     dom_tok_crit = nn.CrossEntropyLoss(weight=dom_weights, ignore_index=-100)
     dom_abst_crit = nn.CrossEntropyLoss()
-    bio_crit = nn.CrossEntropyLoss(ignore_index=-100)
+    bio_weights = torch.ones(len(bio_list), device=device)
+    if is_v2 and len(bio_list) > 0:
+        bio_weights[0] = 0.40
+    bio_crit = nn.CrossEntropyLoss(weight=bio_weights, ignore_index=-100)
     unit_crit = nn.CrossEntropyLoss() if is_v2 else None
     val_role_crit = nn.CrossEntropyLoss()
     val_rel_crit = nn.CrossEntropyLoss(weight=rel_weights)
@@ -331,7 +335,7 @@ def train_supervised_dual_stream(
     id2role_map = {i: r for i, r in enumerate(roles_list)}
     id2rel_map = {i: r for i, r in enumerate(rels_list)}
     best_score = -1e9
-    patience = 6
+    patience = 8 if is_v2 else 6
     patience_cnt = 0
     t0 = time.time()
     num_rels = len(rels_list)
@@ -350,6 +354,12 @@ def train_supervised_dual_stream(
         train_batches = _iter_length_bucketed_batches(train_data, batch_size=eff_batch_size, is_v2=is_v2, shuffle=True)
         opt_dom.zero_grad(set_to_none=True)
         opt_log.zero_grad(set_to_none=True)
+
+        tr_bio_ok_t = torch.zeros(1, dtype=torch.long, device=device)
+        tr_bio_tot_t = torch.zeros(1, dtype=torch.long, device=device)
+        tr_rel_tp_t = torch.zeros(1, dtype=torch.long, device=device)
+        tr_rel_fp_t = torch.zeros(1, dtype=torch.long, device=device)
+        tr_rel_fn_t = torch.zeros(1, dtype=torch.long, device=device)
 
         nb = (device.type == "cuda")
         opt_stepped = False
@@ -381,7 +391,13 @@ def train_supervised_dual_stream(
                 )
                 loss_bio = bio_crit(out["bio_logits"].reshape(-1, num_bio), bio_tgt.reshape(-1))
                 loss_mod = mod_crit(out["modality_logits"], mod_tgt)
-                loss_log = loss_bio + 0.75 * loss_mod
+                loss_log = (2.5 if is_v2 else 1.0) * loss_bio + 0.75 * loss_mod
+
+                with torch.no_grad():
+                    tr_bio_preds = out["bio_logits"].detach().argmax(dim=-1)
+                    tr_valid_tok = ~pad_mask
+                    tr_bio_ok_t += ((tr_bio_preds == bio_tgt) & tr_valid_tok).sum()
+                    tr_bio_tot_t += tr_valid_tok.sum()
 
                 if b["r_tgt"] is not None and out["role_logits"] is not None:
                     r_tgt = b["r_tgt"].to(device, non_blocking=nb)
@@ -389,7 +405,12 @@ def train_supervised_dual_stream(
                     if out["rel_logits"] is not None and b["e_tgt_flat"] is not None:
                         rel_flat = torch.cat([rl.reshape(-1, num_rels) for rl in out["rel_logits"] if rl is not None], dim=0)
                         e_tgt_flat = b["e_tgt_flat"].to(device, non_blocking=nb)
-                        loss_log = loss_log + 0.5 * rel_crit(rel_flat, e_tgt_flat)
+                        loss_log = loss_log + (1.5 if is_v2 else 0.5) * rel_crit(rel_flat, e_tgt_flat)
+                        with torch.no_grad():
+                            tr_r_preds = rel_flat.detach().argmax(dim=-1)
+                            tr_rel_tp_t += ((tr_r_preds == e_tgt_flat) & (e_tgt_flat > 0)).sum()
+                            tr_rel_fp_t += ((tr_r_preds != e_tgt_flat) & (tr_r_preds > 0)).sum()
+                            tr_rel_fn_t += ((tr_r_preds != e_tgt_flat) & (e_tgt_flat > 0)).sum()
                     if is_v2 and out.get("unit_logits") is not None and b["u_tgt"] is not None:
                         u_tgt = b["u_tgt"].to(device, non_blocking=nb)
                         loss_log = loss_log + 0.75 * unit_crit(out["unit_logits"], u_tgt)
@@ -555,8 +576,16 @@ def train_supervised_dual_stream(
             else None
         )
 
+        tr_bio_acc = float(tr_bio_ok_t.item()) / max(1, int(tr_bio_tot_t.item())) * 100.0
+        tr_tp_f = float(tr_rel_tp_t.item())
+        tr_fp_f = float(tr_rel_fp_t.item())
+        tr_fn_f = float(tr_rel_fn_t.item())
+        tr_rel_p = tr_tp_f / max(1e-6, tr_tp_f + tr_fp_f) * 100.0 if (tr_tp_f + tr_fp_f) > 0 else 0.0
+        tr_rel_r = tr_tp_f / max(1e-6, tr_tp_f + tr_fn_f) * 100.0 if (tr_tp_f + tr_fn_f) > 0 else 0.0
+        tr_rel_f1 = (2 * tr_rel_p * tr_rel_r) / max(1e-6, tr_rel_p + tr_rel_r)
+
         if is_v2:
-            comp_score = 0.35 * clause_em + 0.15 * macro_f1 + 0.15 * rel_f1 + 0.10 * unit_acc + 0.15 * mod_acc + 0.10 * bio_acc - 5.0 * avg_nll
+            comp_score = 0.40 * rel_f1 + 0.30 * bio_acc + 0.20 * macro_f1 + 0.10 * mod_acc
         else:
             comp_score = 0.40 * clause_em + 0.20 * macro_f1 + 0.15 * rel_f1 + 0.15 * mod_acc + 0.10 * bio_acc - 5.0 * avg_nll
         saved = ""
@@ -615,6 +644,7 @@ def train_supervised_dual_stream(
         )
         print(
             f"Epoch {epoch:02d}/{epochs:02d} ({ep_dt:.1f}s) | NLL: {avg_nll:.4f} | DomTok: {dom_acc:.2f}% | "
+            f"TrainBIO: {tr_bio_acc:.2f}% | TrainRelF1: {tr_rel_f1:.2f}% | "
             f"BIO: {bio_acc:.2f}% | Mod: {mod_acc:.2f}% | F1: {macro_f1:.2f}% | "
             f"RelF1: {rel_f1:.2f}%{unit_str} | EM: {clause_em:.2f}%{sem_str}{saved}",
             flush=True,
