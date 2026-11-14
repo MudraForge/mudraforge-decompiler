@@ -202,6 +202,7 @@ def derive_domain_token_targets(
     span_boundaries: list[tuple[int, int]],
     role_labels: list[int],
     modality_id: int,
+    id2role: dict[int, str] | None = None,
 ) -> tuple[list[int], int]:
     abstain_id = MODALITY2ID["MODALITY_ABSTAIN_UNRESOLVED"]
     n_tok = len(tokens)
@@ -233,8 +234,9 @@ def derive_domain_token_targets(
         r"\b(?:section|sec\.?|sub-section|clause|sub-clause|rule|act|code|notification|circular|g\.s\.r\.|order|regulation|sched\.?|schedule)\b",
         re.IGNORECASE,
     )
+    role_map = id2role or ID2ROLE
     for (ts, te), r_id in zip(span_boundaries, role_labels):
-        r_name = ID2ROLE.get(int(r_id), "ROLE_IGNORE")
+        r_name = role_map.get(int(r_id), "ROLE_IGNORE")
         span_toks = [tokens[k].lower() for k in range(max(0, ts), min(n_tok, te + 1))]
         span_str = " ".join(span_toks)
         is_actual_citation = bool(_CITATION_WORD_RE.search(span_str) or any(w in span_toks for w in ("section", "rule", "circular", "notification", "g.s.r.", "act")))

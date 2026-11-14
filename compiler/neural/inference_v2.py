@@ -126,6 +126,7 @@ def synthesize_usvm_ast_v2(
 
     return {
         "ruleId": rid,
+        "version": "2.0",
         "schemaVersion": "2.0",
         "astVersion": "v2",
         "archetype": "DECLARATIVE_PIPELINE",

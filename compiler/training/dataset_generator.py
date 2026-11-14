@@ -25,18 +25,28 @@ import random
 import torch
 
 try:
+    from compiler.neural.literals import parse_unit_and_type
     from compiler.neural.statutory_neural_parser import (
         ROLE2ID, ID2ROLE, REL2ID, ID2REL, SEMANTIC_ROLES, RELATION_TYPES,
         BIO2ID, ID2BIO, BIO_TAGS, SUFFIX2ID, extract_suffix,
         RULE_MODALITIES, MODALITY2ID, ID2MODALITY,
-        SPECIAL_TOKENS, canonicalize_token, canonical_suffix
+        SPECIAL_TOKENS, canonicalize_token, canonical_suffix,
+        SPAN_UNITS, UNIT2ID, ID2UNIT,
+        V2_SEMANTIC_ROLES, V2_ROLE2ID, V2_ID2ROLE,
+        V2_BIO_TAGS, V2_BIO2ID, V2_ID2BIO,
+        V2_RELATION_TYPES, V2_REL2ID, V2_ID2REL,
     )
 except ImportError:
+    from literals import parse_unit_and_type
     from statutory_neural_parser import (
         ROLE2ID, ID2ROLE, REL2ID, ID2REL, SEMANTIC_ROLES, RELATION_TYPES,
         BIO2ID, ID2BIO, BIO_TAGS, SUFFIX2ID, extract_suffix,
         RULE_MODALITIES, MODALITY2ID, ID2MODALITY,
-        SPECIAL_TOKENS, canonicalize_token, canonical_suffix
+        SPECIAL_TOKENS, canonicalize_token, canonical_suffix,
+        SPAN_UNITS, UNIT2ID, ID2UNIT,
+        V2_SEMANTIC_ROLES, V2_ROLE2ID, V2_ID2ROLE,
+        V2_BIO_TAGS, V2_BIO2ID, V2_ID2BIO,
+        V2_RELATION_TYPES, V2_REL2ID, V2_ID2REL,
     )
 
 ARCHETYPE_MODALITY_MAP = {
@@ -104,6 +114,10 @@ ARCHETYPE_MODALITY_MAP = {
     "GENERAL_AGGREGATE_COLLECTION_STYLE": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
     "GENERAL_COMPOSED_DAG_ARITHMETIC_STYLE": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
     "GENERAL_PROHIBITION_MONETARY_ESCROW_STYLE": "MODALITY_DEONTIC_PROHIBITION",
+    # Model v2 Typed-Opcode Contrast & Relational Disambiguation Archetypes
+    "UNIT_CONTRAST_TEMPORAL_COUNT_STYLE": "MODALITY_COMPUTATIONAL_EXCESS",
+    "CREDIT_VS_CAP_COMPOSED_STYLE": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+    "BOOLEAN_KINSHIP_DEFINED_TERM_STYLE": "MODALITY_DEONTIC_STATUS_OR_EVIDENCE",
 }
 
 ROLE_TO_BIO_BASE = {
@@ -131,6 +145,79 @@ ROLE_TO_BIO_BASE = {
     "ROLE_ACCOUNTING_DESTINATION": "DESTINATION",
     "ROLE_IGNORE": "IGNORE"
 }
+
+V2_ROLE_TO_BIO_BASE = {
+    **ROLE_TO_BIO_BASE,
+    "ROLE_COMPUTATION_OPERAND": "OPERAND",
+    "ROLE_DEFINED_TERM": "DEFINED_TERM",
+    "ROLE_COUNT_QUANTIFIER": "COUNT",
+}
+
+_DATE_MONTH_RE = re.compile(
+    r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+    re.IGNORECASE,
+)
+
+
+def infer_span_unit_v2(span_text: str, role_name: str) -> str:
+    """Deterministically assigns ground-truth `SPAN_UNITS` class from span text and role."""
+    if role_name == "ROLE_IGNORE":
+        return "UNIT_NONE"
+    if role_name in ("ROLE_DEFINED_TERM", "ROLE_COMPUTATION_OPERAND"):
+        return "UNIT_SYMBOL_VAR"
+    if role_name in ("ROLE_STANDARD_STATUTORY_RATE", "ROLE_PENALTY_OR_DEFAULT_OVERRIDE", "ROLE_NON_PAN_OVERRIDE_RATE"):
+        return "UNIT_RATE"
+    if role_name in ("ROLE_TEMPORAL_CUTOVER_DATE", "ROLE_TEMPORAL_SUNSET_DATE"):
+        return "UNIT_YEAR_DATE"
+    if role_name == "ROLE_DEADLINE_WINDOW":
+        return "UNIT_DURATION"
+    if role_name == "ROLE_COUNT_QUANTIFIER":
+        if re.search(r"\b(?:years?|months?|days?|weeks?|hours?|turns?|cycles?|rounds?)\b", span_text, re.IGNORECASE):
+            return "UNIT_DURATION"
+        return "UNIT_COUNT"
+
+    low = (span_text or "").strip().lower()
+    if re.search(r"\b(?:section|clause|rule|table|article|part|paragraph)\b", low):
+        return "UNIT_NONE"
+    if _DATE_MONTH_RE.search(low) or re.fullmatch(r"(?:19|20)\d{2}", low):
+        return "UNIT_YEAR_DATE"
+
+    st, _, _ = parse_unit_and_type(span_text or "")
+    if st == "PERCENTAGE_RATE":
+        return "UNIT_RATE"
+    if st == "TEMPORAL_DURATION":
+        return "UNIT_DURATION"
+    if st == "MONETARY_QUANTUM":
+        return "UNIT_MONEY"
+    if role_name in (
+        "ROLE_PROHIBITION_GATE",
+        "ROLE_AGENT_STATE_PRECONDITION",
+        "ROLE_SUBJECTIVE_CRITERION",
+        "ROLE_MANDATORY_ACTION_OBLIGATION",
+        "ROLE_EXCEPTION_CARVEOUT",
+        "ROLE_STATUTORY_SANCTION",
+    ):
+        return "UNIT_BOOL_PREDICATE"
+    if re.search(r"\b(?:children|dependents?|members?|items?|directors?|shares?|violations?|counts?)\b", low):
+        return "UNIT_COUNT"
+    return "UNIT_NONE"
+
+
+def _remap_v2_relation(rel_name: str, src_txt: str, tgt_txt: str, full_text: str, stype: str) -> str:
+    """Upgrades ambiguous v1 relation labels into 1-to-1 opcode-exact v2 relations."""
+    if rel_name == "REL_CAP_CEILING":
+        ctx = f"{src_txt} {tgt_txt} {full_text}".lower()
+        if any(tok in ctx for tok in ("reduced by", "minus", "subtract", "credit", "offset")):
+            return "REL_SUB_CREDIT"
+        return "REL_MIN_CAP"
+    if rel_name == "REL_AGGREGATE_SUM":
+        ctx = f"{src_txt} {tgt_txt}".lower()
+        if any(tok in ctx for tok in ("count", "number of", "headcount", "occurrences")):
+            return "REL_AGGREGATE_COUNT"
+    if stype == "TEMPORAL_SUBSTITUTION_OVERRIDE_STYLE" and rel_name == "REL_EXCEPTION_TO_PROHIBITION":
+        return "REL_SUBSTITUTE_WHEN"
+    return rel_name
 
 OPEN_CLASS_NOUNS = {
     "buyer", "seller", "director", "company", "contractor", "resident",
@@ -253,7 +340,7 @@ class ComprehensiveDatasetGenerator:
         unk_id = self.vocab.get("<UNK>", 1)
         return [self.vocab.get(ctok, unk_id) for ctok in self._canonical_seq(tokens)]
 
-    def generate_all_samples(self, num_samples: int = 4600) -> tuple[list[dict], list[dict]]:
+    def generate_all_samples(self, num_samples: int = 4600, v2: bool = False) -> tuple[list[dict], list[dict]]:
         train_samples = []
         val_samples = []
 
@@ -322,6 +409,15 @@ class ComprehensiveDatasetGenerator:
             "ABSTAIN_UNRESOLVED_STYLE", "ABSTAIN_UNRESOLVED_STYLE", "ABSTAIN_UNRESOLVED_STYLE",
             "ABSTAIN_UNRESOLVED_STYLE", "ABSTAIN_UNRESOLVED_STYLE"
         ]
+        if v2:
+            archetypes.extend([
+                "UNIT_CONTRAST_TEMPORAL_COUNT_STYLE", "UNIT_CONTRAST_TEMPORAL_COUNT_STYLE",
+                "CREDIT_VS_CAP_COMPOSED_STYLE", "CREDIT_VS_CAP_COMPOSED_STYLE",
+                "BOOLEAN_KINSHIP_DEFINED_TERM_STYLE", "BOOLEAN_KINSHIP_DEFINED_TERM_STYLE",
+                "PROGRESSIVE_BRACKET_CLAUSE_STYLE",
+                "TEMPORAL_SUBSTITUTION_OVERRIDE_STYLE",
+                "QUALIFICATION_THRESHOLD_DEFINITION_STYLE",
+            ])
 
         abstain_train_texts = [
             "Good morning, can you help me summarize our quarterly roadmap slides?",
@@ -2564,42 +2660,156 @@ class ComprehensiveDatasetGenerator:
                         f"If taxable amount is over {lo} but not over {hi}, "
                         f"tax shall be {base_t}, plus {b_rate} of the excess over {lo}."
                     )
-                    s_lo, s_hi = f"over {lo}", f"not over {hi}"
+                    s_lo, s_hi, s_op = f"over {lo}", f"not over {hi}", "taxable amount"
                 elif formulation == 1:
                     if random.random() < 0.5:
                         body = (
                             f"Where assessable income exceeds {lo} and does not exceed {hi}, "
                             f"the levy payable equals {base_t} plus {b_rate} of the amount above {lo}."
                         )
-                        s_lo, s_hi = f"exceeds {lo}", f"does not exceed {hi}"
+                        s_lo, s_hi, s_op = f"exceeds {lo}", f"does not exceed {hi}", "assessable income"
                     else:
                         body = (
-                            f"The levy equals {base_t} plus {b_rate} on any excess above {lo} "
-                            f"for brackets between {lo} and {hi}."
+                            f"For assessable income brackets between {lo} and {hi}, "
+                            f"the levy equals {base_t} plus {b_rate} on any excess above {lo}."
                         )
-                        s_lo, s_hi = lo, hi
+                        s_lo, s_hi, s_op = lo, hi, "assessable income"
                 elif formulation == 2:
                     body = (
                         f"Tax is computed as {base_t} plus {b_rate} of the slice exceeding {lo} "
                         f"whenever net taxable value is more than {lo} and up to {hi}."
                     )
-                    s_lo, s_hi = f"exceeding {lo}", f"up to {hi}"
+                    s_lo, s_hi, s_op = f"exceeding {lo}", f"up to {hi}", "net taxable value"
                 else:
                     body = (
-                        f"For brackets between {lo} and {hi}, total charge equals {base_t} "
+                        f"For net taxable income brackets between {lo} and {hi}, total charge equals {base_t} "
                         f"together with {b_rate} on any excess above {lo}."
                     )
-                    s_lo, s_hi = lo, hi
+                    s_lo, s_hi, s_op = lo, hi, "net taxable income"
+
+                if v2:
+                    labeled_spans = [
+                        (s_lo, "ROLE_TRANSACTION_EXCESS_THRESHOLD"),
+                        (s_hi, "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
+                        (base_t, "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
+                        (b_rate, "ROLE_STANDARD_STATUTORY_RATE"),
+                        (s_op, "ROLE_COMPUTATION_OPERAND"),
+                    ]
+                    relations = [
+                        (0, 1, "REL_BRACKET_NEXT"),
+                        (3, 0, "REL_RATE_TO_THRESHOLD"),
+                        (2, 3, "REL_BASE_TAX_ADD"),
+                        (3, 4, "REL_SUBTRACTION_BASE"),
+                    ]
+                else:
+                    labeled_spans = [
+                        (s_lo, "ROLE_TRANSACTION_EXCESS_THRESHOLD"),
+                        (s_hi, "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
+                        (base_t, "ROLE_COMPUTATION_OPERAND"),
+                        (b_rate, "ROLE_STANDARD_STATUTORY_RATE"),
+                    ]
+                    relations = [
+                        (0, 1, "REL_BRACKET_NEXT"),
+                        (3, 0, "REL_RATE_TO_THRESHOLD"),
+                        (2, 3, "REL_SUBTRACTION_BASE"),
+                    ]
+
+            # -----------------------------------------------------------------
+            # 42b. UNIT CONTRAST HARD-NEGATIVE TRAINING (V2 UNIT DISAMBIGUATION)
+            # -----------------------------------------------------------------
+            elif stype == "UNIT_CONTRAST_TEMPORAL_COUNT_STYLE":
+                preamble = ""
+                u_amt = random.choice(["$1,000", "$25,000", "₹50,000", "€4,500"])
+                u_rate = random.choice(["5%", "12%", "18%", "25%"])
+                u_dur = random.choice(["1 taxable year", "2 taxable years", "183 days", "6 months"])
+                u_cnt = random.choice(["2 children", "3 dependents", "4 members"])
+                if formulation in (0, 2):
+                    body = (
+                        f"Under section 1, an individual maintaining {u_cnt} during {u_dur} "
+                        f"shall pay {u_rate} on income exceeding {u_amt}."
+                    )
+                else:
+                    body = (
+                        f"Where {u_cnt} qualify over a continuous period of {u_dur}, "
+                        f"a rate of {u_rate} applies to taxable income over {u_amt}."
+                    )
+                op_kw = "taxable income" if "taxable income" in body else "income"
                 labeled_spans = [
-                    (s_lo, "ROLE_TRANSACTION_EXCESS_THRESHOLD"),
-                    (s_hi, "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
-                    (base_t, "ROLE_COMPUTATION_OPERAND"),
-                    (b_rate, "ROLE_STANDARD_STATUTORY_RATE"),
+                    (u_cnt, "ROLE_COUNT_QUANTIFIER"),
+                    (u_dur, "ROLE_DEADLINE_WINDOW"),
+                    (u_rate, "ROLE_STANDARD_STATUTORY_RATE"),
+                    (op_kw, "ROLE_COMPUTATION_OPERAND"),
+                    (u_amt, "ROLE_TRANSACTION_EXCESS_THRESHOLD"),
                 ]
                 relations = [
-                    (0, 1, "REL_BRACKET_NEXT"),
-                    (3, 0, "REL_RATE_TO_THRESHOLD"),
+                    (2, 4, "REL_RATE_TO_THRESHOLD"),
                     (2, 3, "REL_SUBTRACTION_BASE"),
+                ]
+
+            # -----------------------------------------------------------------
+            # 42c. CREDIT VS CAP EXACT-OPCODE COMPOSITION (V2)
+            # -----------------------------------------------------------------
+            elif stype == "CREDIT_VS_CAP_COMPOSED_STYLE":
+                preamble = ""
+                c_rate = random.choice(["28%", "22%", "15 percent"])
+                c_floor = random.choice(["$36,900", "$24,000", "$18,500"])
+                c_cred = random.choice(["$500", "$350", "$1,200"])
+                c_cap = random.choice(["$10,000", "$15,000", "$8,500"])
+                if formulation in (0, 2):
+                    body = (
+                        f"Tax equals {c_rate} of the excess of gross income over {c_floor}, "
+                        f"reduced by a {c_cred} credit, and capped at {c_cap}."
+                    )
+                else:
+                    body = (
+                        f"Subject to a ceiling of {c_cap} and minus a {c_cred} credit, "
+                        f"levy is {c_rate} on gross income exceeding {c_floor}."
+                    )
+                fl_lbl = f"over {c_floor}" if f"over {c_floor}" in body else f"exceeding {c_floor}"
+                labeled_spans = [
+                    (c_rate, "ROLE_STANDARD_STATUTORY_RATE"),
+                    ("gross income", "ROLE_COMPUTATION_OPERAND"),
+                    (fl_lbl, "ROLE_TRANSACTION_EXCESS_THRESHOLD"),
+                    (c_cred, "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
+                    (c_cap, "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
+                ]
+                relations = [
+                    (0, 2, "REL_RATE_TO_THRESHOLD"),
+                    (0, 1, "REL_SUBTRACTION_BASE"),
+                    (3, 0, "REL_SUB_CREDIT"),
+                    (4, 0, "REL_MIN_CAP"),
+                ]
+
+            # -----------------------------------------------------------------
+            # 42d. BOOLEAN KINSHIP & DEFINED TERM GRAPH (V2)
+            # -----------------------------------------------------------------
+            elif stype == "BOOLEAN_KINSHIP_DEFINED_TERM_STYLE":
+                preamble = ""
+                d_term = random.choice(["head of a household", "qualifying spouse", "dependent beneficiary"])
+                d_dur = random.choice(["1 taxable year", "more than half of the taxable year", "12 consecutive months"])
+                if formulation in (0, 2):
+                    body = (
+                        f"(b) Definition of {d_term}. An individual is considered a {d_term} if such individual "
+                        f"is not married and maintains a principal abode for {d_dur}."
+                    )
+                else:
+                    body = (
+                        f"The term {d_term} means any person who is not affiliated and maintains dependents for {d_dur}."
+                    )
+                p1 = "married" if "married" in body else "affiliated"
+                p2 = "maintains a principal abode" if "maintains a principal abode" in body else "maintains dependents"
+                labeled_spans = [
+                    (d_term, "ROLE_DEFINED_TERM"),
+                    ("not", "ROLE_PROHIBITION_GATE"),
+                    (p1, "ROLE_AGENT_STATE_PRECONDITION"),
+                    (p2, "ROLE_AGENT_STATE_PRECONDITION"),
+                    (d_dur, "ROLE_DEADLINE_WINDOW"),
+                ]
+                relations = [
+                    (1, 2, "REL_LOGICAL_NOT"),
+                    (2, 3, "REL_LOGICAL_AND"),
+                    (0, 2, "REL_DEFINED_TERM_OF"),
+                    (4, 3, "REL_DEADLINE_TO_TRIGGER"),
                 ]
 
             # -----------------------------------------------------------------
@@ -2777,11 +2987,22 @@ class ComprehensiveDatasetGenerator:
                         f"With respect to any calendar year, paying {q_metric} of {q_th} or more "
                         f"qualifies an entity as a {q_actor}."
                     )
-                labeled_spans = [
-                    (q_metric, "ROLE_COMPUTATION_OPERAND"),
-                    (f"{q_th} or more", "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
-                ]
-                relations = [(0, 1, "REL_THRESHOLD_TO_TRANSACTION")]
+                if v2:
+                    labeled_spans = [
+                        (q_metric, "ROLE_COMPUTATION_OPERAND"),
+                        (f"{q_th} or more", "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
+                        (q_actor, "ROLE_DEFINED_TERM"),
+                    ]
+                    relations = [
+                        (0, 1, "REL_THRESHOLD_TO_TRANSACTION"),
+                        (2, 1, "REL_DEFINED_TERM_OF"),
+                    ]
+                else:
+                    labeled_spans = [
+                        (q_metric, "ROLE_COMPUTATION_OPERAND"),
+                        (f"{q_th} or more", "ROLE_TRANSACTION_CLIFF_THRESHOLD"),
+                    ]
+                    relations = [(0, 1, "REL_THRESHOLD_TO_TRANSACTION")]
 
             # -----------------------------------------------------------------
             # 43d. STATUS DISQUALIFICATION BAR (TWO-CLAUSE STATUS GATE)
@@ -3276,9 +3497,14 @@ class ComprehensiveDatasetGenerator:
 
         return train_samples, val_samples
 
-    def process_samples(self, raw_samples: list[dict], is_train: bool = False) -> list[dict]:
+    def process_samples(self, raw_samples: list[dict], is_train: bool = False, v2: bool = False) -> list[dict]:
         processed = []
         abstain_id = MODALITY2ID["MODALITY_ABSTAIN_UNRESOLVED"]
+        role2id = V2_ROLE2ID if v2 else ROLE2ID
+        id2role = V2_ID2ROLE if v2 else ID2ROLE
+        rel2id = V2_REL2ID if v2 else REL2ID
+        bio2id = V2_BIO2ID if v2 else BIO2ID
+        role_to_bio = V2_ROLE_TO_BIO_BASE if v2 else ROLE_TO_BIO_BASE
         for sample in raw_samples:
             text = sample["text"]
             tokens, offsets = tokenize_with_offsets(text)
@@ -3326,18 +3552,24 @@ class ComprehensiveDatasetGenerator:
                         chosen_tok_range = char_span_to_token_span(idx, idx + len(span_text), offsets)
 
                 if chosen_tok_range is not None:
-                    resolved_spans[orig_i] = (chosen_tok_range, ROLE2ID[role_name])
+                    r_id = role2id.get(role_name, role2id["ROLE_IGNORE"])
+                    resolved_spans[orig_i] = (chosen_tok_range, r_id, span_text, role_name)
                     for t in range(chosen_tok_range[0], chosen_tok_range[1] + 1):
                         occupied_tokens.add(t)
 
             span_boundaries = []
             role_labels = []
+            unit_labels = []
+            kept_span_texts = []
             orig_to_kept = {}
             for orig_i, entry in enumerate(resolved_spans):
                 if entry is not None:
                     orig_to_kept[orig_i] = len(span_boundaries)
                     span_boundaries.append(entry[0])
                     role_labels.append(entry[1])
+                    kept_span_texts.append(entry[2])
+                    if v2:
+                        unit_labels.append(UNIT2ID[infer_span_unit_v2(entry[2], entry[3])])
 
             if not span_boundaries and modality_id != abstain_id:
                 continue
@@ -3354,23 +3586,30 @@ class ComprehensiveDatasetGenerator:
                         )
 
             num_spans = len(span_boundaries)
-            rel_matrix = [[REL2ID["REL_NO_EDGE"] for _ in range(num_spans)] for _ in range(num_spans)]
+            rel_matrix = [[rel2id["REL_NO_EDGE"] for _ in range(num_spans)] for _ in range(num_spans)]
+            stype_name = sample.get("stype", "")
             for src_idx, tgt_idx, rel_name in sample["relations"]:
                 if src_idx in orig_to_kept and tgt_idx in orig_to_kept:
-                    rel_matrix[orig_to_kept[src_idx]][orig_to_kept[tgt_idx]] = REL2ID[rel_name]
+                    k_s = orig_to_kept[src_idx]
+                    k_t = orig_to_kept[tgt_idx]
+                    eff_rel = (
+                        _remap_v2_relation(rel_name, kept_span_texts[k_s], kept_span_texts[k_t], text, stype_name)
+                        if v2 else rel_name
+                    )
+                    rel_matrix[k_s][k_t] = rel2id.get(eff_rel, rel2id["REL_NO_EDGE"])
 
             # Generate token-level BIO tags from labeled spans
             bio_labels = ["O"] * len(tokens)
             for (tok_s, tok_e), r_id in zip(span_boundaries, role_labels):
-                role_name = ID2ROLE[r_id]
-                base_tag = ROLE_TO_BIO_BASE.get(role_name, "PRECONDITION")
+                role_name = id2role[r_id]
+                base_tag = role_to_bio.get(role_name, "PRECONDITION")
                 if base_tag == "IGNORE":
                     continue
                 bio_labels[tok_s] = f"B-{base_tag}"
                 for k in range(tok_s + 1, tok_e + 1):
                     bio_labels[k] = f"I-{base_tag}"
 
-            bio_ids = [BIO2ID.get(tag, 0) for tag in bio_labels]
+            bio_ids = [bio2id.get(tag, 0) for tag in bio_labels]
 
             # Balanced Open-Class Noun, Verb & OOD Lexical Slot Dropout (applied to training set only)
             # Eliminates any spurious slot-density cue for ABSTAIN while exposing non-ABSTAIN clauses
@@ -3442,7 +3681,7 @@ class ComprehensiveDatasetGenerator:
                 ignore_token_positions = {
                     t_i
                     for (t_s, t_e), r_id in zip(span_boundaries, role_labels)
-                    if ID2ROLE.get(r_id) == "ROLE_IGNORE"
+                    if id2role.get(r_id) == "ROLE_IGNORE"
                     for t_i in range(t_s, t_e + 1)
                 }
 
@@ -3502,7 +3741,7 @@ class ComprehensiveDatasetGenerator:
                         clause_modality_ids.append(MODALITY2ID[c_mod])
                         c_pos = c_idx + len(c_txt)
 
-            processed.append({
+            item_dict = {
                 "stype": sample.get("stype", "194Q_STYLE"),
                 "modality_id": modality_id,
                 "modality_name": ID2MODALITY[modality_id],
@@ -3516,38 +3755,49 @@ class ComprehensiveDatasetGenerator:
                 "rel_matrix": rel_matrix,
                 "clause_spans": clause_spans,
                 "clause_modality_ids": clause_modality_ids,
-            })
+            }
+            if v2:
+                item_dict["unit_labels"] = unit_labels
+            processed.append(item_dict)
         return processed
 
 
-def generate_synthetic_dataset(num_samples: int = 60, seed: int = 42) -> dict:
+def generate_synthetic_dataset(num_samples: int = 60, seed: int = 42, v2: bool = False) -> dict:
     """
     Generates an in-memory synthetic dataset for training or smoke testing.
     Does not require external files or disk writes.
     """
     generator = ComprehensiveDatasetGenerator(seed=seed)
-    raw_train, raw_val = generator.generate_all_samples(num_samples=num_samples)
+    raw_train, raw_val = generator.generate_all_samples(num_samples=num_samples, v2=v2)
     all_texts = [s["text"] for s in raw_train]
     generator.build_vocab(all_texts, max_vocab=4096)
-    train_data = generator.process_samples(raw_train, is_train=True)
-    val_data = generator.process_samples(raw_val, is_train=False)
-    return {
+    train_data = generator.process_samples(raw_train, is_train=True, v2=v2)
+    val_data = generator.process_samples(raw_val, is_train=False, v2=v2)
+    payload = {
         "vocab": generator.vocab,
         "modalities": RULE_MODALITIES,
         "train": train_data,
-        "val": val_data
+        "val": val_data,
     }
+    if v2:
+        payload["architecture_version"] = "v2"
+        payload["span_units"] = SPAN_UNITS
+        payload["roles"] = V2_SEMANTIC_ROLES
+        payload["relations"] = V2_RELATION_TYPES
+        payload["bio_tags"] = V2_BIO_TAGS
+    return payload
 
 
 def create_comprehensive_dataset(
     output_path: str = "checkpoints/dataset.pt",
     num_samples: int = 4000,
-    seed: int = 42
+    seed: int = 42,
+    v2: bool = False,
 ):
-    print(f"[DATASET] Generating comprehensive statutory dataset ({num_samples} samples)...")
+    print(f"[DATASET] Generating comprehensive statutory dataset ({num_samples} samples, v2={v2})...")
     generator = ComprehensiveDatasetGenerator(seed=seed)
 
-    raw_train, raw_val = generator.generate_all_samples(num_samples=num_samples)
+    raw_train, raw_val = generator.generate_all_samples(num_samples=num_samples, v2=v2)
     all_texts = [s["text"] for s in raw_train]
 
     # Optional local OKF domain summaries if present
@@ -3569,8 +3819,8 @@ def create_comprehensive_dataset(
     generator.build_vocab(all_texts, max_vocab=16384)
     print(f"[DATASET] Total Unified Vocabulary Size: {len(generator.vocab)} tokens")
 
-    train_data = generator.process_samples(raw_train, is_train=True)
-    val_data = generator.process_samples(raw_val, is_train=False)
+    train_data = generator.process_samples(raw_train, is_train=True, v2=v2)
+    val_data = generator.process_samples(raw_val, is_train=False, v2=v2)
 
     print(f"[DATASET] Split -> Train: {len(train_data)} | Val: {len(val_data)}")
 
@@ -3578,8 +3828,14 @@ def create_comprehensive_dataset(
         "vocab": generator.vocab,
         "modalities": RULE_MODALITIES,
         "train": train_data,
-        "val": val_data
+        "val": val_data,
     }
+    if v2:
+        payload["architecture_version"] = "v2"
+        payload["span_units"] = SPAN_UNITS
+        payload["roles"] = V2_SEMANTIC_ROLES
+        payload["relations"] = V2_RELATION_TYPES
+        payload["bio_tags"] = V2_BIO_TAGS
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     torch.save(payload, output_path)
     print(f"[DATASET] Saved successfully to {output_path} ({os.path.getsize(output_path):,} bytes)")
@@ -3587,4 +3843,11 @@ def create_comprehensive_dataset(
 
 
 if __name__ == "__main__":
-    create_comprehensive_dataset()
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate Dual-Stream statutory dataset")
+    parser.add_argument("--v2", action="store_true", help="Generate Model v2 dataset with span unit labels & v2 opcodes")
+    parser.add_argument("--output", type=str, default=None, help="Output .pt path")
+    parser.add_argument("--num-samples", type=int, default=4000)
+    args = parser.parse_args()
+    out_p = args.output or ("checkpoints/v2_dataset.pt" if args.v2 else "checkpoints/dataset.pt")
+    create_comprehensive_dataset(output_path=out_p, num_samples=args.num_samples, v2=args.v2)

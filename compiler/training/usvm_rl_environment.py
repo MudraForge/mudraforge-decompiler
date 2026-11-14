@@ -11,6 +11,7 @@ Reward Formulation:
   R_total = R_grammar + R_types + R_invariants + R_vectors
 """
 
+import json
 import math
 import re
 from datetime import date, timedelta
@@ -147,6 +148,22 @@ def _extract_expected_outcome(gold_res: dict, ast: dict) -> dict:
     out_spec = pipe.get("output") if isinstance(pipe.get("output"), dict) else {}
     rc = (ast or {}).get("rootCondition") or {}
     node_type = rc.get("nodeType", "TRANSACTIONAL_WITHHOLDING")
+
+    if (ast or {}).get("astVersion") == "v2":
+        v2_exp = {}
+        for k in out_spec:
+            if k in gold_res and gold_res[k] is not None:
+                val = gold_res[k]
+                if isinstance(val, bool):
+                    v2_exp[k] = val
+                elif isinstance(val, (int, float)):
+                    v2_exp[k] = round(float(val), 4)
+                else:
+                    v2_exp[k] = val
+        if not v2_exp and "isApplicable" in gold_res:
+            v2_exp["isApplicable"] = bool(gold_res["isApplicable"])
+        return v2_exp
+
     is_pure_logic = (
         node_type == "GENERAL_RULE_GATE"
         or comp.get("archetype") == "PURE_LOGIC_PIPELINE"
@@ -280,6 +297,82 @@ class StatutoryRlEnvironment:
 
     def __init__(self):
         self.evaluator = CanonicalUsvmEvaluator()
+
+    def _build_v2_fact_candidates(self, ast: dict) -> list[tuple[str, dict]]:
+        inputs = (ast or {}).get("inputs") or {}
+        comp = (ast or {}).get("computation") or {}
+        pipe = comp.get("pipeline") if isinstance(comp.get("pipeline"), dict) else {}
+        steps = pipe.get("steps") or []
+        steps_str = json.dumps(steps, sort_keys=True)
+
+        # Extract numeric literal constants (in minor units when TO_PAISE appears) to set informative bracket/cliff probes
+        minor_thresholds = []
+        for st in steps:
+            expr = st.get("expr") if isinstance(st, dict) else None
+            if not isinstance(expr, dict):
+                continue
+            for node in (expr, expr.get("right"), expr.get("left"), expr.get("else"), expr.get("then")):
+                if isinstance(node, dict) and node.get("op") == "TO_PAISE":
+                    try:
+                        val = int(float(node.get("value", 0)))
+                        if val > 0:
+                            minor_thresholds.append(val)
+                    except (TypeError, ValueError):
+                        pass
+            for arg_k in ("right", "left", "value"):
+                v = expr.get(arg_k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                    minor_thresholds.append(int(v))
+
+        pos_ths = sorted(set(x for x in minor_thresholds if x > 0))
+        low_money = max(1000, pos_ths[0] // 2) if pos_ths else 25000
+        mid_money = int(pos_ths[0] + max(50000, pos_ths[0] // 4)) if pos_ths else 5000000
+        high_money = int((pos_ths[-1] * 2) + 100000) if pos_ths else 15000000
+
+        # Extract date cutovers if present
+        iso_dates = sorted(set(re.findall(r"\b\d{4}-\d{2}-\d{2}\b", steps_str)))
+        in_date = "2022-06-15"
+        out_date = "2028-06-15"
+        if len(iso_dates) >= 2:
+            d0, d1 = date.fromisoformat(iso_dates[0]), date.fromisoformat(iso_dates[1])
+            in_date = (d0 + (d1 - d0) // 2).isoformat()
+            out_date = _iso_shift(iso_dates[1], 180)
+        elif len(iso_dates) == 1:
+            in_date = _iso_shift(iso_dates[0], 60)
+            out_date = _iso_shift(iso_dates[0], -60)
+
+        vec_high = {}
+        vec_mid = {}
+        vec_low = {}
+        for k, spec in inputs.items():
+            t = str((spec or {}).get("type", "") if isinstance(spec, dict) else spec).upper()
+            if "BOOL" in t:
+                vec_high[k] = True
+                vec_mid[k] = False
+                vec_low[k] = False
+            elif "DATE" in t:
+                vec_high[k] = in_date
+                vec_mid[k] = in_date
+                vec_low[k] = out_date
+            elif "COLLECTION" in t or "ARRAY" in t or "LIST" in t:
+                vec_high[k] = [{"value": max(1, high_money // 100), "isQualifying": True} for _ in range(4)]
+                vec_mid[k] = [{"value": max(1, mid_money // 100), "isQualifying": True} for _ in range(2)]
+                vec_low[k] = [{"value": max(1, low_money // 100), "isQualifying": True}]
+            elif "INT" in t or "COUNT" in t or "DURATION" in t:
+                vec_high[k] = 5
+                vec_mid[k] = 2
+                vec_low[k] = 0
+            else:
+                # Default MONEY_MINOR / NUMBER
+                vec_high[k] = high_money
+                vec_mid[k] = mid_money
+                vec_low[k] = low_money
+
+        return [
+            ("VEC_V2_HIGH", vec_high),
+            ("VEC_V2_MID", vec_mid),
+            ("VEC_V2_LOW", vec_low),
+        ]
 
     def _build_pure_logic_fact_candidates(self, ast: dict) -> list[tuple[str, dict]]:
         comp = (ast or {}).get("computation") or {}
@@ -880,7 +973,9 @@ class StatutoryRlEnvironment:
             or comp.get("archetype") == "PURE_LOGIC_PIPELINE"
         )
 
-        if is_pure_logic and pipe is not None:
+        if gold_ast.get("astVersion") == "v2":
+            cand_list = self._build_v2_fact_candidates(gold_ast)
+        elif is_pure_logic and pipe is not None:
             cand_list = self._build_pure_logic_fact_candidates(gold_ast)
         elif pipe is not None or comp.get("archetype") in ("FLAT_RATE", "EXCESS_OVER_THRESHOLD", "CLIFF_THRESHOLD", "DECLARATIVE_PIPELINE"):
             cand_list = self._build_computational_fact_candidates(gold_ast)
@@ -949,7 +1044,12 @@ class StatutoryRlEnvironment:
         comp_arch = comp.get("archetype", "")
         has_pipeline_steps = bool(isinstance(comp.get("pipeline"), dict) and comp["pipeline"].get("steps"))
 
-        if node_type == "GENERAL_RULE_GATE" or comp_arch == "PURE_LOGIC_PIPELINE":
+        if ast.get("astVersion") == "v2":
+            if has_pipeline_steps and isinstance(comp.get("pipeline", {}).get("output"), dict) and comp["pipeline"]["output"]:
+                breakdown["r_types"] += 3.0
+            else:
+                breakdown["r_types"] -= 2.0
+        elif node_type == "GENERAL_RULE_GATE" or comp_arch == "PURE_LOGIC_PIPELINE":
             if has_pipeline_steps:
                 breakdown["r_types"] += 2.0
                 if comp.get("factSchema"):
@@ -1034,6 +1134,43 @@ class StatutoryRlEnvironment:
                 if k in expected:
                     total_keys += 1
                     if res.get(k) == expected[k]:
+                        matched_keys += 1
+                        vec_score += 1.0
+                    else:
+                        all_match = False
+                        vec_score -= 1.5
+
+            handled_static = set(OUTCOME_NUMERIC_KEYS) | set(OUTCOME_INT_KEYS) | set(OUTCOME_BOOL_OR_STR_KEYS)
+            for k, exp_val in expected.items():
+                if k in handled_static:
+                    continue
+                total_keys += 1
+                if k not in res:
+                    all_match = False
+                    vec_score -= 2.0
+                    continue
+                if isinstance(exp_val, bool):
+                    if res.get(k) is exp_val or (res.get(k) == exp_val and isinstance(res.get(k), bool)):
+                        matched_keys += 1
+                        vec_score += 1.5
+                    else:
+                        all_match = False
+                        vec_score -= 2.0
+                elif isinstance(exp_val, (int, float)):
+                    try:
+                        calc_v = float(res.get(k, 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        calc_v = -1e12
+                    delta = abs(calc_v - float(exp_val))
+                    if delta < 0.01:
+                        matched_keys += 1
+                        vec_score += 2.5
+                    else:
+                        all_match = False
+                        scale = max(100.0, abs(float(exp_val)))
+                        vec_score -= min(4.0, 1.0 + math.log(1.0 + delta / scale * 100.0))
+                else:
+                    if res.get(k) == exp_val:
                         matched_keys += 1
                         vec_score += 1.0
                     else:
