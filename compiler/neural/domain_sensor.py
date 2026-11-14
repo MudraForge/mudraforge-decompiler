@@ -232,15 +232,21 @@ def derive_domain_token_targets(
 
     # Overlay role-guided semantic token types
     _CITATION_WORD_RE = re.compile(
-        r"\b(?:section|sec\.?|sub-section|clause|sub-clause|rule|act|code|notification|circular|g\.s\.r\.|order|regulation|sched\.?|schedule)\b",
+        r"\b(?:sections?|sec\.?|sub-?sections?|paragraphs?|subparagraphs?|sub-?clauses?|clauses?|rules?|act|code|notification|circular|g\.s\.r\.|order|regulation|sched\.?|schedule|subtitle|item)\b",
         re.IGNORECASE,
     )
+    _PAREN_BULLET_RE = re.compile(r"^(?:\(\s*)?[a-z0-9]{1,4}(?:\s*\))?$", re.IGNORECASE)
     role_map = id2role or ID2ROLE
     for (ts, te), r_id in zip(span_boundaries, role_labels):
         r_name = role_map.get(int(r_id), "ROLE_IGNORE")
         span_toks = [tokens[k].lower() for k in range(max(0, ts), min(n_tok, te + 1))]
         span_str = " ".join(span_toks)
-        is_actual_citation = bool(_CITATION_WORD_RE.search(span_str) or any(w in span_toks for w in ("section", "rule", "circular", "notification", "g.s.r.", "act")))
+        is_actual_citation = bool(
+            _CITATION_WORD_RE.search(span_str)
+            or any(w in span_toks for w in ("section", "sections", "subsection", "paragraph", "subparagraph", "rule", "circular", "notification", "g.s.r.", "act"))
+            or (span_toks and span_toks[0] == "(" and span_toks[-1] == ")" and len(span_toks) <= 4)
+            or (_PAREN_BULLET_RE.fullmatch(span_str) and any(c.isdigit() for c in span_str) and not any(c in span_str for c in ("$", "₹", "€", "£", "¥", "%")))
+        )
         for t_i in range(max(0, ts), min(n_tok, te + 1)):
             tok_low = tokens[t_i].lower()
             if r_name == "ROLE_IGNORE":

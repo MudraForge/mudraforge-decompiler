@@ -124,6 +124,21 @@ class DualStreamDecompilerInference:
             if tag.startswith("I-"):
                 dp[0, tag_id] = -1e9
 
+        _CITATION_PREFIX_WORDS = {
+            "section", "sections", "sec", "sec.", "subsection", "subsections",
+            "paragraph", "paragraphs", "subparagraph", "subparagraphs",
+            "clause", "clauses", "sub-clause", "rule", "article", "schedule",
+            "annex",
+        }
+        _FORBID_AFTER_CCY_PREFIXES = (
+            "B-RATE", "I-RATE", "B-DEFINED_TERM", "I-DEFINED_TERM",
+            "B-DEADLINE", "I-DEADLINE", "B-COUNT", "I-COUNT",
+        )
+        _FORBID_ON_LEADING_CCY = (
+            "B-RATE", "I-RATE", "B-DEFINED_TERM", "I-DEFINED_TERM",
+            "B-DEADLINE", "I-DEADLINE", "B-COUNT", "I-COUNT",
+        )
+
         for t in range(1, seq_len):
             tok_lower = tokens[t].lower() if t < len(tokens) else ""
             next_lower = tokens[t + 1].lower() if t + 1 < len(tokens) else ""
@@ -141,6 +156,37 @@ class DualStreamDecompilerInference:
             cur_low = cur_tok.lower()
             next_tok = tokens[t + 1] if t + 1 < len(tokens) else ""
             next_low = next_tok.lower()
+
+            is_v2_arch = getattr(self, "architecture_version", "v1") == "v2"
+            if is_v2_arch:
+                is_cite_num = (
+                    prev_low in _CITATION_PREFIX_WORDS
+                    and cur_tok[:1].isalnum()
+                    and not any(c in cur_tok for c in ("$", "₹", "€", "£", "¥", "%"))
+                    and cur_tok.replace(".", "").isalnum()
+                    and len(cur_tok) <= 8
+                )
+                is_paren_bullet = (
+                    prev_tok == "(" and next_tok == ")" and 1 <= len(cur_tok) <= 4 and cur_tok.isalnum()
+                )
+                if is_cite_num or is_paren_bullet:
+                    for tag_id, tag in self.id2bio.items():
+                        if tag != "O":
+                            step_mask[:, tag_id] = -1e9
+
+                if cur_low in _VITERBI_CURRENCY_TOKENS and any(c.isdigit() for c in next_tok):
+                    for tag_id, tag in self.id2bio.items():
+                        if tag in _FORBID_ON_LEADING_CCY:
+                            step_mask[:, tag_id] = -1e9
+
+                if (
+                    prev_low in _VITERBI_CURRENCY_TOKENS
+                    and any(c.isdigit() for c in cur_tok)
+                    and next_low not in {"%", "percent", "percentum", "bps"}
+                ):
+                    for tag_id, tag in self.id2bio.items():
+                        if tag in _FORBID_AFTER_CCY_PREFIXES:
+                            step_mask[:, tag_id] = -1e9
 
             bind_split_comma_money = (
                 (cur_tok == "," and prev_tok.isdigit() and len(next_tok) == 3 and next_tok.isdigit())
@@ -377,12 +423,46 @@ class DualStreamDecompilerInference:
 
         if self.architecture_version == "v2":
             # v2 BIO boundaries are trained end-to-end without legacy stitch heuristics;
-            # guard against digitless/numberless period nouns misclassified as DEADLINE / UNIT_DURATION.
+            # guard against digitless/numberless period nouns misclassified as DEADLINE / UNIT_DURATION,
+            # bare citation/bullet tokens, and non-value single function words in value roles/units.
+            _NON_VALUE_SINGLE_WORDS = {
+                "such", "not", "over", "under", "above", "below",
+                "other", "other than", "dollar", "dollars", "cent", "cents",
+            }
+            _VALUE_ROLES = {
+                "ROLE_TRANSACTION_EXCESS_THRESHOLD", "ROLE_TRANSACTION_CLIFF_THRESHOLD",
+                "ROLE_STANDARD_STATUTORY_RATE", "ROLE_PENALTY_OR_DEFAULT_OVERRIDE",
+                "ROLE_NON_PAN_OVERRIDE_RATE", "ROLE_DEADLINE_WINDOW", "ROLE_COUNT_QUANTIFIER",
+            }
             kept_spans = []
             old_to_new_span_idx = {}
             for i, entry in enumerate(classified_spans):
-                is_dur = entry.get("bioType") == "DEADLINE" or entry.get("unit") == "UNIT_DURATION"
-                if is_dur and parse_numeric_quantity(entry.get("span", "")) is None:
+                sp_raw = entry.get("span", "")
+                sp_low = sp_raw.strip().lower()
+                sp_bio = entry.get("bioType", "")
+                sp_unit = entry.get("unit", "")
+                sp_role = entry.get("role", "")
+                is_dur = sp_bio == "DEADLINE" or sp_unit == "UNIT_DURATION"
+                is_value_span = (
+                    sp_bio in ("THRESHOLD", "RATE", "DEADLINE", "COUNT")
+                    or sp_unit in ("UNIT_MONEY", "UNIT_RATE", "UNIT_DURATION", "UNIT_COUNT")
+                    or sp_role in _VALUE_ROLES
+                )
+                has_ccy_or_pct = any(c in sp_raw for c in ("$", "₹", "€", "£", "¥", "%"))
+                is_bare_bullet = bool(re.fullmatch(r"\(\s*[a-z0-9]{1,4}\s*\)", sp_low))
+                is_bare_cite = bool(
+                    not has_ccy_or_pct
+                    and re.fullmatch(
+                        r"(?:sections?|sec\.?|sub-?sections?|paragraphs?|subparagraphs?|sub-?clauses?|clauses?|rules?|articles?|schedules?|annex|part|item)(?:\s+(?:no\.?\s*\d+|\d+[a-z0-9().-]*|\(\s*[a-z0-9]{1,4}\s*\)|appendix|table(?:\s+[ivx0-9]+)?|[a-z](?=\s|\(|$)))+",
+                        sp_low,
+                    )
+                )
+                if (
+                    (is_dur and parse_numeric_quantity(sp_raw) is None)
+                    or (is_value_span and sp_low in _NON_VALUE_SINGLE_WORDS)
+                    or is_bare_bullet
+                    or is_bare_cite
+                ):
                     old_to_new_span_idx[i] = -1
                 else:
                     old_to_new_span_idx[i] = len(kept_spans)

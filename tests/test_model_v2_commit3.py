@@ -1236,6 +1236,212 @@ class TestModelV2Commit3(unittest.TestCase):
         spans = decode_bio_spans(tags, tokens, offsets, max_gap_bridge=0)
         self.assertEqual([text[sp["char_start"]:sp["char_end"]] for sp in spans], ["$ 500 , 000"])
 
+    def test_viterbi_blocks_ccy_decimal_dodge_and_forces_citations_bullets_o(self):
+        import torch
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.statutory_neural_parser import V2_BIO_TAGS, decode_bio_spans
+        from compiler.neural.tokenizer import tokenize_with_offsets
+
+        bio2id = {t: i for i, t in enumerate(V2_BIO_TAGS)}
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.architecture_version = "v2"
+        decompiler.bio2id = bio2id
+        decompiler.id2bio = {i: t for i, t in enumerate(V2_BIO_TAGS)}
+        decompiler.transition_mask = torch.zeros((len(V2_BIO_TAGS), len(V2_BIO_TAGS)), dtype=torch.float32)
+
+        text = "(1) under section 3306, tax equals $75,528.50."
+        tokens, offsets = tokenize_with_offsets(text)
+        # tokens: ['(', '1', ')', 'under', 'section', '3306', ',', 'tax', 'equals', '$', '75,528.50', '.']
+        self.assertEqual(tokens[1], "1")
+        self.assertEqual(tokens[5], "3306")
+        self.assertEqual(tokens[9:11], ["$", "75,528.50"])
+
+        logits = torch.full((len(tokens), len(V2_BIO_TAGS)), -6.0)
+        for i in range(len(tokens)):
+            logits[i, bio2id["O"]] = 5.0
+        # Raw false positives on bullet '1' and citation '3306'
+        logits[1, bio2id["B-COUNT"]] = 9.0
+        logits[5, bio2id["B-THRESHOLD"]] = 9.0
+        # Exact section1 dodge signature: '$' wants B-THRESHOLD (or fallback B-DEFINED_TERM), '75,528.50' wants B-RATE
+        logits[9, bio2id["O"]] = -4.0
+        logits[9, bio2id["B-THRESHOLD"]] = 7.0
+        logits[9, bio2id["B-DEFINED_TERM"]] = 5.0
+        logits[10, bio2id["O"]] = -4.0
+        logits[10, bio2id["B-RATE"]] = 9.0
+        logits[10, bio2id["I-THRESHOLD"]] = 6.0
+
+        path = decompiler._viterbi_decode(logits, tokens)
+        tags = [decompiler.id2bio[p] for p in path]
+        self.assertEqual(tags[1], "O")
+        self.assertEqual(tags[5], "O")
+        self.assertEqual(tags[9:11], ["B-THRESHOLD", "I-THRESHOLD"])
+        spans = decode_bio_spans(tags, tokens, offsets, max_gap_bridge=0)
+        self.assertEqual([text[sp["char_start"]:sp["char_end"]] for sp in spans], ["$75,528.50"])
+
+    def test_v2_span_filter_drops_determiners_and_bullets_preserves_symbolic_and_operands(self):
+        import torch
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.domain_sensor import DOMAIN_TOKEN_CLASSES
+        from compiler.neural.statutory_neural_parser import (
+            RULE_MODALITIES,
+            SPAN_UNITS,
+            V2_BIO_TAGS,
+            V2_RELATION_TYPES,
+            V2_SEMANTIC_ROLES,
+        )
+        from compiler.neural.tokenizer import tokenize_with_offsets
+
+        bio2id = {t: i for i, t in enumerate(V2_BIO_TAGS)}
+        role2id = {t: i for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        rel2id = {t: i for i, t in enumerate(V2_RELATION_TYPES)}
+        unit2id = {t: i for i, t in enumerate(SPAN_UNITS)}
+        mod2id = {t: i for i, t in enumerate(RULE_MODALITIES)}
+
+        text = "For such individual, declared freight exceeding such statutory cap equals dollar over $1,000."
+        tokens, offsets = tokenize_with_offsets(text)
+        # Target substrings to verify filter behavior cleanly
+        such_idx = tokens.index("such")
+        freight_idx = tokens.index("declared")
+        cap_idx = tokens.index("statutory") - 1
+        dollar_idx = tokens.index("dollar")
+
+        class _MockDetFilterModel(torch.nn.Module):
+            def forward(self, raw_token_ids, logic_token_ids, suffix_ids=None, span_indices=None, **kwargs):
+                seq_len = raw_token_ids.shape[1]
+                if span_indices is None:
+                    mod_logits = torch.full((1, len(RULE_MODALITIES)), -5.0)
+                    mod_logits[0, mod2id["MODALITY_COMPUTATIONAL_EXCESS"]] = 5.0
+                    bio_logits = torch.full((seq_len, len(V2_BIO_TAGS)), -5.0)
+                    bio_logits[:, bio2id["O"]] = 5.0
+                    # Span 0: 'such' (false THRESHOLD)
+                    bio_logits[such_idx, bio2id["O"]] = -5.0
+                    bio_logits[such_idx, bio2id["B-THRESHOLD"]] = 6.0
+                    # Span 1: 'declared freight' (real OPERAND + UNIT_MONEY -> MUST KEEP)
+                    bio_logits[freight_idx, bio2id["O"]] = -5.0
+                    bio_logits[freight_idx, bio2id["B-OPERAND"]] = 6.0
+                    bio_logits[freight_idx + 1, bio2id["O"]] = -5.0
+                    bio_logits[freight_idx + 1, bio2id["I-OPERAND"]] = 6.0
+                    # Span 2: 'such statutory cap' (real symbolic THRESHOLD -> MUST KEEP)
+                    bio_logits[cap_idx, bio2id["O"]] = -5.0
+                    bio_logits[cap_idx, bio2id["B-THRESHOLD"]] = 6.0
+                    bio_logits[cap_idx + 1, bio2id["O"]] = -5.0
+                    bio_logits[cap_idx + 1, bio2id["I-THRESHOLD"]] = 6.0
+                    bio_logits[cap_idx + 2, bio2id["O"]] = -5.0
+                    bio_logits[cap_idx + 2, bio2id["I-THRESHOLD"]] = 6.0
+                    # Span 3: 'dollar' (false THRESHOLD / UNIT_MONEY -> MUST DROP)
+                    bio_logits[dollar_idx, bio2id["O"]] = -5.0
+                    bio_logits[dollar_idx, bio2id["B-THRESHOLD"]] = 6.0
+                    dom_probs = torch.zeros((1, seq_len, len(DOMAIN_TOKEN_CLASSES)))
+                    dom_probs[0, :, 0] = 1.0
+                    return {
+                        "modality_logits": mod_logits,
+                        "clause_mod_logits": None,
+                        "bio_logits": bio_logits,
+                        "domain_probs": dom_probs,
+                        "domain_abstain_probs": torch.tensor([[0.95, 0.05]]),
+                    }
+
+                n = len(span_indices)
+                role_logits = torch.full((n, len(V2_SEMANTIC_ROLES)), -5.0)
+                unit_logits = torch.full((n, len(SPAN_UNITS)), -5.0)
+                rel_logits = torch.full((n, n, len(V2_RELATION_TYPES)), -5.0)
+                rel_logits[:, :, rel2id["REL_NO_EDGE"]] = 2.0
+                role_logits[0, role2id["ROLE_TRANSACTION_EXCESS_THRESHOLD"]] = 6.0
+                unit_logits[0, unit2id["UNIT_MONEY"]] = 6.0
+                role_logits[1, role2id["ROLE_COMPUTATION_OPERAND"]] = 6.0
+                unit_logits[1, unit2id["UNIT_MONEY"]] = 6.0
+                role_logits[2, role2id["ROLE_TRANSACTION_EXCESS_THRESHOLD"]] = 6.0
+                unit_logits[2, unit2id["UNIT_SYMBOL_VAR"]] = 6.0
+                role_logits[3, role2id["ROLE_TRANSACTION_EXCESS_THRESHOLD"]] = 6.0
+                unit_logits[3, unit2id["UNIT_MONEY"]] = 6.0
+                return {"role_logits": role_logits, "unit_logits": unit_logits, "rel_logits": rel_logits}
+
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.architecture_version = "v2"
+        decompiler.model = _MockDetFilterModel()
+        decompiler.vocab = {"<PAD>": 0, "<UNK>": 1}
+        decompiler.bio2id = bio2id
+        decompiler.id2bio = {i: t for i, t in enumerate(V2_BIO_TAGS)}
+        decompiler.id2role = {i: t for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        decompiler.id2rel = {i: t for i, t in enumerate(V2_RELATION_TYPES)}
+        decompiler.id2unit = {i: t for i, t in enumerate(SPAN_UNITS)}
+        decompiler.id2mod = {i: t for i, t in enumerate(RULE_MODALITIES)}
+        decompiler.id2dom = {i: t for i, t in enumerate(DOMAIN_TOKEN_CLASSES)}
+        decompiler.transition_mask = torch.zeros((len(V2_BIO_TAGS), len(V2_BIO_TAGS)), dtype=torch.float32)
+
+        raw_ids = [1] * len(tokens)
+        logic_ids = [1] * len(tokens)
+        suffix_ids = [0] * len(tokens)
+        out = decompiler._annotate_window(
+            text=text,
+            tokens=tokens,
+            offsets=offsets,
+            raw_ids=raw_ids,
+            logic_ids=logic_ids,
+            suffix_ids=suffix_ids,
+            window_clauses=[(0, 0, len(tokens) - 1)],
+            w_tok_start=0,
+            w_tok_end=len(tokens) - 1,
+        )
+        kept = [sp["span"] for sp in out["classified_spans"]]
+        self.assertEqual(kept, ["declared freight", "such statutory cap"])
+
+    def test_ast_composer_and_domain_sensor_citations_non_coref_such_and_boilerplate(self):
+        from compiler.neural.domain_sensor import DOMAIN_TOKEN_CLASSES, derive_domain_token_targets
+        from compiler.neural.tokenizer import tokenize_with_offsets
+        from compiler.training.ast_composer import (
+            CombinatorialAstComposer,
+            _BOILERPLATE_SCOPE_PHRASES,
+            _BULLET_PREFIXES,
+            _NON_COREF_SUCH_PHRASES,
+        )
+
+        comp = CombinatorialAstComposer(seed=99)
+        saw_spaced_cite = False
+        saw_bullet = False
+        saw_non_coref_such = False
+        saw_boilerplate = False
+        saw_decimal_money = False
+        for _ in range(500):
+            s = comp.sample_rule(split="train")
+            txt = s["text"]
+            txt_low = txt.lower()
+            ignore_spans = [sp[0].lower() for sp in s["spans_with_units"] if sp[1] == "ROLE_IGNORE"]
+            non_ignore_spans = [sp[0].lower() for sp in s["spans_with_units"] if sp[1] != "ROLE_IGNORE"]
+            if any("section 3306" in ig or "section 151" in ig or "sections 214" in ig for ig in ignore_spans):
+                saw_spaced_cite = True
+            if any(b.lower() in ignore_spans for b in _BULLET_PREFIXES):
+                saw_bullet = True
+            if any(p in txt_low for p in _NON_COREF_SUCH_PHRASES) and not any("such " in sp for sp in non_ignore_spans):
+                saw_non_coref_such = True
+            if any(p in txt_low for p in _BOILERPLATE_SCOPE_PHRASES) and not any("subtitle" in sp or "dollar amount" in sp for sp in non_ignore_spans):
+                saw_boilerplate = True
+            if any(".50" in sp or ".25" in sp for sp in non_ignore_spans):
+                saw_decimal_money = True
+        self.assertTrue(saw_spaced_cite)
+        self.assertTrue(saw_bullet)
+        self.assertTrue(saw_non_coref_such)
+        self.assertTrue(saw_boilerplate)
+        self.assertTrue(saw_decimal_money)
+
+        cite_txt = "( 1 ) Pursuant to section 3306 ( a ), tax is $500."
+        toks, offs = tokenize_with_offsets(cite_txt)
+        dom_ids, is_abstain = derive_domain_token_targets(
+            tokens=toks,
+            offsets=offs,
+            raw_text=cite_txt,
+            span_boundaries=[(0, 2), (5, 9)],
+            role_labels=[0, 0],
+            modality_id=0,
+            id2role={0: "ROLE_IGNORE"},
+        )
+        self.assertEqual(is_abstain, 0)
+        cite_cls = DOMAIN_TOKEN_CLASSES.index("DT_CITATION_HEADER_IGNORE")
+        self.assertEqual(dom_ids[1], cite_cls)
+        self.assertEqual(dom_ids[6], cite_cls)
+
 
 if __name__ == "__main__":
     unittest.main()

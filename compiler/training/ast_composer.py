@@ -100,12 +100,24 @@ _COLLECTION_BOOL_PREDS = [
 ]
 
 _CURRENCY_RENDERS_BY_CODE = {
-    "USD": [lambda k: f"${k:,}", lambda k: f"USD {k:,}"],
-    "INR": [lambda k: f"₹{k:,}", lambda k: f"INR {k:,}"],
-    "EUR": [lambda k: f"€{k:,}", lambda k: f"EUR {k:,}"],
-    "GBP": [lambda k: f"£{k:,}", lambda k: f"GBP {k:,}"],
-    "SGD": [lambda k: f"SGD {k:,}"],
-    "CHF": [lambda k: f"CHF {k:,}"],
+    "USD": [
+        lambda k: f"${k:,}" if isinstance(k, int) else f"${k:,.2f}",
+        lambda k: f"USD {k:,}" if isinstance(k, int) else f"USD {k:,.2f}",
+    ],
+    "INR": [
+        lambda k: f"₹{k:,}" if isinstance(k, int) else f"₹{k:,.2f}",
+        lambda k: f"INR {k:,}" if isinstance(k, int) else f"INR {k:,.2f}",
+    ],
+    "EUR": [
+        lambda k: f"€{k:,}" if isinstance(k, int) else f"€{k:,.2f}",
+        lambda k: f"EUR {k:,}" if isinstance(k, int) else f"EUR {k:,.2f}",
+    ],
+    "GBP": [
+        lambda k: f"£{k:,}" if isinstance(k, int) else f"£{k:,.2f}",
+        lambda k: f"GBP {k:,}" if isinstance(k, int) else f"GBP {k:,.2f}",
+    ],
+    "SGD": [lambda k: f"SGD {k:,}" if isinstance(k, int) else f"SGD {k:,.2f}"],
+    "CHF": [lambda k: f"CHF {k:,}" if isinstance(k, int) else f"CHF {k:,.2f}"],
 }
 
 _WORD_AMOUNTS_BY_CODE = {
@@ -156,6 +168,21 @@ _CITATION_NOISE = [
     "Circular No. 14",
     "Article 7(b) Note",
     "Annex III Table 2",
+    "section 3306 ( a )",
+    "section 151",
+    "section 1",
+    "section 68 ( b )",
+    "sections 214 ( c )",
+    "subsection ( a ) ( 1 )",
+    "paragraph ( 13 )",
+]
+
+_BULLET_PREFIXES = [
+    "( 1 )",
+    "( 2 )",
+    "( 13 )",
+    "( A )",
+    "( b )",
 ]
 
 _PERIOD_SCOPE_PHRASES = [
@@ -167,6 +194,25 @@ _PERIOD_SCOPE_PHRASES = [
     "in the reporting year",
     "at the close of his taxable year",
     "for such taxable period",
+]
+
+_NON_COREF_SUCH_PHRASES = [
+    "for such individual",
+    "by such employer",
+    "of such household",
+    "for such service",
+    "for such spouse",
+    "of such dependent",
+    "to such organization",
+]
+
+_BOILERPLATE_SCOPE_PHRASES = [
+    "for purposes of this subtitle",
+    "beginning in the calendar year",
+    "having no other dependents",
+    "claiming such individual",
+    "the dollar amount in effect",
+    "as an ineligible individual",
 ]
 
 
@@ -191,8 +237,11 @@ def _fmt_money(rng: random.Random, major_val: int, currency: str = "USD") -> str
     word_map = _WORD_AMOUNTS_BY_CODE.get(currency) or {}
     if major_val in word_map and rng.random() < 0.20:
         return word_map[major_val]
+    val: int | float = major_val
+    if major_val >= 1000 and rng.random() < 0.14:
+        val = float(major_val) + rng.choice((0.50, 0.25))
     fns = _CURRENCY_RENDERS_BY_CODE.get(currency, _CURRENCY_RENDERS_BY_CODE["USD"])
-    return rng.choice(fns)(major_val)
+    return rng.choice(fns)(val)
 
 
 class CombinatorialAstComposer:
@@ -1246,40 +1295,70 @@ class CombinatorialAstComposer:
 
     # ── Shared Distractor & Fronted/Trailing Clause Variation (`ROLE_IGNORE` + `UNIT_NONE`) ───
 
+    @staticmethod
+    def _prepend_clause_prose(sample: dict[str, Any], prefix: str) -> None:
+        sample["text"] = f"{prefix} {sample['text']}"
+        if sample.get("clauses"):
+            sample["clauses"] = [f"{prefix} {sample['clauses'][0]}"] + sample["clauses"][1:]
+
+    @staticmethod
+    def _append_clause_prose(sample: dict[str, Any], suffix: str) -> None:
+        txt = sample["text"]
+        if txt.endswith("."):
+            sample["text"] = f"{txt[:-1]}, {suffix}."
+            if sample.get("clauses"):
+                last_c = sample["clauses"][-1]
+                sample["clauses"][-1] = f"{last_c[:-1]}, {suffix}." if last_c.endswith(".") else f"{last_c}, {suffix}"
+        else:
+            sample["text"] = f"{txt}, {suffix}"
+            if sample.get("clauses"):
+                sample["clauses"][-1] = f"{sample['clauses'][-1]}, {suffix}"
+
     def _maybe_inject_distractor(self, sample: dict[str, Any], formulation: int) -> dict[str, Any]:
-        # Inject numberless accounting/tax period nouns tagged `O` (not DEADLINE / UNIT_DURATION)
+        # Inject citations/bullets (`ROLE_IGNORE` + `UNIT_NONE`), numberless period nouns (`O`),
+        # non-coref "such <noun>" phrases (`O`), and statutory boilerplate (`O`).
         has_fronted_cite = False
-        if self.rng.random() < 0.45:
+        if self.rng.random() < 0.48:
             cite = self.rng.choice(_CITATION_NOISE)
-            if self.rng.random() < 0.50:
-                # Fronted citation preamble so spans occur at shifted sentence positions
-                lead = "Pursuant to" if formulation in (0, 1) else "Subject to"
-                sample["text"] = f"{lead} {cite}, {sample['text']}"
-                if sample.get("clauses"):
-                    sample["clauses"] = [f"{lead} {cite}, {sample['clauses'][0]}"] + sample["clauses"][1:]
+            if cite not in sample["text"]:
+                if self.rng.random() < 0.50:
+                    lead = "Pursuant to" if formulation in (0, 1) else "Subject to"
+                    self._prepend_clause_prose(sample, f"{lead} {cite},")
+                    has_fronted_cite = True
+                else:
+                    pfx = "Reference:" if formulation in (0, 1) else "See"
+                    sample["text"] = f"{sample['text']} {pfx} {cite}."
+                    if sample.get("clauses"):
+                        sample["clauses"][-1] = f"{sample['clauses'][-1]} {pfx} {cite}."
+                sample["spans_with_units"].append((cite, "ROLE_IGNORE", "UNIT_NONE"))
+
+        if not has_fronted_cite and not sample["text"].lstrip().startswith("(") and self.rng.random() < 0.18:
+            bullet = self.rng.choice(_BULLET_PREFIXES)
+            if bullet not in sample["text"]:
+                self._prepend_clause_prose(sample, bullet)
                 has_fronted_cite = True
-            else:
-                pfx = "Reference:" if formulation in (0, 1) else "See"
-                sample["text"] = f"{sample['text']} {pfx} {cite}."
-                if sample.get("clauses"):
-                    sample["clauses"][-1] = f"{sample['clauses'][-1]} {pfx} {cite}."
-            sample["spans_with_units"].append((cite, "ROLE_IGNORE", "UNIT_NONE"))
+                sample["spans_with_units"].append((bullet, "ROLE_IGNORE", "UNIT_NONE"))
+
         if self.rng.random() < 0.30:
             period_p = self.rng.choice(_PERIOD_SCOPE_PHRASES)
-            txt = sample["text"]
-            if not has_fronted_cite and not txt.lstrip().startswith("(") and self.rng.random() < 0.35:
+            if not has_fronted_cite and not sample["text"].lstrip().startswith("(") and self.rng.random() < 0.35:
                 cap_p = period_p[0].upper() + period_p[1:]
-                sample["text"] = f"{cap_p}, {txt}"
-                if sample.get("clauses"):
-                    sample["clauses"] = [f"{cap_p}, {sample['clauses'][0]}"] + sample["clauses"][1:]
-            elif txt.endswith("."):
-                sample["text"] = f"{txt[:-1]}, {period_p}."
-                if sample.get("clauses"):
-                    last_c = sample["clauses"][-1]
-                    if last_c.endswith("."):
-                        sample["clauses"][-1] = f"{last_c[:-1]}, {period_p}."
-                    else:
-                        sample["clauses"][-1] = f"{last_c}, {period_p}"
+                self._prepend_clause_prose(sample, f"{cap_p},")
+                has_fronted_cite = True
             else:
-                sample["text"] = f"{txt}, {period_p}"
+                self._append_clause_prose(sample, period_p)
+
+        if "such " not in sample["text"].lower() and self.rng.random() < 0.30:
+            such_p = self.rng.choice(_NON_COREF_SUCH_PHRASES)
+            self._append_clause_prose(sample, such_p)
+
+        if "dollar" not in sample["text"].lower() and self.rng.random() < 0.25:
+            bp = self.rng.choice(_BOILERPLATE_SCOPE_PHRASES)
+            if "such " not in bp or "such " not in sample["text"].lower():
+                if not has_fronted_cite and not sample["text"].lstrip().startswith("(") and self.rng.random() < 0.45:
+                    cap_bp = bp[0].upper() + bp[1:]
+                    self._prepend_clause_prose(sample, f"{cap_bp},")
+                else:
+                    self._append_clause_prose(sample, bp)
+
         return sample
