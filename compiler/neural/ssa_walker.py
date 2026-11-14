@@ -1269,8 +1269,11 @@ def compose_clause_v2(
 
     # Track node SSA bindings built bottom-up during topological traversal
     node_ssa: dict[int, str] = {}
+    fold_var: str | None = None
+    fold_key: str | None = None
+    fold_type: str | None = None
 
-    # 1. Bounded Collection Fold Path (`SUM_OVER` / `COUNT`)
+    # 1. Bounded Collection Fold Path (`SUM_OVER` / `COUNT`) — composes downstream into arithmetic if present
     if fold_edges:
         s_id, t_id, fold_rel = fold_edges[0]
         coll_key = _v2_pluralize_noun(parsed_by_idx[t_id]["text"])
@@ -1284,68 +1287,111 @@ def compose_clause_v2(
             "predicate": True,
             "body": f"it.{elem_key}" if op_name == "SUM_OVER" else 1,
         }
-        res_key = "countTotal" if op_name == "COUNT" else "sumTotalPaisa"
-        res_var = _emit(res_key, fold_expr, "fold")
-        return {
-            "clauseIdx": clause_idx,
-            "steps": steps,
-            "handlers": handlers,
-            "outputVar": res_var,
-            "outputKey": res_key,
-            "inputs": inputs,
-            "standardRateBps": None,
-            "resultType": "INTEGER" if op_name == "COUNT" else "MONEY_MINOR",
-        }
+        fold_key = "countTotal" if op_name == "COUNT" else "sumTotalPaisa"
+        fold_type = "INTEGER" if op_name == "COUNT" else "MONEY_MINOR"
+        fold_var = _emit(fold_key, fold_expr, "fold")
+        if not rate_nodes and not money_nodes and not bool_nodes and not quant_edges:
+            return {
+                "clauseIdx": clause_idx,
+                "steps": steps,
+                "handlers": handlers,
+                "outputVar": fold_var,
+                "outputKey": fold_key,
+                "inputs": inputs,
+                "standardRateBps": None,
+                "resultType": fold_type,
+            }
 
-    # 2. First-Order Quantifier Path (`FORALL` / `EXISTS` / `NOT(FORALL)` / `NOT(EXISTS)`)
+    # 2. First-Order Quantifiers & Precedence-Aware Boolean DAG (`AND` binds tighter than `OR`)
+    gate_cond_expr: Any = None
+    quant_expr: Any = None
     if quant_edges:
         s_id, t_id, q_rel = quant_edges[0]
         coll_key = _v2_pluralize_noun(parsed_by_idx[t_id]["text"])
         pred_key = _v2_derive_logic_key(parsed_by_idx[s_id]["text"], "conditionMet")
-        has_not = any(rel == "REL_LOGICAL_NOT" for _, _, rel in in_clause_edges)
+        has_q_not = any(
+            rel == "REL_LOGICAL_NOT" and (tid in (s_id, t_id) or (sid not in bool_nodes and sid not in (s_id, t_id)))
+            for sid, tid, rel in in_clause_edges
+        )
         base_q = "FORALL" if q_rel == "REL_QUANTIFIER_FORALL" else "EXISTS"
         inputs.setdefault(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
-        q_expr = {
+        quant_expr = {
             "op": base_q,
             "iteratorVar": "it",
             "collection": f"inputs.{coll_key}",
             "predicate": {"op": "EQ", "left": f"it.{pred_key}", "right": True},
         }
-        if has_not:
-            q_expr = {"op": "NOT", "operand": q_expr}
-        out_key = _v2_fact_key_camel(pred_key + "Satisfied", "ruleSatisfied")
-        res_var = _emit(out_key, q_expr, "quantifier-fold")
-        return {
-            "clauseIdx": clause_idx,
-            "steps": steps,
-            "handlers": handlers,
-            "outputVar": res_var,
-            "outputKey": out_key,
-            "inputs": inputs,
-            "standardRateBps": None,
-            "resultType": "BOOLEAN",
-        }
+        if has_q_not and not bool_nodes:
+            quant_expr = {"op": "NOT", "operand": quant_expr}
+        if not rate_nodes and not money_nodes and not bool_nodes and fold_var is None:
+            out_key = _v2_fact_key_camel(pred_key + "Satisfied", "ruleSatisfied")
+            res_var = _emit(out_key, quant_expr, "quantifier-fold")
+            return {
+                "clauseIdx": clause_idx,
+                "steps": steps,
+                "handlers": handlers,
+                "outputVar": res_var,
+                "outputKey": out_key,
+                "inputs": inputs,
+                "standardRateBps": None,
+                "resultType": "BOOLEAN",
+            }
 
-    # 3. Pure Boolean Gate Path (`AND` / `OR` / `NOT`) when zero money+rate nodes exist
-    if not rate_nodes and not money_nodes:
-        bool_edges = [e for e in in_clause_edges if e[2] in ("REL_LOGICAL_AND", "REL_LOGICAL_OR", "REL_LOGICAL_NOT")]
-        if not bool_nodes and not bool_edges:
-            raise V2LoweringError("ERR_NO_COMPUTATION: no computational or boolean predicate spans resolved")
-        terms = []
+    bool_edges = [e for e in in_clause_edges if e[2] in ("REL_LOGICAL_AND", "REL_LOGICAL_OR", "REL_LOGICAL_NOT")]
+    if bool_nodes or bool_edges or quant_expr is not None:
+        # Build atomic predicate map with unary NOT (`tid == bid`)
+        atom_by_id: dict[int, Any] = {}
         for bid in bool_nodes:
             bk = parsed_by_idx[bid]["key"]
             inputs.setdefault(bk, {"type": "BOOLEAN"})
-            expr = f"inputs.{bk}"
+            expr: Any = f"inputs.{bk}"
             if any(rel == "REL_LOGICAL_NOT" and tid == bid for sid, tid, rel in bool_edges):
                 expr = {"op": "NOT", "operand": expr}
-            terms.append(expr)
-        if not terms:
-            raise V2LoweringError("ERR_NO_COMPUTATION: no boolean operands resolved")
-        join_op = "OR" if any(rel == "REL_LOGICAL_OR" for _, _, rel in bool_edges) else "AND"
-        combined = terms[0]
-        for nxt in terms[1:]:
-            combined = {"op": join_op, "left": combined, "right": nxt}
-        out_var = _emit("predicateResult", combined, "boolean-gate")
+            atom_by_id[bid] = expr
+
+        # Group conjuncts (`REL_LOGICAL_AND`) before joining disjunctions (`REL_LOGICAL_OR`)
+        and_parent: dict[int, int] = {bid: bid for bid in bool_nodes}
+
+        def _find(x: int) -> int:
+            while and_parent[x] != x:
+                and_parent[x] = and_parent[and_parent[x]]
+                x = and_parent[x]
+            return x
+
+        for sid, tid, rel in bool_edges:
+            if rel == "REL_LOGICAL_AND" and sid in and_parent and tid in and_parent:
+                rx, ry = _find(sid), _find(tid)
+                if rx != ry:
+                    and_parent[max(rx, ry)] = min(rx, ry)
+
+        # Preserve topological/order appearance while folding each AND-component first
+        comp_members: dict[int, list[int]] = {}
+        for bid in bool_nodes:
+            comp_members.setdefault(_find(bid), []).append(bid)
+
+        and_groups: list[Any] = []
+        for root_id in sorted(comp_members.keys(), key=lambda r: bool_nodes.index(r)):
+            members = comp_members[root_id]
+            grp_expr = atom_by_id[members[0]]
+            for m_id in members[1:]:
+                grp_expr = {"op": "AND", "left": grp_expr, "right": atom_by_id[m_id]}
+            and_groups.append(grp_expr)
+
+        if quant_expr is not None:
+            and_groups.append(quant_expr)
+
+        if and_groups:
+            has_or = any(rel == "REL_LOGICAL_OR" for _, _, rel in bool_edges)
+            join_top = "OR" if has_or else "AND"
+            gate_cond_expr = and_groups[0]
+            for nxt in and_groups[1:]:
+                gate_cond_expr = {"op": join_top, "left": gate_cond_expr, "right": nxt}
+
+    # Pure boolean/quantifier rule when there are zero downstream arithmetic/fold outputs
+    if not rate_nodes and not money_nodes and fold_var is None:
+        if gate_cond_expr is None:
+            raise V2LoweringError("ERR_NO_COMPUTATION: no computational or boolean predicate spans resolved")
+        out_var = _emit("predicateResult", gate_cond_expr, "boolean-gate")
         return {
             "clauseIdx": clause_idx,
             "steps": steps,
@@ -1376,8 +1422,9 @@ def compose_clause_v2(
         if key and key in symbol_env:
             sym_floor_ref = str(symbol_env[key]["ref"])
             break
-        if parsed_by_idx[sid]["key"] in symbol_env:
-            sym_floor_ref = str(symbol_env[parsed_by_idx[sid]["key"]]["ref"])
+        span_key = parsed_by_idx[sid].get("key")
+        if span_key and span_key in symbol_env:
+            sym_floor_ref = str(symbol_env[span_key]["ref"])
             break
 
     # Check explicit excess-over-threshold safety invariant without silent flat degradation
@@ -1417,7 +1464,11 @@ def compose_clause_v2(
         if rel == "REL_BRACKET_NEXT" and parsed_by_idx[t]["kind"] == "MONEY"
     }
 
-    operand_ref, operand_key = _resolve_operand_expr()
+    if fold_var is not None:
+        operand_ref = f"vars.{fold_var}"
+        operand_key = (fold_key or "foldValue").removesuffix("Paisa")
+    else:
+        operand_ref, operand_key = _resolve_operand_expr()
     current_var: str | None = None
     active_floor_minor: int | None = None
     active_ceiling_minor: int | None = None
@@ -1601,6 +1652,8 @@ def compose_clause_v2(
             "standardRateBps": None,
             "resultType": "MONEY_MINOR",
         }
+    elif fold_var is not None:
+        current_var = fold_var
     else:
         raise V2LoweringError("ERR_NO_COMPUTATION: no rate, money, or predicate structure to lower")
 
@@ -1630,7 +1683,25 @@ def compose_clause_v2(
                 "cap",
             )
 
-    out_key = operand_key if operand_key.endswith("TaxPaisa") else f"{operand_key}TaxPaisa"
+    if gate_cond_expr is not None:
+        zero_expr: Any = 0 if (fold_type == "INTEGER" and not rate_nodes and not money_nodes) else {"op": "TO_PAISE", "value": "0"}
+        gate_key = "gatedCount" if (fold_type == "INTEGER" and not rate_nodes and not money_nodes) else "gatedResultPaisa"
+        current_var = _emit(
+            gate_key,
+            {
+                "op": "CONDITIONAL",
+                "test": gate_cond_expr,
+                "then": f"vars.{current_var}",
+                "else": zero_expr,
+            },
+            "boolean-gate",
+        )
+
+    out_type = fold_type if (fold_var is not None and not rate_nodes and not money_nodes) else "MONEY_MINOR"
+    if out_type == "INTEGER":
+        out_key = fold_key or "countTotal"
+    else:
+        out_key = operand_key if operand_key.endswith("TaxPaisa") else f"{operand_key}TaxPaisa"
     return {
         "clauseIdx": clause_idx,
         "steps": steps,
@@ -1639,5 +1710,5 @@ def compose_clause_v2(
         "outputKey": out_key,
         "inputs": inputs,
         "standardRateBps": primary_rate_bps,
-        "resultType": "MONEY_MINOR",
+        "resultType": out_type,
     }

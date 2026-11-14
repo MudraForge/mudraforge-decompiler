@@ -178,7 +178,8 @@ class DomainSensorModel(nn.Module):
             valid_mask = valid_mask & (~pad_mask)
         m_float = valid_mask.unsqueeze(-1).type_as(h_domain)
         mean_pool = (h_domain * m_float).sum(dim=1) / m_float.sum(dim=1).clamp(min=1.0)
-        max_pool = h_domain.masked_fill(~valid_mask.unsqueeze(-1), -1e9).max(dim=1).values
+        neg_inf = torch.finfo(h_domain.dtype).min
+        max_pool = h_domain.masked_fill(~valid_mask.unsqueeze(-1), neg_inf).max(dim=1).values
         max_pool = torch.where(valid_mask.any(dim=1, keepdim=True), max_pool, torch.zeros_like(max_pool))
         domain_abstain_logits = self.abstain_head(torch.cat([mean_pool, max_pool], dim=-1))
 

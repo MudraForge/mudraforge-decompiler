@@ -1658,7 +1658,8 @@ def build_clause_scoped_computation_v2(
         out_var_ref = f"vars.{comp['outputVar']}"
         if cidx in defined_clause_targets:
             rec = defined_clause_targets[cidx]
-            all_outputs[rec["exportKey"]] = out_var_ref
+            exp_key = rec["symbolKey"] if comp.get("resultType") == "BOOLEAN" else rec["exportKey"]
+            all_outputs[exp_key] = out_var_ref
             rec["ref"] = out_var_ref
         else:
             all_outputs[comp["outputKey"]] = out_var_ref

@@ -76,21 +76,17 @@ _COLLECTION_BOOL_PREDS = [
     ("signed attestation", "hasSignedAttestation"),
 ]
 
-_CURRENCY_RENDERS = [
-    ("USD", lambda k: f"${k:,}"),
-    ("USD", lambda k: f"USD {k:,}"),
-    ("INR", lambda k: f"₹{k:,}"),
-    ("INR", lambda k: f"INR {k:,}"),
-    ("EUR", lambda k: f"€{k:,}"),
-    ("GBP", lambda k: f"£{k:,}"),
-]
+_CURRENCY_RENDERS_BY_CODE = {
+    "USD": [lambda k: f"${k:,}", lambda k: f"USD {k:,}"],
+    "INR": [lambda k: f"₹{k:,}", lambda k: f"INR {k:,}"],
+    "EUR": [lambda k: f"€{k:,}", lambda k: f"EUR {k:,}"],
+    "GBP": [lambda k: f"£{k:,}", lambda k: f"GBP {k:,}"],
+}
 
-_WORD_AMOUNTS = [
-    (500000, "five hundred thousand dollars"),
-    (250000, "two hundred fifty thousand dollars"),
-    (40000, "forty thousand dollars"),
-    (15000, "fifteen thousand euros"),
-]
+_WORD_AMOUNTS_BY_CODE = {
+    "USD": {500000: "five hundred thousand dollars", 250000: "two hundred fifty thousand dollars", 40000: "forty thousand dollars"},
+    "EUR": {15000: "fifteen thousand euros"},
+}
 
 _RATES = [
     "0.5%", "1.5%", "2%", "4%", "7.5%", "12%", "18%", "25%", "28%",
@@ -119,13 +115,12 @@ _CITATION_NOISE = [
 ]
 
 
-def _fmt_money(rng: random.Random, major_val: int) -> str:
-    if rng.random() < 0.12 and major_val >= 10000:
-        word_val, word_str = rng.choice(_WORD_AMOUNTS)
-        del word_val
-        return word_str
-    _, fn = rng.choice(_CURRENCY_RENDERS)
-    return fn(major_val)
+def _fmt_money(rng: random.Random, major_val: int, currency: str = "USD") -> str:
+    word_map = _WORD_AMOUNTS_BY_CODE.get(currency) or {}
+    if major_val in word_map and rng.random() < 0.20:
+        return word_map[major_val]
+    fns = _CURRENCY_RENDERS_BY_CODE.get(currency, _CURRENCY_RENDERS_BY_CODE["USD"])
+    return rng.choice(fns)(major_val)
 
 
 class CombinatorialAstComposer:
@@ -142,6 +137,7 @@ class CombinatorialAstComposer:
         """
         if formulation is None:
             formulation = self.rng.choice([0, 1]) if self.rng.random() < 0.80 else self.rng.choice([2, 3])
+        ccy = self.rng.choice(["USD", "INR", "EUR", "GBP"])
 
         family = self.rng.choices(
             [
@@ -151,21 +147,30 @@ class CombinatorialAstComposer:
                 "COLLECTION_FOLD",
                 "SCOPED_SUBSTITUTION",
                 "DEONTIC_GATE",
+                "FOLD_TO_ARITHMETIC",
+                "GATED_ARITHMETIC",
+                "MULTI_TIER_BRACKET",
             ],
-            weights=[0.28, 0.18, 0.18, 0.14, 0.12, 0.10],
+            weights=[0.20, 0.13, 0.14, 0.10, 0.10, 0.08, 0.09, 0.09, 0.07],
             k=1,
         )[0]
 
         if family == "COMPOSED_ARITHMETIC":
-            sample = self._gen_composed_arithmetic(formulation)
+            sample = self._gen_composed_arithmetic(formulation, currency=ccy)
         elif family == "BOUNDED_BRACKET":
-            sample = self._gen_bounded_bracket(formulation)
+            sample = self._gen_bounded_bracket(formulation, currency=ccy)
         elif family == "BOOLEAN_DAG":
             sample = self._gen_boolean_dag(formulation)
         elif family == "COLLECTION_FOLD":
             sample = self._gen_collection_fold(formulation)
         elif family == "SCOPED_SUBSTITUTION":
-            sample = self._gen_scoped_substitution(formulation)
+            sample = self._gen_scoped_substitution(formulation, currency=ccy)
+        elif family == "FOLD_TO_ARITHMETIC":
+            sample = self._gen_fold_to_arithmetic(formulation, currency=ccy)
+        elif family == "GATED_ARITHMETIC":
+            sample = self._gen_gated_arithmetic(formulation, currency=ccy)
+        elif family == "MULTI_TIER_BRACKET":
+            sample = self._gen_multi_tier_bracket(formulation, currency=ccy)
         else:
             sample = self._gen_deontic_gate(formulation)
 
@@ -173,16 +178,16 @@ class CombinatorialAstComposer:
 
     # ── Builder 1: Depth 1..5 Composed Arithmetic (`RATE`, `EXCESS`, `SUB_CREDIT`, `MIN_CAP`, `LET`) ──
 
-    def _gen_composed_arithmetic(self, formulation: int) -> dict[str, Any]:
+    def _gen_composed_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
         op_name = self.rng.choice(_BASE_OPERANDS)
         rate = self.rng.choice(_RATES)
         use_excess = self.rng.random() < 0.65
-        floor_amt = _fmt_money(self.rng, self.rng.choice([5000, 12500, 25000, 50000, 120000]))
+        floor_amt = _fmt_money(self.rng, self.rng.choice([5000, 12500, 25000, 50000, 120000]), currency=currency)
         use_let_wrapper = self.rng.random() < 0.40
         use_credit = self.rng.random() < 0.55
         use_cap = self.rng.random() < 0.55
-        credit_amt = _fmt_money(self.rng, self.rng.choice([250, 500, 1200, 2500]))
-        cap_amt = _fmt_money(self.rng, self.rng.choice([8000, 15000, 30000, 75000]))
+        credit_amt = _fmt_money(self.rng, self.rng.choice([250, 500, 1200, 2500]), currency=currency)
+        cap_amt = _fmt_money(self.rng, self.rng.choice([8000, 15000, 30000, 75000]), currency=currency)
         def_term = self.rng.choice(_DEFINED_TERMS)
         use_unit_contrast = self.rng.random() < 0.45
         dur_txt = self.rng.choice(_DURATIONS)
@@ -308,15 +313,15 @@ class CombinatorialAstComposer:
 
     # ── Builder 2: Bounded Brackets `(floor, ceiling]` + Optional `baseTax` ───────────────────────
 
-    def _gen_bounded_bracket(self, formulation: int) -> dict[str, Any]:
+    def _gen_bounded_bracket(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
         op_name = self.rng.choice(_BASE_OPERANDS)
         lo_num = self.rng.choice([15000, 36900, 50000, 80000])
         hi_num = lo_num + self.rng.choice([25000, 52250, 90000])
-        lo_amt = _fmt_money(self.rng, lo_num)
-        hi_amt = _fmt_money(self.rng, hi_num)
+        lo_amt = _fmt_money(self.rng, lo_num, currency=currency)
+        hi_amt = _fmt_money(self.rng, hi_num, currency=currency)
         rate = self.rng.choice(_RATES)
         has_base_tax = self.rng.random() < 0.70
-        base_tax = _fmt_money(self.rng, max(500, int(lo_num * 0.15)))
+        base_tax = _fmt_money(self.rng, max(500, int(lo_num * 0.15)), currency=currency)
         use_decl_header = self.rng.random() < 0.55
 
         spans: list[tuple[str, str, str]] = []
@@ -391,13 +396,14 @@ class CombinatorialAstComposer:
             },
         }
 
-    # ── Builder 3: Arbitrary Depth Boolean Logic & Kinship/Qualification DAGs ─────────────────
+    # ── Builder 3: Arbitrary Depth Boolean Logic & Mixed AND/OR Precedence DAGs ─────────────────
 
     def _gen_boolean_dag(self, formulation: int) -> dict[str, Any]:
         preds = self.rng.sample(_BOOLEAN_PREDICATES, k=self.rng.randint(2, 4))
         use_def = self.rng.random() < 0.65
         term = self.rng.choice(_DEFINED_TERMS)
-        op_join = self.rng.choice(["AND", "OR"])
+        use_mixed_dnf = len(preds) >= 3 and self.rng.random() < 0.40
+        op_join = "DNF_MIXED" if use_mixed_dnf else self.rng.choice(["AND", "OR"])
         neg_mask = [self.rng.random() < 0.35 for _ in preds]
         if not any(neg_mask) and len(preds) >= 2 and self.rng.random() < 0.5:
             neg_mask[-1] = True
@@ -431,12 +437,23 @@ class CombinatorialAstComposer:
                 pred_indices.append(idx_p)
                 pred_clauses.append(p_text)
 
-        conn = " and " if op_join == "AND" else " or "
-        edge_op = "REL_LOGICAL_AND" if op_join == "AND" else "REL_LOGICAL_OR"
-        joined = conn.join(pred_clauses)
+        if use_mixed_dnf:
+            # Group (P0 AND P1) OR (P2 [AND P3]) so AND binds tighter than OR
+            split_k = 2
+            lhs = f"({pred_clauses[0]} and {pred_clauses[1]})"
+            rhs = f"({pred_clauses[2]} and {pred_clauses[3]})" if len(pred_clauses) == 4 else pred_clauses[2]
+            joined = f"{lhs} or {rhs}"
+            rels.append((pred_indices[0], pred_indices[1], "REL_LOGICAL_AND"))
+            if len(pred_indices) == 4:
+                rels.append((pred_indices[2], pred_indices[3], "REL_LOGICAL_AND"))
+            rels.append((pred_indices[1], pred_indices[2], "REL_LOGICAL_OR"))
+        else:
+            conn = " and " if op_join == "AND" else " or "
+            edge_op = "REL_LOGICAL_AND" if op_join == "AND" else "REL_LOGICAL_OR"
+            joined = conn.join(pred_clauses)
+            for i in range(1, len(pred_indices)):
+                rels.append((pred_indices[i - 1], pred_indices[i], edge_op))
 
-        for i in range(1, len(pred_indices)):
-            rels.append((pred_indices[i - 1], pred_indices[i], edge_op))
         for idx_neg, idx_p in neg_edges:
             rels.append((idx_neg, idx_p, "REL_LOGICAL_NOT"))
         if idx_def is not None:
@@ -557,10 +574,10 @@ class CombinatorialAstComposer:
 
     # ── Builder 5: Multi-Clause Lexical-Scope Substitution (`REL_DEFINED_TERM_OF` + `REL_SUBSTITUTE_WHEN`) ──
 
-    def _gen_scoped_substitution(self, formulation: int) -> dict[str, Any]:
+    def _gen_scoped_substitution(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
         term = self.rng.choice(_DEFINED_TERMS)
-        base_amt = _fmt_money(self.rng, self.rng.choice([4400, 12000, 25000, 60000]))
-        sub_amt = _fmt_money(self.rng, self.rng.choice([18000, 35000, 75000, 150000]))
+        base_amt = _fmt_money(self.rng, self.rng.choice([4400, 12000, 25000, 60000]), currency=currency)
+        sub_amt = _fmt_money(self.rng, self.rng.choice([18000, 35000, 75000, 150000]), currency=currency)
         d1 = self.rng.choice(_DATES_START)
         d2 = self.rng.choice(_DATES_END)
 
@@ -670,6 +687,154 @@ class CombinatorialAstComposer:
             "relations": rels,
             "clauses": [text],
             "dag": {"kind": "DEONTIC_GATE", "prohibition": is_prohib, "depth": len(spans)},
+        }
+
+    # ── Builder 7: Cross-Primitive Fold -> Excess -> Rate -> Cap/Credit Pipeline ───────────────
+
+    def _gen_fold_to_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
+        coll_name, elem_name = self.rng.choice(_COLLECTION_ITEMS)
+        rate = self.rng.choice(_RATES)
+        floor_amt = _fmt_money(self.rng, self.rng.choice([10000, 25000, 50000]), currency=currency)
+        cap_amt = _fmt_money(self.rng, self.rng.choice([12000, 30000, 80000]), currency=currency)
+        use_cap = self.rng.random() < 0.65
+
+        # Note: order guarantees no substring collisions
+        spans: list[tuple[str, str, str]] = [
+            (elem_name, "ROLE_COMPUTATION_OPERAND", "UNIT_MONEY"),
+            (coll_name, "ROLE_REGULATED_OBJECT_OR_STATUS_SCOPE", "UNIT_SYMBOL_VAR"),
+            (rate, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+            (floor_amt, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"),
+        ]
+        rels: list[tuple[int, int, str]] = [
+            (0, 1, "REL_AGGREGATE_SUM"),
+            (2, 3, "REL_RATE_TO_THRESHOLD"),
+        ]
+        if use_cap:
+            spans.append((cap_amt, "ROLE_TRANSACTION_CLIFF_THRESHOLD", "UNIT_MONEY"))
+            rels.append((4, 2, "REL_MIN_CAP"))
+
+        cap_phrase = f", capped at {cap_amt}" if use_cap else ""
+        if formulation == 0:
+            text = f"Charge equals {rate} of the aggregate sum of {elem_name} across {coll_name} exceeding {floor_amt}{cap_phrase}."
+        elif formulation == 1:
+            text = f"On total {elem_name} summed over all {coll_name} above {floor_amt}, {rate} applies{cap_phrase}."
+        elif formulation == 2:
+            text = f"Whenever summed {elem_name} across {coll_name} exceeds {floor_amt}, liability is {rate} of the excess{cap_phrase}."
+        else:
+            text = f"Combined {elem_name} of all {coll_name} over {floor_amt} is assessed at {rate}{cap_phrase}."
+
+        return {
+            "stype": "V2_AST_FOLD_TO_ARITHMETIC",
+            "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+            "formulation": formulation,
+            "text": text,
+            "spans_with_units": spans,
+            "relations": rels,
+            "clauses": [text],
+            "dag": {"kind": "FOLD_TO_ARITHMETIC", "depth": 3 + int(use_cap), "hasCap": use_cap},
+        }
+
+    # ── Builder 8: Hybrid Boolean / Quantifier Condition Gating Arithmetic ────────────────────
+
+    def _gen_gated_arithmetic(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
+        preds = self.rng.sample(_BOOLEAN_PREDICATES, k=2)
+        op_name = self.rng.choice(_BASE_OPERANDS)
+        rate = self.rng.choice(_RATES)
+        floor_amt = _fmt_money(self.rng, self.rng.choice([8000, 20000, 45000]), currency=currency)
+        use_not = self.rng.random() < 0.50
+        op_join = self.rng.choice(["AND", "OR"])
+
+        spans: list[tuple[str, str, str]] = [
+            (preds[0][0], "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"),
+        ]
+        rels: list[tuple[int, int, str]] = []
+        if use_not:
+            neg_tok = "not established that"
+            spans.append((neg_tok, "ROLE_PROHIBITION_GATE", "UNIT_NONE"))
+            spans.append((preds[1][0], "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"))
+            idx_p2 = 2
+            rels.append((1, 2, "REL_LOGICAL_NOT"))
+            p2_str = f"it is {neg_tok} {preds[1][0]}"
+        else:
+            spans.append((preds[1][0], "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"))
+            idx_p2 = 1
+            p2_str = preds[1][0]
+
+        rels.append((0, idx_p2, "REL_LOGICAL_AND" if op_join == "AND" else "REL_LOGICAL_OR"))
+        idx_rate = len(spans)
+        spans.append((rate, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"))
+        idx_op = len(spans)
+        spans.append((op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"))
+        idx_fl = len(spans)
+        spans.append((floor_amt, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"))
+        rels.append((idx_rate, idx_fl, "REL_RATE_TO_THRESHOLD"))
+
+        conn = " and " if op_join == "AND" else " or "
+        cond_s = f"{preds[0][0]}{conn}{p2_str}"
+        if formulation == 0:
+            text = f"Where {cond_s}, an assessment of {rate} applies to {op_name} exceeding {floor_amt}."
+        elif formulation == 1:
+            text = f"Provided {cond_s}, obligor shall pay {rate} on excess of {op_name} over {floor_amt}."
+        elif formulation == 2:
+            text = f"Liability is {rate} on {op_name} above {floor_amt} if {cond_s}."
+        else:
+            text = f"Only when {cond_s}, charge {rate} of {op_name} exceeding {floor_amt}."
+
+        return {
+            "stype": "V2_AST_GATED_ARITHMETIC",
+            "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+            "formulation": formulation,
+            "text": text,
+            "spans_with_units": spans,
+            "relations": rels,
+            "clauses": [text],
+            "dag": {"kind": "GATED_ARITHMETIC", "depth": 4, "gate": op_join, "negated": use_not},
+        }
+
+    # ── Builder 9: Multi-Clause Progressive Bracket Tiers (2..3 Tiers) ──────────────────────────
+
+    def _gen_multi_tier_bracket(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
+        op_name = self.rng.choice(_BASE_OPERANDS)
+        t1_lo, t1_hi, t2_hi = 10000, 40000, 90000
+        a1 = _fmt_money(self.rng, t1_lo, currency=currency)
+        a2 = _fmt_money(self.rng, t1_hi, currency=currency)
+        a3 = _fmt_money(self.rng, t2_hi, currency=currency)
+        r1 = self.rng.choice(["4%", "8%", "12%"])
+        r2 = self.rng.choice(["18%", "22%", "28%"])
+        base2 = _fmt_money(self.rng, 3600, currency=currency)
+
+        c0 = f"(a) Computation applies to {op_name}." if formulation in (0, 1) else f"(a) Schedules evaluate {op_name}."
+        c1 = f"(b) Over {a1} but not over {a2}, rate is {r1}." if formulation in (0, 1) else f"(b) Slice exceeding {a1} through {a2} bears {r1}."
+        c2 = f"(c) Exceeding {a2} and not over {a3}, duty equals {base2} plus {r2}." if formulation in (0, 1) else f"(c) For tier over {a2} up to {a3}, {base2} plus {r2} applies."
+
+        spans: list[tuple[str, str, str]] = [
+            (op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+            (r1, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+            (a1, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"),
+            (a2, "ROLE_TRANSACTION_CLIFF_THRESHOLD", "UNIT_MONEY"),
+            (base2, "ROLE_TRANSACTION_CLIFF_THRESHOLD", "UNIT_MONEY"),
+            (r2, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+            (a2, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"),
+            (a3, "ROLE_TRANSACTION_CLIFF_THRESHOLD", "UNIT_MONEY"),
+        ]
+        rels: list[tuple[int, int, str]] = [
+            (1, 2, "REL_RATE_TO_THRESHOLD"),
+            (2, 3, "REL_BRACKET_NEXT"),
+            (4, 5, "REL_BASE_TAX_ADD"),
+            (5, 6, "REL_RATE_TO_THRESHOLD"),
+            (6, 7, "REL_BRACKET_NEXT"),
+        ]
+        clauses = [c0, c1, c2]
+        text = " ".join(clauses)
+        return {
+            "stype": "V2_AST_MULTI_TIER_BRACKET",
+            "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+            "formulation": formulation,
+            "text": text,
+            "spans_with_units": spans,
+            "relations": rels,
+            "clauses": clauses,
+            "dag": {"kind": "MULTI_TIER_BRACKET", "tiers": 2, "depth": 4},
         }
 
     # ── Shared Distractor Injection (`ROLE_IGNORE` + `UNIT_NONE` citations) ────────────────────

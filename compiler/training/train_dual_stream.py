@@ -97,21 +97,120 @@ def _prepare_dual_samples(raw_samples: list[dict], is_v2: bool = False) -> list[
     return prepared
 
 
+def _collate_dual_batch(batch_items: list[dict], is_v2: bool, device: torch.device | None = None) -> dict:
+    """Collates a variable-length minibatch into padded token tensors and packed span/clause lists."""
+    B = len(batch_items)
+    seq_lens = [len(s["token_ids"]) for s in batch_items]
+    T_max = max(seq_lens)
+
+    raw_ids = torch.zeros((B, T_max), dtype=torch.long)
+    log_ids = torch.zeros((B, T_max), dtype=torch.long)
+    suf_ids = torch.zeros((B, T_max), dtype=torch.long)
+    pad_mask = torch.ones((B, T_max), dtype=torch.bool)
+    dom_tgt = torch.full((B, T_max), -100, dtype=torch.long)
+    bio_tgt = torch.full((B, T_max), -100, dtype=torch.long)
+    abst_tgt = torch.zeros(B, dtype=torch.long)
+    mod_tgt = torch.zeros(B, dtype=torch.long)
+
+    batch_spans: list[list[tuple[int, int]]] = []
+    batch_c_spans: list[list[tuple[int, int]]] = []
+    r_list: list[int] = []
+    u_list: list[int] = []
+    e_parts: list[torch.Tensor] = []
+    c_mod_list: list[int] = []
+    item_span_slices: list[tuple[int, int]] = []
+    span_cursor = 0
+
+    for b, s in enumerate(batch_items):
+        L = seq_lens[b]
+        raw_ids[b, :L] = torch.as_tensor(s["token_ids"], dtype=torch.long)
+        log_ids[b, :L] = torch.as_tensor(s["logic_token_ids"], dtype=torch.long)
+        suf_ids[b, :L] = torch.as_tensor(s["suffix_ids"], dtype=torch.long)
+        pad_mask[b, :L] = False
+        dom_tgt[b, :L] = torch.as_tensor(s["domain_tok_targets"], dtype=torch.long)
+        bio_tgt[b, :L] = torch.as_tensor(s["bio_ids"], dtype=torch.long)
+        abst_tgt[b] = int(s["domain_abstain_target"])
+        mod_tgt[b] = int(s["modality_id"])
+
+        spans = s["span_boundaries"]
+        batch_spans.append(spans)
+        cnt = len(spans)
+        item_span_slices.append((span_cursor, span_cursor + cnt))
+        span_cursor += cnt
+        if cnt > 0:
+            r_list.extend(s["role_labels"])
+            e_parts.append(torch.as_tensor(s["rel_matrix"], dtype=torch.long))
+            if is_v2 and "unit_labels" in s:
+                u_list.extend(s["unit_labels"])
+
+        c_spans = s.get("clause_spans") or []
+        c_mods = s.get("clause_modality_ids") or []
+        if c_spans and len(c_spans) == len(c_mods):
+            batch_c_spans.append(c_spans)
+            c_mod_list.extend(c_mods)
+        else:
+            batch_c_spans.append([])
+
+    out = {
+        "raw_ids": raw_ids,
+        "log_ids": log_ids,
+        "suf_ids": suf_ids,
+        "pad_mask": pad_mask,
+        "seq_lens": seq_lens,
+        "dom_tgt": dom_tgt,
+        "bio_tgt": bio_tgt,
+        "abst_tgt": abst_tgt,
+        "mod_tgt": mod_tgt,
+        "batch_spans": batch_spans,
+        "batch_c_spans": batch_c_spans,
+        "item_span_slices": item_span_slices,
+        "r_tgt": torch.tensor(r_list, dtype=torch.long) if r_list else None,
+        "u_tgt": torch.tensor(u_list, dtype=torch.long) if u_list else None,
+        "e_tgt_parts": e_parts,
+        "e_tgt_flat": torch.cat([ep.reshape(-1) for ep in e_parts], dim=0) if e_parts else None,
+        "c_mod_tgt": torch.tensor(c_mod_list, dtype=torch.long) if c_mod_list else None,
+    }
+    if device is not None:
+        nb = (device.type == "cuda")
+        for k in ("raw_ids", "log_ids", "suf_ids", "pad_mask", "dom_tgt", "bio_tgt", "abst_tgt", "mod_tgt", "r_tgt", "u_tgt", "e_tgt_flat", "c_mod_tgt"):
+            if out[k] is not None:
+                out[k] = out[k].to(device, non_blocking=nb)
+    return out
+
+
+def _iter_length_bucketed_batches(items: list[dict], batch_size: int, is_v2: bool, shuffle: bool = True):
+    n = len(items)
+    if n == 0:
+        return []
+    if shuffle:
+        # Small length jitter preserves mini-batch diversity while keeping padding overhead near zero
+        jitter = torch.randint(0, 9, (n,)).tolist()
+        order = sorted(range(n), key=lambda i: len(items[i]["token_ids"]) + jitter[i])
+        chunks = [order[i : i + batch_size] for i in range(0, n, batch_size)]
+        chunk_perm = torch.randperm(len(chunks)).tolist()
+        return [_collate_dual_batch([items[idx] for idx in chunks[ci]], is_v2=is_v2) for ci in chunk_perm]
+    order = sorted(range(n), key=lambda i: len(items[i]["token_ids"]))
+    chunks = [order[i : i + batch_size] for i in range(0, n, batch_size)]
+    return [_collate_dual_batch([items[idx] for idx in ch], is_v2=is_v2) for ch in chunks]
+
+
 def train_supervised_dual_stream(
     dataset_path: str | Path | dict = DEFAULT_DATASET,
     checkpoint_out: str | Path = DEFAULT_SUP_CKPT,
     epochs: int = 15,
-    lr: float = 3e-4,
-    accum_steps: int = 4,
+    lr: float = 5e-4,
+    batch_size: int = 32,
+    accum_steps: int = 1,
     smoke_test: bool = False,
     v2: bool = False,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = (device.type == "cuda")
     checkpoint_out = Path(checkpoint_out)
     print("=" * 75)
     print("MUDRAFORGE DECOMPILER - STAGE 1: SUPERVISED DISENTANGLED TRAINING")
     print("=" * 75)
-    print(f"Device: {device}" + (f" ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else ""))
+    print(f"Device: {device}" + (f" ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else "") + f" | Batch: {batch_size} | AMP: {use_amp}")
 
     if smoke_test:
         epochs = 1
@@ -136,8 +235,9 @@ def train_supervised_dual_stream(
     raw_vocab = payload["vocab"]
     train_data = _prepare_dual_samples(payload["train"], is_v2=is_v2)
     val_data = _prepare_dual_samples(payload["val"], is_v2=is_v2)
+    eff_batch_size = min(batch_size, max(1, len(train_data)))
     print(f"Architecture: {'v2 (Typed-Opcode + SpanUnit)' if is_v2 else 'v1'} | Raw Vocab: {len(raw_vocab)} | Logic Vocab: {len(LOGIC_VOCAB)} tokens")
-    print(f"Train samples: {len(train_data)} | Val samples: {len(val_data)}")
+    print(f"Train samples: {len(train_data)} | Val samples: {len(val_data)} | Eff Batch: {eff_batch_size}")
 
     raw_vocab_size = max(len(raw_vocab) + 500, 2048)
     logic_vocab_size = len(LOGIC_VOCAB) + 16
@@ -161,6 +261,7 @@ def train_supervised_dual_stream(
     opt_log = AdamW(model.logic_reasoner.parameters(), lr=lr, weight_decay=1e-3)
     sched_dom = CosineAnnealingLR(opt_dom, T_max=epochs, eta_min=1e-5)
     sched_log = CosineAnnealingLR(opt_log, T_max=epochs, eta_min=1e-5)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     rel_weights = torch.ones(len(rels_list), device=device)
     if is_v2:
@@ -184,21 +285,36 @@ def train_supervised_dual_stream(
     dom_weights[DOMAIN_CLASS2ID["DT_DOCUMENT_EVIDENCE"]] = 1.8
     dom_weights[DOMAIN_CLASS2ID["DT_ACCOUNTING_DEST"]] = 1.8
 
-    dom_tok_crit = nn.CrossEntropyLoss(weight=dom_weights)
+    dom_tok_crit = nn.CrossEntropyLoss(weight=dom_weights, ignore_index=-100)
     dom_abst_crit = nn.CrossEntropyLoss()
-    bio_crit = nn.CrossEntropyLoss()
+    bio_crit = nn.CrossEntropyLoss(ignore_index=-100)
     unit_crit = nn.CrossEntropyLoss() if is_v2 else None
     val_role_crit = nn.CrossEntropyLoss()
     val_rel_crit = nn.CrossEntropyLoss(weight=rel_weights)
     val_mod_crit = nn.CrossEntropyLoss()
+
+    # Pre-collate validation batches once so zero CPU collation runs during epochs
+    val_batches_cpu = _iter_length_bucketed_batches(val_data, batch_size=max(1, eff_batch_size), is_v2=is_v2, shuffle=False)
+    val_batches = []
+    for vb in val_batches_cpu:
+        vb_dev = dict(vb)
+        nb = (device.type == "cuda")
+        for k in ("raw_ids", "log_ids", "suf_ids", "pad_mask", "dom_tgt", "bio_tgt", "abst_tgt", "mod_tgt", "r_tgt", "u_tgt", "e_tgt_flat", "c_mod_tgt"):
+            if vb_dev[k] is not None:
+                vb_dev[k] = vb_dev[k].to(device, non_blocking=nb)
+        val_batches.append(vb_dev)
 
     os.makedirs(os.path.dirname(os.path.abspath(checkpoint_out)), exist_ok=True)
     best_score = -1e9
     patience = 6
     patience_cnt = 0
     t0 = time.time()
+    num_rels = len(rels_list)
+    num_roles = len(roles_list)
+    num_bio = len(bio_list)
 
     for epoch in range(1, epochs + 1):
+        ep_t0 = time.time()
         model.train()
         smooth_role = max(0.01, 0.08 * (1.0 - (epoch - 1) / max(1, epochs - 1)))
         smooth_rel = max(0.01, 0.05 * (1.0 - (epoch - 1) / max(1, epochs - 1)))
@@ -206,166 +322,187 @@ def train_supervised_dual_stream(
         rel_crit = nn.CrossEntropyLoss(weight=rel_weights, label_smoothing=smooth_rel)
         mod_crit = nn.CrossEntropyLoss(label_smoothing=0.03)
 
-        indices = torch.randperm(len(train_data)).tolist()
-        opt_dom.zero_grad()
-        opt_log.zero_grad()
+        train_batches = _iter_length_bucketed_batches(train_data, batch_size=eff_batch_size, is_v2=is_v2, shuffle=True)
+        opt_dom.zero_grad(set_to_none=True)
+        opt_log.zero_grad(set_to_none=True)
 
-        for step_i, idx in enumerate(indices):
-            s = train_data[idx]
-            raw_ids = torch.tensor([s["token_ids"]], dtype=torch.long, device=device)
-            log_ids = torch.tensor([s["logic_token_ids"]], dtype=torch.long, device=device)
-            suf_ids = torch.tensor([s["suffix_ids"]], dtype=torch.long, device=device)
-            dom_tgt = torch.tensor(s["domain_tok_targets"], dtype=torch.long, device=device)
-            abst_tgt = torch.tensor([s["domain_abstain_target"]], dtype=torch.long, device=device)
-            bio_tgt = torch.tensor(s["bio_ids"], dtype=torch.long, device=device)
-            mod_tgt = torch.tensor([s["modality_id"]], dtype=torch.long, device=device)
+        nb = (device.type == "cuda")
+        opt_stepped = False
+        for step_i, b in enumerate(train_batches):
+            raw_ids = b["raw_ids"].to(device, non_blocking=nb)
+            log_ids = b["log_ids"].to(device, non_blocking=nb)
+            suf_ids = b["suf_ids"].to(device, non_blocking=nb)
+            pad_mask = b["pad_mask"].to(device, non_blocking=nb)
+            dom_tgt = b["dom_tgt"].to(device, non_blocking=nb)
+            abst_tgt = b["abst_tgt"].to(device, non_blocking=nb)
+            bio_tgt = b["bio_tgt"].to(device, non_blocking=nb)
+            mod_tgt = b["mod_tgt"].to(device, non_blocking=nb)
 
-            spans = s["span_boundaries"]
-            c_spans = s.get("clause_spans") or []
-            c_mods = s.get("clause_modality_ids") or []
-            has_spans = len(spans) > 0
-            has_clauses = len(c_spans) > 0 and len(c_spans) == len(c_mods)
-
-            out = model(
-                raw_token_ids=raw_ids,
-                logic_token_ids=log_ids,
-                suffix_ids=suf_ids,
-                span_indices=spans if has_spans else None,
-                clause_spans=c_spans if has_clauses else None,
-                detach_domain_for_logic=True,
-                domain_msg_dropout=0.12,
-            )
-
-            loss_dom = dom_tok_crit(out["domain_tok_logits"].squeeze(0), dom_tgt) + 0.5 * dom_abst_crit(out["domain_abstain_logits"], abst_tgt)
-            loss_bio = bio_crit(out["bio_logits"], bio_tgt)
-            loss_mod = mod_crit(out["modality_logits"], mod_tgt)
-
-            if has_spans:
-                r_tgt = torch.tensor(s["role_labels"], dtype=torch.long, device=device)
-                e_tgt = torch.tensor(s["rel_matrix"], dtype=torch.long, device=device)
-                loss_log = (
-                    loss_bio
-                    + role_crit(out["role_logits"], r_tgt)
-                    + 0.5 * rel_crit(out["rel_logits"].view(-1, len(rels_list)), e_tgt.view(-1))
-                    + 0.75 * loss_mod
-                )
-                if is_v2 and out.get("unit_logits") is not None and "unit_labels" in s:
-                    u_tgt = torch.tensor(s["unit_labels"], dtype=torch.long, device=device)
-                    loss_log = loss_log + 0.75 * unit_crit(out["unit_logits"], u_tgt)
-            else:
-                loss_log = loss_bio + 0.75 * loss_mod
-
-            if has_clauses and out["clause_mod_logits"] is not None:
-                loss_log = loss_log + 0.5 * mod_crit(out["clause_mod_logits"], torch.tensor(c_mods, dtype=torch.long, device=device))
-
-            ((loss_dom + loss_log) / accum_steps).backward()
-
-            if (step_i + 1) % accum_steps == 0 or (step_i + 1) == len(indices):
-                nn.utils.clip_grad_norm_(model.domain_sensor.parameters(), max_norm=1.0)
-                nn.utils.clip_grad_norm_(model.logic_reasoner.parameters(), max_norm=1.0)
-                opt_dom.step()
-                opt_log.step()
-                opt_dom.zero_grad()
-                opt_log.zero_grad()
-
-        sched_dom.step()
-        sched_log.step()
-
-        # Validation
-        model.eval()
-        val_nll = 0.0
-        dom_ok = dom_tot = bio_ok = bio_tot = mod_ok = mod_tot = em_ok = em_tot = unit_ok = unit_tot = 0
-        tp_r = [0] * len(roles_list)
-        fp_r = [0] * len(roles_list)
-        fn_r = [0] * len(roles_list)
-        sup_r = [0] * len(roles_list)
-        rel_tp = rel_fp = rel_fn = 0
-
-        with torch.no_grad():
-            for s in val_data:
-                raw_ids = torch.tensor([s["token_ids"]], dtype=torch.long, device=device)
-                log_ids = torch.tensor([s["logic_token_ids"]], dtype=torch.long, device=device)
-                suf_ids = torch.tensor([s["suffix_ids"]], dtype=torch.long, device=device)
-                dom_tgt = torch.tensor(s["domain_tok_targets"], dtype=torch.long, device=device)
-                bio_tgt = torch.tensor(s["bio_ids"], dtype=torch.long, device=device)
-                mod_tgt = torch.tensor([s["modality_id"]], dtype=torch.long, device=device)
-                spans = s["span_boundaries"]
-                c_spans = s.get("clause_spans") or []
-                c_mods = s.get("clause_modality_ids") or []
-                has_spans = len(spans) > 0
-                has_clauses = len(c_spans) > 0 and len(c_spans) == len(c_mods)
-
+            with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                 out = model(
                     raw_token_ids=raw_ids,
                     logic_token_ids=log_ids,
                     suffix_ids=suf_ids,
-                    span_indices=spans if has_spans else None,
-                    clause_spans=c_spans if has_clauses else None,
+                    mask=pad_mask,
+                    batch_span_indices=b["batch_spans"],
+                    batch_clause_spans=b["batch_c_spans"],
+                    detach_domain_for_logic=True,
+                    domain_msg_dropout=0.12,
                 )
-                dom_preds = out["domain_tok_logits"].squeeze(0).argmax(dim=-1)
-                dom_ok += int((dom_preds == dom_tgt).sum().item())
-                dom_tot += dom_tgt.size(0)
+
+                loss_dom = (
+                    dom_tok_crit(out["domain_tok_logits"].reshape(-1, len(DOMAIN_TOKEN_CLASSES)), dom_tgt.reshape(-1))
+                    + 0.5 * dom_abst_crit(out["domain_abstain_logits"], abst_tgt)
+                )
+                loss_bio = bio_crit(out["bio_logits"].reshape(-1, num_bio), bio_tgt.reshape(-1))
+                loss_mod = mod_crit(out["modality_logits"], mod_tgt)
+                loss_log = loss_bio + 0.75 * loss_mod
+
+                if b["r_tgt"] is not None and out["role_logits"] is not None:
+                    r_tgt = b["r_tgt"].to(device, non_blocking=nb)
+                    loss_log = loss_log + role_crit(out["role_logits"], r_tgt)
+                    if out["rel_logits"] is not None and b["e_tgt_flat"] is not None:
+                        rel_flat = torch.cat([rl.reshape(-1, num_rels) for rl in out["rel_logits"] if rl is not None], dim=0)
+                        e_tgt_flat = b["e_tgt_flat"].to(device, non_blocking=nb)
+                        loss_log = loss_log + 0.5 * rel_crit(rel_flat, e_tgt_flat)
+                    if is_v2 and out.get("unit_logits") is not None and b["u_tgt"] is not None:
+                        u_tgt = b["u_tgt"].to(device, non_blocking=nb)
+                        loss_log = loss_log + 0.75 * unit_crit(out["unit_logits"], u_tgt)
+
+                if out["clause_mod_logits"] is not None and b["c_mod_tgt"] is not None:
+                    c_mod_tgt = b["c_mod_tgt"].to(device, non_blocking=nb)
+                    loss_log = loss_log + 0.5 * mod_crit(out["clause_mod_logits"], c_mod_tgt)
+
+                total_step_loss = (loss_dom + loss_log) / accum_steps
+
+            scaler.scale(total_step_loss).backward()
+            if (step_i + 1) % accum_steps == 0 or (step_i + 1) == len(train_batches):
+                scaler.unscale_(opt_dom)
+                scaler.unscale_(opt_log)
+                nn.utils.clip_grad_norm_(model.domain_sensor.parameters(), max_norm=1.0)
+                nn.utils.clip_grad_norm_(model.logic_reasoner.parameters(), max_norm=1.0)
+                prev_scale = scaler.get_scale() if use_amp else 1.0
+                scaler.step(opt_dom)
+                scaler.step(opt_log)
+                scaler.update()
+                if not use_amp or scaler.get_scale() >= prev_scale:
+                    opt_stepped = True
+                opt_dom.zero_grad(set_to_none=True)
+                opt_log.zero_grad(set_to_none=True)
+
+        if opt_stepped:
+            sched_dom.step()
+            sched_log.step()
+
+        # Vectorized batched validation (minimal CPU-GPU syncs)
+        model.eval()
+        val_nll_sum = 0.0
+        dom_ok_t = torch.zeros(1, dtype=torch.long, device=device)
+        dom_tot_t = torch.zeros(1, dtype=torch.long, device=device)
+        bio_ok_t = torch.zeros(1, dtype=torch.long, device=device)
+        bio_tot_t = torch.zeros(1, dtype=torch.long, device=device)
+        mod_ok_t = torch.zeros(1, dtype=torch.long, device=device)
+        mod_tot = 0
+        unit_ok_t = torch.zeros(1, dtype=torch.long, device=device)
+        unit_tot_t = torch.zeros(1, dtype=torch.long, device=device)
+        em_ok = 0
+        em_tot = 0
+        tp_r_t = torch.zeros(num_roles, dtype=torch.long, device=device)
+        fp_r_t = torch.zeros(num_roles, dtype=torch.long, device=device)
+        fn_r_t = torch.zeros(num_roles, dtype=torch.long, device=device)
+        sup_r_t = torch.zeros(num_roles, dtype=torch.long, device=device)
+        rel_tp = rel_fp = rel_fn = 0
+
+        with torch.no_grad():
+            for vb in val_batches:
+                with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                    out = model(
+                        raw_token_ids=vb["raw_ids"],
+                        logic_token_ids=vb["log_ids"],
+                        suffix_ids=vb["suf_ids"],
+                        mask=vb["pad_mask"],
+                        batch_span_indices=vb["batch_spans"],
+                        batch_clause_spans=vb["batch_c_spans"],
+                    )
+                    valid_tok = ~vb["pad_mask"]
+                    l_v = (
+                        bio_crit(out["bio_logits"].reshape(-1, num_bio), vb["bio_tgt"].reshape(-1))
+                        + 0.75 * val_mod_crit(out["modality_logits"], vb["mod_tgt"])
+                    )
+                    if out["clause_mod_logits"] is not None and vb["c_mod_tgt"] is not None:
+                        l_v = l_v + 0.5 * val_mod_crit(out["clause_mod_logits"], vb["c_mod_tgt"])
+                    if vb["r_tgt"] is not None and out["role_logits"] is not None:
+                        l_v = l_v + val_role_crit(out["role_logits"], vb["r_tgt"])
+                        if out["rel_logits"] is not None and vb["e_tgt_flat"] is not None:
+                            rel_flat = torch.cat([rl.reshape(-1, num_rels) for rl in out["rel_logits"] if rl is not None], dim=0)
+                            l_v = l_v + 0.5 * val_rel_crit(rel_flat, vb["e_tgt_flat"])
+                        if is_v2 and out.get("unit_logits") is not None and vb["u_tgt"] is not None:
+                            l_v = l_v + 0.75 * unit_crit(out["unit_logits"], vb["u_tgt"])
+
+                bs = vb["raw_ids"].size(0)
+                val_nll_sum += float(l_v.item()) * bs
+
+                dom_preds = out["domain_tok_logits"].argmax(dim=-1)
+                dom_ok_t += ((dom_preds == vb["dom_tgt"]) & valid_tok).sum()
+                dom_tot_t += valid_tok.sum()
 
                 bio_preds = out["bio_logits"].argmax(dim=-1)
-                bio_ok += int((bio_preds == bio_tgt).sum().item())
-                bio_tot += bio_tgt.size(0)
+                bio_ok_t += ((bio_preds == vb["bio_tgt"]) & valid_tok).sum()
+                bio_tot_t += valid_tok.sum()
 
-                mod_match = bool((out["modality_logits"].argmax(dim=-1) == mod_tgt).all().item())
-                mod_ok += int(mod_match)
-                mod_tot += 1
+                mod_matches = (out["modality_logits"].argmax(dim=-1) == vb["mod_tgt"])
+                mod_ok_t += mod_matches.sum()
+                mod_tot += bs
 
-                l_v = bio_crit(out["bio_logits"], bio_tgt) + 0.75 * val_mod_crit(out["modality_logits"], mod_tgt)
-                if has_clauses and out["clause_mod_logits"] is not None:
-                    l_v = l_v + 0.5 * val_mod_crit(out["clause_mod_logits"], torch.tensor(c_mods, dtype=torch.long, device=device))
+                p_roles = out["role_logits"].argmax(dim=-1) if out["role_logits"] is not None else None
+                p_units = out["unit_logits"].argmax(dim=-1) if (is_v2 and out.get("unit_logits") is not None) else None
+                if p_roles is not None and vb["r_tgt"] is not None:
+                    r_t = vb["r_tgt"]
+                    sup_r_t += torch.bincount(r_t, minlength=num_roles)
+                    hit = (p_roles == r_t)
+                    tp_r_t += torch.bincount(r_t[hit], minlength=num_roles)
+                    fp_r_t += torch.bincount(p_roles[~hit], minlength=num_roles)
+                    fn_r_t += torch.bincount(r_t[~hit], minlength=num_roles)
+                if p_units is not None and vb["u_tgt"] is not None:
+                    unit_ok_t += (p_units == vb["u_tgt"]).sum()
+                    unit_tot_t += vb["u_tgt"].numel()
 
-                if has_spans:
-                    r_tgt = torch.tensor(s["role_labels"], dtype=torch.long, device=device)
-                    e_tgt = torch.tensor(s["rel_matrix"], dtype=torch.long, device=device)
-                    l_v = l_v + val_role_crit(out["role_logits"], r_tgt) + 0.5 * val_rel_crit(out["rel_logits"].view(-1, len(rels_list)), e_tgt.view(-1))
+                mod_m_list = mod_matches.tolist()
+                e_part_idx = 0
+                for b_i, (s0, s1) in enumerate(vb["item_span_slices"]):
+                    em_tot += 1
+                    m_ok = bool(mod_m_list[b_i])
+                    if s1 > s0:
+                        role_ok = bool((p_roles[s0:s1] == vb["r_tgt"][s0:s1]).all().item())
+                        unit_ok_item = bool((p_units[s0:s1] == vb["u_tgt"][s0:s1]).all().item()) if (p_units is not None and vb["u_tgt"] is not None) else True
+                        rl_mat = out["rel_logits"][b_i].argmax(dim=-1)
+                        et_mat = vb["e_tgt_parts"][e_part_idx].to(device)
+                        e_part_idx += 1
+                        rel_ok_item = bool((rl_mat == et_mat).all().item())
+                        non_zero_t = (et_mat != 0)
+                        rel_tp += int((non_zero_t & (rl_mat == et_mat)).sum().item())
+                        rel_fn += int((non_zero_t & (rl_mat != et_mat)).sum().item())
+                        rel_fp += int((~non_zero_t & (rl_mat != 0)).sum().item())
+                        if role_ok and rel_ok_item and m_ok and unit_ok_item:
+                            em_ok += 1
+                    else:
+                        L = vb["seq_lens"][b_i]
+                        if m_ok and bool((bio_preds[b_i, :L] == vb["bio_tgt"][b_i, :L]).all().item()):
+                            em_ok += 1
 
-                    unit_match = True
-                    if is_v2 and out.get("unit_logits") is not None and "unit_labels" in s:
-                        u_tgt = torch.tensor(s["unit_labels"], dtype=torch.long, device=device)
-                        l_v = l_v + 0.75 * unit_crit(out["unit_logits"], u_tgt)
-                        p_units = out["unit_logits"].argmax(dim=-1)
-                        unit_ok += int((p_units == u_tgt).sum().item())
-                        unit_tot += u_tgt.size(0)
-                        unit_match = bool((p_units == u_tgt).all().item())
-
-                    p_roles = out["role_logits"].argmax(dim=-1)
-                    p_rels = out["rel_logits"].argmax(dim=-1)
-                    for p, t in zip(p_roles.tolist(), r_tgt.tolist()):
-                        sup_r[t] += 1
-                        if p == t:
-                            tp_r[t] += 1
-                        else:
-                            fp_r[p] += 1
-                            fn_r[t] += 1
-                    for pr, tr in zip(p_rels.view(-1).tolist(), e_tgt.view(-1).tolist()):
-                        if tr != 0:
-                            if pr == tr:
-                                rel_tp += 1
-                            else:
-                                rel_fn += 1
-                        elif pr != 0:
-                            rel_fp += 1
-                    if bool((p_roles == r_tgt).all().item()) and bool((p_rels == e_tgt).all().item()) and mod_match and unit_match:
-                        em_ok += 1
-                else:
-                    if bool((bio_preds == bio_tgt).all().item()) and mod_match:
-                        em_ok += 1
-                em_tot += 1
-                val_nll += l_v.item()
-
-        dom_acc = dom_ok / max(1, dom_tot) * 100.0
-        bio_acc = bio_ok / max(1, bio_tot) * 100.0
-        mod_acc = mod_ok / max(1, mod_tot) * 100.0
-        unit_acc = unit_ok / max(1, unit_tot) * 100.0 if is_v2 else 0.0
+        dom_acc = float(dom_ok_t.item()) / max(1, int(dom_tot_t.item())) * 100.0
+        bio_acc = float(bio_ok_t.item()) / max(1, int(bio_tot_t.item())) * 100.0
+        mod_acc = float(mod_ok_t.item()) / max(1, mod_tot) * 100.0
+        unit_acc = float(unit_ok_t.item()) / max(1, int(unit_tot_t.item())) * 100.0 if is_v2 else 0.0
         clause_em = em_ok / max(1, em_tot) * 100.0
-        avg_nll = val_nll / max(1, len(val_data))
+        avg_nll = val_nll_sum / max(1, len(val_data))
 
+        tp_r = tp_r_t.tolist()
+        fp_r = fp_r_t.tolist()
+        fn_r = fn_r_t.tolist()
+        sup_r = sup_r_t.tolist()
         f1s = []
-        for c in range(len(roles_list)):
+        for c in range(num_roles):
             if sup_r[c] > 0:
                 pc = tp_r[c] / max(1, tp_r[c] + fp_r[c])
                 rc = tp_r[c] / max(1, tp_r[c] + fn_r[c])
@@ -423,9 +560,10 @@ def train_supervised_dual_stream(
         else:
             patience_cnt += 1
 
+        ep_dt = time.time() - ep_t0
         unit_str = f" | Unit: {unit_acc:.2f}%" if is_v2 else ""
         print(
-            f"Epoch {epoch:02d}/{epochs:02d} | NLL: {avg_nll:.4f} | DomTok: {dom_acc:.2f}% | "
+            f"Epoch {epoch:02d}/{epochs:02d} ({ep_dt:.1f}s) | NLL: {avg_nll:.4f} | DomTok: {dom_acc:.2f}% | "
             f"BIO: {bio_acc:.2f}% | Mod: {mod_acc:.2f}% | F1: {macro_f1:.2f}% | "
             f"RelF1: {rel_f1:.2f}%{unit_str} | EM: {clause_em:.2f}%{saved}",
             flush=True,
@@ -811,6 +949,7 @@ if __name__ == "__main__":
     parser.add_argument("--rl-ckpt", default=None, help="GRPO RL checkpoint output path")
     parser.add_argument("--dataset", default=None, help="Dataset path")
     parser.add_argument("--epochs", type=int, default=None, help="Epochs for training (default: 15 for sup, 5 for grpo)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Minibatch size for Stage 1 supervised training")
     parser.add_argument("--lr", type=float, default=None, help="Learning rate override")
     parser.add_argument("--smoke-test", action="store_true", help="Run quick 1-epoch sanity check on synthetic samples")
     args = parser.parse_args()
@@ -823,6 +962,7 @@ if __name__ == "__main__":
         sup_kwargs = {
             "dataset_path": dataset_p,
             "checkpoint_out": sup_ckpt_path,
+            "batch_size": args.batch_size,
             "smoke_test": args.smoke_test,
             "v2": args.v2,
         }

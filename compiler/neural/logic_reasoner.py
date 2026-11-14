@@ -280,6 +280,8 @@ class LogicReasonerModel(nn.Module):
         mask: torch.Tensor = None,
         logic_token_ids: torch.Tensor = None,
         return_unit_logits: bool = False,
+        batch_span_indices: list[list[tuple[int, int]]] = None,
+        batch_clause_spans: list[list[tuple[int, int]]] = None,
     ) -> tuple:
         x = h_stage1
         if domain_context is not None:
@@ -307,16 +309,81 @@ class LogicReasonerModel(nn.Module):
         m_float = valid_mask.unsqueeze(-1).type_as(h_enc)
         valid_counts = m_float.sum(dim=1).clamp(min=1.0)
         mean_pool = (h_enc * m_float).sum(dim=1) / valid_counts
-        max_pool = h_enc.masked_fill(~valid_mask.unsqueeze(-1), -1e9).max(dim=1).values
+        neg_inf = torch.finfo(h_enc.dtype).min
+        max_pool = h_enc.masked_fill(~valid_mask.unsqueeze(-1), neg_inf).max(dim=1).values
         max_pool = torch.where(valid_mask.any(dim=1, keepdim=True), max_pool, torch.zeros_like(max_pool))
 
         if domain_probs is not None and domain_abstain_probs is not None:
             dom_mean_pool = (domain_probs * m_float).sum(dim=1) / valid_counts
             pooled_mod_in = torch.cat([mean_pool, max_pool, dom_mean_pool, domain_abstain_probs], dim=-1)
         else:
-            dummy_dom = torch.zeros(h_enc.size(0), self.num_domain_classes + 2, device=h_enc.device)
+            dummy_dom = torch.zeros(h_enc.size(0), self.num_domain_classes + 2, device=h_enc.device, dtype=h_enc.dtype)
             pooled_mod_in = torch.cat([mean_pool, max_pool, dummy_dom], dim=-1)
         modality_logits = self.modality_classifier(pooled_mod_in)
+
+        is_batched = (batch_span_indices is not None) or (batch_clause_spans is not None)
+        if is_batched:
+            B, seq_len, _ = h_enc.shape
+            bio_logits = self.bio_classifier(h_enc)  # [B, T, num_bio]
+
+            raw_span_feats = []
+            span_counts = []
+            for b_idx in range(B):
+                b_spans = batch_span_indices[b_idx] if (batch_span_indices is not None and b_idx < len(batch_span_indices)) else []
+                span_counts.append(len(b_spans))
+                h_b = h_enc[b_idx]
+                for start, end in b_spans:
+                    s = max(0, min(int(start), seq_len - 1))
+                    e = max(0, min(int(end), seq_len - 1))
+                    if s > e:
+                        s, e = e, s
+                    h_s = h_b[s]
+                    h_e = h_b[e]
+                    raw_span_feats.append(torch.cat([h_s, h_e, h_e - h_s, h_b[s : e + 1].mean(dim=0)], dim=-1))
+
+            role_logits = None
+            relation_logits = None
+            unit_logits = None
+            if raw_span_feats:
+                span_vecs = self.span_pooler.proj(torch.stack(raw_span_feats, dim=0))
+                role_logits = self.role_classifier(span_vecs)
+                if self.unit_classifier is not None:
+                    unit_logits = self.unit_classifier(span_vecs)
+                rel_list = []
+                offset = 0
+                for cnt in span_counts:
+                    if cnt > 0:
+                        sv_b = span_vecs[offset : offset + cnt]
+                        rel_list.append(self.relation_classifier(sv_b, sv_b))
+                    else:
+                        rel_list.append(None)
+                    offset += cnt
+                relation_logits = rel_list
+
+            clause_mod_logits = None
+            if batch_clause_spans is not None:
+                c_feats = []
+                d_probs_all = domain_probs if domain_probs is not None else torch.zeros(B, seq_len, self.num_domain_classes, device=h_enc.device, dtype=h_enc.dtype)
+                abst_all = domain_abstain_probs if domain_abstain_probs is not None else torch.zeros(B, 2, device=h_enc.device, dtype=h_enc.dtype)
+                for b_idx in range(B):
+                    c_list = batch_clause_spans[b_idx] if b_idx < len(batch_clause_spans) else []
+                    h_b = h_enc[b_idx]
+                    d_b = d_probs_all[b_idx]
+                    a_b = abst_all[b_idx]
+                    for cs, ce in c_list:
+                        c_s = max(0, min(int(cs), seq_len - 1))
+                        c_e = max(0, min(int(ce), seq_len - 1))
+                        if c_s > c_e:
+                            c_s, c_e = c_e, c_s
+                        sl_h = h_b[c_s : c_e + 1]
+                        sl_d = d_b[c_s : c_e + 1]
+                        c_feats.append(torch.cat([sl_h.mean(dim=0), sl_h.max(dim=0).values, sl_d.mean(dim=0), a_b], dim=-1))
+                if c_feats:
+                    clause_mod_logits = self.modality_classifier(torch.stack(c_feats, dim=0))
+
+            if return_unit_logits:
+                return bio_logits, role_logits, relation_logits, modality_logits, clause_mod_logits, unit_logits
+            return bio_logits, role_logits, relation_logits, modality_logits, clause_mod_logits
 
         h_seq = h_enc.squeeze(0) if h_enc.size(0) == 1 else h_enc[0]
         bio_logits = self.bio_classifier(h_seq)
@@ -334,8 +401,8 @@ class LogicReasonerModel(nn.Module):
         clause_mod_logits = None
         if clause_spans:
             seq_len = h_seq.size(0)
-            d_probs_seq = domain_probs.squeeze(0) if (domain_probs is not None and domain_probs.size(0) == 1) else (domain_probs[0] if domain_probs is not None else torch.zeros(seq_len, self.num_domain_classes, device=h_seq.device))
-            abst_seq = domain_abstain_probs[0] if domain_abstain_probs is not None else torch.zeros(2, device=h_seq.device)
+            d_probs_seq = domain_probs.squeeze(0) if (domain_probs is not None and domain_probs.size(0) == 1) else (domain_probs[0] if domain_probs is not None else torch.zeros(seq_len, self.num_domain_classes, device=h_seq.device, dtype=h_seq.dtype))
+            abst_seq = domain_abstain_probs[0] if domain_abstain_probs is not None else torch.zeros(2, device=h_seq.device, dtype=h_seq.dtype)
             clause_feats = []
             for cs, ce in clause_spans:
                 c_s = max(0, min(int(cs), seq_len - 1))
@@ -425,7 +492,9 @@ class DualStreamStatutoryParser(nn.Module):
         mask: torch.Tensor = None,
         detach_domain_for_logic: bool = True,
         domain_msg_dropout: float = 0.0,
-    ) -> dict[str, torch.Tensor | None]:
+        batch_span_indices: list[list[tuple[int, int]]] = None,
+        batch_clause_spans: list[list[tuple[int, int]]] = None,
+    ) -> dict[str, torch.Tensor | list | None]:
         # Step 1: Parallel Stage-1 encoding
         h_dom_s1, pad_mask = self.domain_sensor.encode_stage1(raw_token_ids, suffix_ids=suffix_ids, mask=mask)
         h_log_s1, _ = self.logic_reasoner.encode_stage1(logic_token_ids, suffix_ids=suffix_ids, mask=pad_mask)
@@ -460,6 +529,8 @@ class DualStreamStatutoryParser(nn.Module):
             mask=pad_mask,
             logic_token_ids=logic_token_ids,
             return_unit_logits=True,
+            batch_span_indices=batch_span_indices,
+            batch_clause_spans=batch_clause_spans,
         )
 
         return {

@@ -239,6 +239,9 @@ class TestModelV2Commit3(unittest.TestCase):
             "V2_AST_COLLECTION_FOLD",
             "V2_AST_SCOPED_SUBSTITUTION",
             "V2_AST_DEONTIC_GATE",
+            "V2_AST_FOLD_TO_ARITHMETIC",
+            "V2_AST_GATED_ARITHMETIC",
+            "V2_AST_MULTI_TIER_BRACKET",
         }
         self.assertTrue(expected_families.issubset(stypes), f"Missing families: {expected_families - stypes}")
 
@@ -247,6 +250,7 @@ class TestModelV2Commit3(unittest.TestCase):
                 self.assertEqual(len(item["unit_labels"]), len(item["span_boundaries"]))
 
     def test_combinatorial_ast_composer_lowers_and_executes_in_usvm(self):
+        import re
         from compiler.neural.inference_v2 import synthesize_usvm_ast_v2
         from compiler.training.ast_composer import CombinatorialAstComposer
         from compiler.training.usvm_rl_environment import StatutoryRlEnvironment
@@ -257,9 +261,29 @@ class TestModelV2Commit3(unittest.TestCase):
         ev = CanonicalUsvmEvaluator()
         try:
             seen_families = set()
-            for i in range(36):
+            saw_conditional_gate = False
+            saw_fold_to_arith = False
+            for i in range(80):
                 sample = composer.sample_rule(formulation=i % 4)
                 seen_families.add(sample["stype"])
+
+                # Verify single consistent currency per rule
+                txt_l = sample["text"].lower()
+                ccy_hits = set()
+                if "$" in txt_l or re.search(r"\b(us\s+dollars|dollars|usd)\b", txt_l):
+                    ccy_hits.add("USD")
+                if "\u20b9" in txt_l or re.search(r"\b(rupees|rs\.?|inr|lakh|crore)\b", txt_l):
+                    ccy_hits.add("INR")
+                if "\u20ac" in txt_l or re.search(r"\b(euros|eur)\b", txt_l):
+                    ccy_hits.add("EUR")
+                if "\u00a3" in txt_l or re.search(r"\b(pounds|gbp)\b", txt_l):
+                    ccy_hits.add("GBP")
+                self.assertLessEqual(
+                    len(ccy_hits),
+                    1,
+                    f"Mixed currencies {ccy_hits} in single rule: {sample['text']!r}",
+                )
+
                 clauses = sample["clauses"]
                 cmods = []
                 pos = 0
@@ -311,14 +335,59 @@ class TestModelV2Commit3(unittest.TestCase):
                 self.assertEqual(ast.get("astVersion"), "v2")
                 self.assertFalse(ast["executionDiagnostics"]["regexHeuristicsUsed"])
 
+                # Verify boolean outputs never carry a 'Paisa' suffix
+                for out_name, out_spec in ast.get("outputs", {}).items():
+                    if isinstance(out_spec, dict) and out_spec.get("type") == "BOOLEAN":
+                        self.assertFalse(out_name.endswith("Paisa"), f"Boolean output has Paisa suffix: {out_name}")
+
+                # Track cross-primitive AST compositions
+                ast_json = str(ast)
+                if sample["stype"] == "V2_AST_GATED_ARITHMETIC" and "CONDITIONAL" in ast_json:
+                    saw_conditional_gate = True
+                if sample["stype"] == "V2_AST_FOLD_TO_ARITHMETIC" and ("SUM_OVER" in ast_json or "COUNT" in ast_json):
+                    saw_fold_to_arith = True
+
                 cands = env._build_v2_fact_candidates(ast)
                 self.assertGreaterEqual(len(cands), 3)
                 for _, cvec in cands:
                     out = ev.evaluate(ast, cvec)
                     self.assertIsNotNone(out)
-            self.assertEqual(len(seen_families), 6)
+            self.assertEqual(len(seen_families), 9)
+            self.assertTrue(saw_conditional_gate)
+            self.assertTrue(saw_fold_to_arith)
         finally:
             ev.close()
+
+    def test_batched_amp_v2_train_smoke(self):
+        import tempfile
+        from pathlib import Path
+        import torch
+        from compiler.training.dataset_generator import generate_synthetic_dataset
+        from compiler.training.train_dual_stream import train_supervised_dual_stream
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ds_path = tmp_path / "v2_smoke_ds.pt"
+            ckpt_path = tmp_path / "v2_smoke_ckpt.pt"
+            ds = generate_synthetic_dataset(num_samples=40, seed=7, v2=True)
+            torch.save(ds, ds_path)
+
+            out_ckpt = train_supervised_dual_stream(
+                dataset_path=ds_path,
+                checkpoint_out=ckpt_path,
+                epochs=1,
+                lr=5e-4,
+                batch_size=8,
+                smoke_test=True,
+                v2=True,
+            )
+            self.assertTrue(ckpt_path.exists())
+            self.assertEqual(Path(out_ckpt), ckpt_path)
+            ckpt_data = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+            metrics = ckpt_data.get("metrics", {})
+            self.assertIn("rel_f1", metrics)
+            self.assertIn("unit_acc", metrics)
+            self.assertIn("macro_f1", metrics)
 
 
 if __name__ == "__main__":
