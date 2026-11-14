@@ -1561,6 +1561,99 @@ class TestModelV2Commit3(unittest.TestCase):
         kept = [sp["span"] for sp in out["classified_spans"]]
         self.assertEqual(kept, ["6 percent", "January 1, 2020"])
 
+    def test_balanced_boolean_tree_avoids_usvm_depth_limit_and_matches_catala(self):
+        """Chaining 20+ boolean predicates must fold into a balanced binary tree (depth <= 6) with USVM/Catala parity."""
+        import json
+        import os
+        import shutil
+        import subprocess
+
+        def _expr_depth(node) -> int:
+            if not isinstance(node, dict):
+                return 0
+            child_depths = [
+                _expr_depth(v)
+                for k, v in node.items()
+                if k in ("left", "right", "operand", "test", "then", "else")
+            ]
+            return 1 + (max(child_depths) if child_depths else 0)
+
+        names = [f"flag_{i:02d}" for i in range(20)]
+        text = "If " + " and ".join(names) + ", the taxpayer qualifies."
+        spans = []
+        pos = 3
+        for idx, nm in enumerate(names):
+            spans.append(
+                {
+                    "spanIdx": idx,
+                    "clauseIdx": 0,
+                    "span": nm,
+                    "charRange": [pos, pos + len(nm)],
+                    "role": "ROLE_AGENT_STATE_PRECONDITION",
+                    "unit": "UNIT_BOOL_PREDICATE",
+                }
+            )
+            pos += len(nm) + 5
+
+        edges = [
+            {"sourceIdx": i, "targetIdx": i + 1, "relationType": "REL_LOGICAL_AND"}
+            for i in range(19)
+        ]
+        ast = synthesize_usvm_ast_v2(
+            text=text,
+            spans=spans,
+            edges=edges,
+            clause_modalities=[{"clauseIdx": 0, "modality": "MODALITY_CONDITIONAL_BOOLEAN"}],
+            dominant_modality="MODALITY_CONDITIONAL_BOOLEAN",
+        )
+        comp = ast.get("computation") or {}
+        steps = (comp.get("pipeline") or {}).get("steps") or comp.get("steps") or []
+        self.assertGreater(len(steps), 0)
+
+        max_step_depth = max(_expr_depth(step.get("expr")) for step in steps)
+        self.assertLessEqual(max_step_depth, 7, f"Expected balanced tree depth <= 7, got {max_step_depth}")
+
+        out_key = next(iter((comp.get("pipeline") or {}).get("output") or {}))
+        evaluator = CanonicalUsvmEvaluator()
+        all_true_facts = {k: True for k in ast.get("inputs", {})}
+        self.assertIs(evaluator.evaluate(ast, all_true_facts)[out_key], True)
+
+        one_false_facts = dict(all_true_facts)
+        first_key = next(iter(ast.get("inputs", {})))
+        one_false_facts[first_key] = False
+        self.assertIs(evaluator.evaluate(ast, one_false_facts)[out_key], False)
+
+        catala_bin = shutil.which("catala")
+        if os.environ.get("REQUIRE_CATALA") == "1" or catala_bin:
+            source = emit_catala_code(
+                ast,
+                title="Balanced 20-Predicate Test",
+                scenarios=[
+                    {"name": "S1", "facts": all_true_facts},
+                    {"name": "S2", "facts": one_false_facts},
+                ],
+            )
+            harness = REPO_ROOT / "scripts" / "catala_verify.mjs"
+            req = {"id": "balanced_20", "source": source, "scopes": ["S1", "S2"]}
+            proc = subprocess.run(
+                ["node", str(harness)],
+                input=json.dumps(req) + "\n",
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(REPO_ROOT),
+            )
+            self.assertEqual(proc.returncode, 0, f"Catala harness failed: {proc.stderr}")
+            resp = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertTrue(resp.get("typecheck", {}).get("success"), f"Typecheck failed: {resp}")
+            from compiler.converters.catala_emitter import _identifier
+
+            cat_key = _identifier(out_key)
+            self.assertTrue(resp["results"]["S1"].get("success"), f"S1 failed: {resp['results']['S1']}")
+            self.assertTrue(resp["results"]["S2"].get("success"), f"S2 failed: {resp['results']['S2']}")
+            self.assertIs(resp["results"]["S1"]["values"][cat_key], True)
+            self.assertIs(resp["results"]["S2"]["values"][cat_key], False)
+
 
 if __name__ == "__main__":
     unittest.main()

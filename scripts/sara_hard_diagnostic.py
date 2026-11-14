@@ -292,7 +292,11 @@ def run_diagnostic_on_case(
             output_key = next(iter((comp.get("pipeline") or {}).get("output") or {}), None)
             if output_key and _identifier(output_key) in s_res.get("values", {}):
                 val = s_res["values"][_identifier(output_key)]
-                if isinstance(val, (int, float)):
+                if isinstance(val, bool):
+                    catala_minor = val
+                elif isinstance(val, str) and val.lower() in ("true", "false"):
+                    catala_minor = val.lower() == "true"
+                elif isinstance(val, (int, float)):
                     catala_minor = round(float(val) * 100)
     except Exception as exc:
         res.failure_code = "ERR_CATALA_TYPECHECK_EXCEPTION"
@@ -321,7 +325,15 @@ def run_diagnostic_on_case(
 
     # ── Stage 7: Cross-Engine Parity ────────────────────────────────────────
     if catala_minor is not None and usvm_val is not None:
-        if str(catala_minor) == str(usvm_val):
+        if isinstance(catala_minor, bool) or isinstance(usvm_val, bool):
+            parity_ok = (
+                isinstance(catala_minor, bool)
+                and isinstance(usvm_val, bool)
+                and (catala_minor == usvm_val)
+            )
+        else:
+            parity_ok = str(catala_minor) == str(usvm_val)
+        if parity_ok:
             res.cross_engine_equal = True
             res.furthest_stage = STAGE_COMPLETE
         else:

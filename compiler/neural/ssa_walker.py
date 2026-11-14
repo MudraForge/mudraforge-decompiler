@@ -1591,6 +1591,17 @@ def compose_clause_v2(
             base_tax_gate_map.setdefault(t, []).append(s)
             scoped_cond_ids.add(s)
 
+    def _fold_balanced_binary_op(op_name: str, nodes: list[Any]) -> Any:
+        """Fold a non-empty list of boolean AST nodes into a balanced binary tree (depth ceil(log2(N)))."""
+        if len(nodes) == 1:
+            return nodes[0]
+        mid = len(nodes) // 2
+        return {
+            "op": op_name,
+            "left": _fold_balanced_binary_op(op_name, nodes[:mid]),
+            "right": _fold_balanced_binary_op(op_name, nodes[mid:]),
+        }
+
     def _combine_cond_subset(subset_ids: list[int], include_quant: bool = False) -> Any:
         sub_set = set(subset_ids)
         and_parent: dict[int, int] = {cid: cid for cid in subset_ids}
@@ -1614,10 +1625,9 @@ def compose_clause_v2(
         and_groups: list[Any] = []
         for root_id in sorted(comp_members.keys(), key=lambda r: subset_ids.index(r)):
             members = comp_members[root_id]
-            grp_expr = atom_by_id[members[0]]
-            for m_id in members[1:]:
-                grp_expr = {"op": "AND", "left": grp_expr, "right": atom_by_id[m_id]}
-            and_groups.append(grp_expr)
+            and_groups.append(
+                _fold_balanced_binary_op("AND", [atom_by_id[m_id] for m_id in members])
+            )
 
         if include_quant and quant_expr is not None:
             and_groups.append(quant_expr)
@@ -1629,10 +1639,7 @@ def compose_clause_v2(
             for sid, tid, rel in bool_edges
         )
         join_top = "OR" if has_or else "AND"
-        expr_out = and_groups[0]
-        for nxt in and_groups[1:]:
-            expr_out = {"op": join_top, "left": expr_out, "right": nxt}
-        return expr_out
+        return _fold_balanced_binary_op(join_top, and_groups)
 
     if scoped_cond_ids:
         # Expand scoped surcharge conditions across any AND-linked companion predicates
