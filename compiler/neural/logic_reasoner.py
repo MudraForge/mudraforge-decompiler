@@ -30,6 +30,7 @@ from .statutory_neural_parser import (
     BIO_TAGS,
     LEGAL_SUFFIXES,
     RULE_MODALITIES,
+    SPAN_UNITS,
     canonicalize_token,
     SinusoidalPositionalEncoding,
     TransformerEncoderBlock,
@@ -175,6 +176,7 @@ class LogicReasonerModel(nn.Module):
         num_relations: int = len(RELATION_TYPES),
         num_bio_tags: int = len(BIO_TAGS),
         num_modalities: int = len(RULE_MODALITIES),
+        num_span_units: int = 0,
     ):
         super().__init__()
         self.d_model = d_model
@@ -186,6 +188,7 @@ class LogicReasonerModel(nn.Module):
         self.num_relations = num_relations
         self.num_bio_tags = num_bio_tags
         self.num_modalities = num_modalities
+        self.num_span_units = int(num_span_units or 0)
 
         self.word_embedding = nn.Embedding(logic_vocab_size, self.word_dim, padding_idx=0)
         self.suffix_embedding = nn.Embedding(len(LEGAL_SUFFIXES), suffix_dim, padding_idx=0)
@@ -229,6 +232,8 @@ class LogicReasonerModel(nn.Module):
             nn.Linear(span_dim, num_roles),
         )
         self.relation_classifier = DeepBiaffineAttention(span_dim, num_relations)
+        # Optional v2 Span Unit Head: omitted when num_span_units == 0 so v1 state_dict is 100% identical
+        self.unit_classifier = nn.Linear(span_dim, self.num_span_units) if self.num_span_units > 0 else None
 
         # Modality classifier incorporates sequence pooled logic context + pooled domain summary
         self.modality_classifier = nn.Sequential(
@@ -274,7 +279,8 @@ class LogicReasonerModel(nn.Module):
         clause_spans: list[tuple[int, int]] = None,
         mask: torch.Tensor = None,
         logic_token_ids: torch.Tensor = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor, torch.Tensor | None]:
+        return_unit_logits: bool = False,
+    ) -> tuple:
         x = h_stage1
         if domain_context is not None:
             x = self.cross_attn_from_domain(x, domain_context, key_padding_mask=mask)
@@ -317,10 +323,13 @@ class LogicReasonerModel(nn.Module):
 
         role_logits = None
         relation_logits = None
+        unit_logits = None
         if span_indices:
             span_vectors = self.span_pooler(h_seq, span_indices)
             role_logits = self.role_classifier(span_vectors)
             relation_logits = self.relation_classifier(span_vectors, span_vectors)
+            if self.unit_classifier is not None:
+                unit_logits = self.unit_classifier(span_vectors)
 
         clause_mod_logits = None
         if clause_spans:
@@ -344,6 +353,8 @@ class LogicReasonerModel(nn.Module):
             if clause_feats:
                 clause_mod_logits = self.modality_classifier(torch.stack(clause_feats, dim=0))
 
+        if return_unit_logits:
+            return bio_logits, role_logits, relation_logits, modality_logits, clause_mod_logits, unit_logits
         return bio_logits, role_logits, relation_logits, modality_logits, clause_mod_logits
 
     def forward(
@@ -383,10 +394,26 @@ class DualStreamStatutoryParser(nn.Module):
         d_domain: int = 192,
         d_logic: int = 256,
         dropout: float = 0.1,
+        num_roles: int = len(SEMANTIC_ROLES),
+        num_relations: int = len(RELATION_TYPES),
+        num_bio_tags: int = len(BIO_TAGS),
+        num_modalities: int = len(RULE_MODALITIES),
+        num_span_units: int = 0,
     ):
         super().__init__()
+        self.num_span_units = int(num_span_units or 0)
         self.domain_sensor = DomainSensorModel(vocab_size=raw_vocab_size, d_domain=d_domain, d_logic=d_logic, dropout=dropout)
-        self.logic_reasoner = LogicReasonerModel(logic_vocab_size=logic_vocab_size, d_model=d_logic, d_domain=d_domain, dropout=dropout)
+        self.logic_reasoner = LogicReasonerModel(
+            logic_vocab_size=logic_vocab_size,
+            d_model=d_logic,
+            d_domain=d_domain,
+            dropout=dropout,
+            num_roles=num_roles,
+            num_relations=num_relations,
+            num_bio_tags=num_bio_tags,
+            num_modalities=num_modalities,
+            num_span_units=self.num_span_units,
+        )
 
     def forward(
         self,
@@ -423,7 +450,7 @@ class DualStreamStatutoryParser(nn.Module):
             dom_probs = torch.where(drop_mask, uniform_dom, dom_probs)
 
         # Step 3: Model B cross-attends to Model A's intermediate lexical state
-        bio_logits, role_logits, rel_logits, modality_logits, clause_mod_logits = self.logic_reasoner.encode_stage2(
+        bio_logits, role_logits, rel_logits, modality_logits, clause_mod_logits, unit_logits = self.logic_reasoner.encode_stage2(
             h_log_s1,
             domain_context=h_dom_s1.detach() if detach_domain_for_logic else h_dom_s1,
             domain_probs=dom_probs,
@@ -432,12 +459,14 @@ class DualStreamStatutoryParser(nn.Module):
             clause_spans=clause_spans,
             mask=pad_mask,
             logic_token_ids=logic_token_ids,
+            return_unit_logits=True,
         )
 
         return {
             "bio_logits": bio_logits,
             "role_logits": role_logits,
             "rel_logits": rel_logits,
+            "unit_logits": unit_logits,
             "modality_logits": modality_logits,
             "clause_mod_logits": clause_mod_logits,
             "domain_tok_logits": domain_tok_logits,

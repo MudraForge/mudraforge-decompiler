@@ -193,6 +193,53 @@ BIO_TAGS = [
 BIO2ID = {tag: i for i, tag in enumerate(BIO_TAGS)}
 ID2BIO = {i: tag for i, tag in enumerate(BIO_TAGS)}
 
+# ── Model v2 Typed-Opcode Taxonomy (keeps v1 tables 100% untouched above) ────
+SPAN_UNITS = [
+    "UNIT_NONE",             # 0: Non-dimensional / structural / connective span
+    "UNIT_MONEY",            # 1: Monetary currency quantum ("$36,900", "Rs. 50,00,000")
+    "UNIT_RATE",             # 2: Percentage / basis-point rate ("28%", "3.1 percent")
+    "UNIT_DURATION",         # 3: Elapsed duration ("1 taxable year", "183 days", "45 days")
+    "UNIT_YEAR_DATE",        # 4: Calendar year or date ("2018", "April 1, 2026")
+    "UNIT_COUNT",            # 5: Cardinal integer count or section index ("2 children", "(2)")
+    "UNIT_BOOL_PREDICATE",   # 6: Truth-valued legal predicate ("is married", "maintains household")
+    "UNIT_SYMBOL_VAR",       # 7: Named variable or defined term ("taxable income", "applicable amount")
+]
+UNIT2ID = {u: i for i, u in enumerate(SPAN_UNITS)}
+ID2UNIT = {i: u for i, u in enumerate(SPAN_UNITS)}
+
+V2_SEMANTIC_ROLES = list(SEMANTIC_ROLES) + [
+    "ROLE_DEFINED_TERM",     # 20: LHS or RHS reference of a statutory term definition
+    "ROLE_COUNT_QUANTIFIER", # 21: Cardinal count / collection-size threshold
+]
+V2_ROLE2ID = {role: i for i, role in enumerate(V2_SEMANTIC_ROLES)}
+V2_ROLE2ID["ROLE_BUYER_PRIOR_TURNOVER_GUARD"] = 1
+V2_ROLE2ID["ROLE_NON_PAN_OVERRIDE_RATE"] = 5
+V2_ROLE2ID["ROLE_NON_RESIDENT_EXEMPTION_GUARD"] = 6
+V2_ID2ROLE = {i: role for i, role in enumerate(V2_SEMANTIC_ROLES)}
+
+V2_BIO_TAGS = list(BIO_TAGS) + [
+    "B-OPERAND",       # 23: Beginning of quantitative base/variable operand
+    "I-OPERAND",       # 24: Inside quantitative base/variable operand
+    "B-DEFINED_TERM",  # 25: Beginning of defined statutory term ("applicable amount", "surviving spouse")
+    "I-DEFINED_TERM",  # 26: Inside defined statutory term
+    "B-COUNT",         # 27: Beginning of cardinal count / duration span
+    "I-COUNT",         # 28: Inside cardinal count / duration span
+]
+V2_BIO2ID = {tag: i for i, tag in enumerate(V2_BIO_TAGS)}
+V2_ID2BIO = {i: tag for i, tag in enumerate(V2_BIO_TAGS)}
+
+V2_RELATION_TYPES = list(RELATION_TYPES) + [
+    "REL_MIN_CAP",         # 24: 1-to-1 opcode-exact upper cap MIN(expr, cap)
+    "REL_SUB_CREDIT",      # 25: 1-to-1 opcode-exact subtraction credit MAX(0, SUB(expr, credit))
+    "REL_AGGREGATE_COUNT", # 26: 1-to-1 opcode-exact collection COUNT reduction
+    "REL_BASE_TAX_ADD",    # 27: Connects bracket base tax ("$5,535") to marginal rate slice via ADD
+    "REL_DEFINED_TERM_OF", # 28: Connects defined term symbol to its defining expression/value
+    "REL_SUBSTITUTE_WHEN", # 29: Connects conditional/temporal override to target symbol
+    "REL_COREF_LINK",      # 30: Window-bounded coreference/anaphora link ("such amount" -> target)
+]
+V2_REL2ID = {rel: i for i, rel in enumerate(V2_RELATION_TYPES)}
+V2_ID2REL = {i: rel for i, rel in enumerate(V2_RELATION_TYPES)}
+
 # 4. Legal Morphological Suffixes
 LEGAL_SUFFIXES = [
     "<PAD>", "<UNK>", "-ity", "-ment", "-tion", "-sion", "-ee", "-or", "-er",
