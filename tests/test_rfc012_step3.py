@@ -229,6 +229,39 @@ class TestRFC012Step3(unittest.TestCase):
         self.assertIn("50000", blob, "the $500 credit must be applied")
         self.assertIn("1000000", blob, "the $10,000 cap must be applied")
 
+    # ── Hardened Regression Guards ───────────────────────────────────────────
+
+    def test_a3_5_excess_clause_without_threshold_fails_closed(self):
+        """Excess-over-threshold clauses must NEVER silently degrade into flat rates."""
+        text = "A tax of 3 percent of the excess of adjusted gross income over the applicable amount is imposed."
+        spans = [
+            {"span": "3 percent", "role": "ROLE_STANDARD_STATUTORY_RATE", "charRange": [9, 18], "clauseIdx": 0, "confidence": 0.99},
+            {"span": "adjusted gross income", "role": "ROLE_COMPUTATION_OPERAND", "charRange": [37, 58], "clauseIdx": 0, "confidence": 0.99},
+        ]
+        edges = [{"sourceIdx": 0, "targetIdx": 1, "relationType": "REL_SUBTRACTION_BASE"}]
+        # Rate node present, but no threshold node. Text contains 'excess of ... over'.
+        with self.assertRaises(Exception) as ctx:
+            synthesize_usvm_ast(
+                text=text,
+                spans=spans,
+                edges=edges,
+                clause_modalities=[{"clauseIdx": 0, "charRange": [0, len(text)]}],
+                clause_scopes=True,
+            )
+        self.assertIn("ERR_NO_THRESHOLD", str(ctx.exception))
+
+    def test_a3_6_emitted_inputs_never_leak_placeholder_currency(self):
+        """Input schemas must never declare placeholder 'CURRENCY'; only valid ISO codes."""
+        text = "An excise tax of 6.0 percent of total wages paid by an employer is imposed."
+        ast = self._decompile(text)
+        inputs = ast.get("inputs", {})
+        self.assertTrue(len(inputs) > 0, "at least one input must be declared")
+        for in_id, in_def in inputs.items():
+            if in_def.get("type") == "MONEY_MINOR":
+                ccy = in_def.get("currency")
+                self.assertIn(ccy, ("USD", "INR", "EUR", "GBP"), f"input {in_id} has invalid currency {ccy!r}")
+                self.assertNotEqual(ccy, "CURRENCY", f"input {in_id} leaked internal placeholder 'CURRENCY'")
+
 
 if __name__ == "__main__":
     unittest.main()

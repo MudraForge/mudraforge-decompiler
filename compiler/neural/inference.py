@@ -346,7 +346,15 @@ def parse_unit_and_type(text: str):
         return "DOCUMENT_VERIFICATION", "DOCUMENT_ID", "REGISTRY_VERIFICATION"
     # 5. Raw numeric quantum (e.g. "5,535", "1000", "50.5")
     if re.search(r"^\s*[\$₹€£]?\s*[\d,]+(?:\.\d+)?\s*$", low):
-        return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", "CURRENCY"
+        if "$" in low:
+            return "MONETARY_QUANTUM", "CURRENCY_CENTS", "USD"
+        if "₹" in low:
+            return "MONETARY_QUANTUM", "CURRENCY_PAISA", "INR"
+        if "€" in low:
+            return "MONETARY_QUANTUM", "CURRENCY_CENTS", "EUR"
+        if "£" in low:
+            return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", "GBP"
+        return "MONETARY_QUANTUM", "CURRENCY_MINOR_UNITS", None
     return "BOOLEAN_FLAG", "BOOLEAN", "FLAG"
 
 
@@ -651,7 +659,9 @@ def infer_rule_currency_info(spans: list[dict], text: str) -> tuple[str | None, 
         return "EUR", "CURRENCY_CENTS"
     if re.search(r"£|\b(?:pounds?|gbp|pence)\b", text, re.IGNORECASE):
         return "GBP", "CURRENCY_MINOR_UNITS"
-    return "USD", "CURRENCY_CENTS"
+    if re.search(r"\$|\b(?:dollars?|usd|cents?)\b", text, re.IGNORECASE):
+        return "USD", "CURRENCY_CENTS"
+    return None, "CURRENCY_PAISA"
 
 
 def build_operand_fact_keys(span_text: str, currency_code: str | None) -> list[str]:

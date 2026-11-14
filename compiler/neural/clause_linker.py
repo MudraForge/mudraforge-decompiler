@@ -1065,6 +1065,21 @@ def build_clause_scoped_computation(
             None,
         )
         if rate_span is not None:
+            # Guard against silent degradation of an excess-over-threshold clause into a plain rate.
+            if re.search(
+                r"\b(?:excess\s+(?:of)?|in\s+excess\s+of|over\s+the|over\s+such|exceeding|exceeds|more\s+than|greater\s+than)\b",
+                plan.text,
+                re.IGNORECASE,
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        code="ERR_NO_THRESHOLD",
+                        severity="error",
+                        clause_idx=scope.index,
+                        detail="clause specifies an excess calculation over a threshold, but no threshold was provided",
+                    )
+                )
+                continue
             bps = parse_rate_bps(rate_span.text)
             if bps:
                 plan.rate_bps = bps
