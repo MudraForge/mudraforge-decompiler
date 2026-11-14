@@ -121,6 +121,8 @@ class WalkContext:
     builder: SsaBuilder
     base_ref: str | None = None
     base_name: str = "taxable"
+    floor_amount: dict | str | None = None
+    ceiling_amount: dict | None = None
     threshold_value: str | None = None
     rate_value: str | None = None
 
@@ -204,6 +206,16 @@ def resolve_base_phrase(clause_text: str, threshold_node: SsaNode) -> str:
 # ── Handlers ────────────────────────────────────────────────────────────────
 
 
+_BRACKET_CEILING_RE = re.compile(
+    r"\b(?:not\s+over|not\s+exceeding|up\s+to|at\s+most)\s+(?P<ceiling>[$₹€£]\s*[\d,]+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_BRACKET_BASE_TAX_RE = re.compile(
+    r"(?:^|[\s(;])(?P<base_tax>[$₹€£]\s*[\d,]+(?:\.\d+)?)\s*,?\s*\bplus\b",
+    re.IGNORECASE,
+)
+
+
 def _static_money(node: SsaNode) -> dict | None:
     if not is_monetary_quantum_text(node.text):
         return None
@@ -211,6 +223,76 @@ def _static_money(node: SsaNode) -> dict | None:
     if minor is None:
         return None
     return {"op": "TO_PAISE", "value": str(minor)}
+
+
+def _resolve_bracket_ceiling(node: SsaNode | None, clause_text: str) -> dict | None:
+    """Resolves the upper monetary ceiling of a bounded bracket clause."""
+    if node is not None:
+        amount = _static_money(node)
+        if amount is not None:
+            return amount
+    m = _BRACKET_CEILING_RE.search(clause_text or "")
+    if m:
+        raw = m.group("ceiling")
+        if is_monetary_quantum_text(raw):
+            minor = parse_minor_units(raw)
+            if minor is not None:
+                return {"op": "TO_PAISE", "value": str(minor)}
+    return None
+
+
+def _extract_bracket_base_tax(clause_text: str) -> dict | None:
+    """Extracts a stated bracket base tax ('$<amount>, plus <rate>%') when present."""
+    m = _BRACKET_BASE_TAX_RE.search(clause_text or "")
+    if not m:
+        return None
+    raw = m.group("base_tax")
+    if not is_monetary_quantum_text(raw):
+        return None
+    minor = parse_minor_units(raw)
+    if minor is None or minor <= 0:
+        return None
+    return {"op": "TO_PAISE", "value": str(minor)}
+
+
+def _handle_bracket_next(
+    builder: SsaBuilder, node: SsaNode, neighbors: list[SsaEdge], ctx: WalkContext
+) -> str | None:
+    """Bounded bracket handler: adds stated baseTax (if any) and gates inside (floor, ceiling]."""
+    ceiling = ctx.ceiling_amount or _resolve_bracket_ceiling(node, ctx.clause_text)
+    if ceiling is None or ctx.rate_value is None or ctx.base_ref is None or ctx.floor_amount is None:
+        return None
+    base_tax = _extract_bracket_base_tax(ctx.clause_text)
+    if base_tax is not None:
+        with_base_expr = {
+            "op": "ADD",
+            "left": base_tax,
+            "right": ctx.rate_value,
+        }
+        ctx.rate_value = builder.emit(
+            f"{ctx.base_name}BracketWithBaseTax", with_base_expr, "bracket-base-tax"
+        )
+    cond_expr = {
+        "op": "CONDITIONAL",
+        "test": {
+            "op": "AND",
+            "left": {
+                "op": "GT",
+                "left": ctx.base_ref,
+                "right": ctx.floor_amount,
+            },
+            "right": {
+                "op": "LTE",
+                "left": ctx.base_ref,
+                "right": ceiling,
+            },
+        },
+        "then": ctx.rate_value,
+        "else": {"op": "TO_PAISE", "value": "0"},
+    }
+    name = builder.emit(f"{ctx.base_name}BracketTax", cond_expr, "bracket-next")
+    ctx.rate_value = name
+    return name
 
 
 def _handle_rate_to_threshold(
@@ -461,7 +543,7 @@ def _combinator_base_name(
 def default_registry() -> HandlerRegistry:
     registry = HandlerRegistry()
     registry.register("REL_RATE_TO_THRESHOLD", _handle_rate_to_threshold)
-    registry.register("REL_BRACKET_NEXT", _handle_rate_to_threshold)
+    registry.register("REL_BRACKET_NEXT", _handle_bracket_next)
     registry.register("REL_CAP_CEILING", _handle_cap_ceiling)
     registry.register("REL_SUBTRACTION_BASE", _handle_subtraction_base)
     registry.register("REL_COMBINATOR_MIN", _handle_combinator_min)
@@ -784,7 +866,7 @@ def compose_clause(
     ctx.base_ref = builder.declare_input(base_id)
     ctx.base_name = base_id
 
-    # 6. base arithmetic: the amount above the threshold
+    # 6. base arithmetic: the amount above the threshold (bounded by ceiling if REL_BRACKET_NEXT)
     threshold_amount = _static_money(threshold_node)
     if threshold_amount is None and known_symbols:
         norm_th = normalize_term(threshold_node.text)
@@ -800,11 +882,54 @@ def compose_clause(
             )
         )
         return [], [], diagnostics
-    excess_expr = {
-        "op": "MAX",
-        "left": {"op": "TO_PAISE", "value": "0"},
-        "right": {"op": "SUB", "left": ctx.base_ref, "right": threshold_amount},
-    }
+    ctx.floor_amount = threshold_amount
+
+    bracket_edges = [edge for edge in edges if edge.relation == "REL_BRACKET_NEXT"]
+    ceiling_node = None
+    if bracket_edges:
+        for b_edge in bracket_edges:
+            candidate_node = by_index.get(b_edge.target)
+            resolved_c = _resolve_bracket_ceiling(candidate_node, clause_text)
+            if resolved_c is not None:
+                ceiling_node = candidate_node
+                ctx.ceiling_amount = resolved_c
+                break
+        if ctx.ceiling_amount is None:
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_NO_THRESHOLD,
+                    detail="clause has REL_BRACKET_NEXT but no valid monetary ceiling could be resolved",
+                )
+            )
+            return [], [], diagnostics
+        if (
+            isinstance(threshold_amount, dict)
+            and threshold_amount.get("op") == "TO_PAISE"
+            and int(ctx.ceiling_amount["value"]) <= int(threshold_amount["value"])
+        ):
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_NO_THRESHOLD,
+                    detail="bracket ceiling must be strictly greater than the floor threshold",
+                )
+            )
+            return [], [], diagnostics
+        capped_base_expr = {
+            "op": "MIN",
+            "left": ctx.base_ref,
+            "right": ctx.ceiling_amount,
+        }
+        excess_expr = {
+            "op": "MAX",
+            "left": {"op": "TO_PAISE", "value": "0"},
+            "right": {"op": "SUB", "left": capped_base_expr, "right": threshold_amount},
+        }
+    else:
+        excess_expr = {
+            "op": "MAX",
+            "left": {"op": "TO_PAISE", "value": "0"},
+            "right": {"op": "SUB", "left": ctx.base_ref, "right": threshold_amount},
+        }
     ctx.threshold_value = builder.emit(
         f"{ctx.base_name}Excess", excess_expr, "base-arithmetic"
     )
@@ -820,6 +945,42 @@ def compose_clause(
             )
         )
         return [], [], diagnostics
+
+    # 7b. bounded bracket ceiling + baseTax (REL_BRACKET_NEXT) or open-ended top bracket baseTax
+    if bracket_edges:
+        bracket_handler = registry.get("REL_BRACKET_NEXT")
+        if bracket_handler is None or bracket_handler(builder, ceiling_node, bracket_edges, ctx) is None:
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_NO_THRESHOLD,
+                    detail="the bounded bracket clause could not be composed",
+                )
+            )
+            return [], [], diagnostics
+    else:
+        base_tax = _extract_bracket_base_tax(clause_text)
+        if base_tax is not None:
+            with_base_expr = {
+                "op": "ADD",
+                "left": base_tax,
+                "right": ctx.rate_value,
+            }
+            with_base_name = builder.emit(
+                f"{ctx.base_name}BracketWithBaseTax", with_base_expr, "bracket-base-tax"
+            )
+            cond_expr = {
+                "op": "CONDITIONAL",
+                "test": {
+                    "op": "GT",
+                    "left": ctx.base_ref,
+                    "right": threshold_amount,
+                },
+                "then": with_base_name,
+                "else": {"op": "TO_PAISE", "value": "0"},
+            }
+            ctx.rate_value = builder.emit(
+                f"{ctx.base_name}BracketTax", cond_expr, "bracket-open"
+            )
 
     # 8. the adjustments that apply to the rate, in statutory order:
     #    reductions first, then caps, each ordered by its position in the text.

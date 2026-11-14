@@ -305,6 +305,52 @@ class TestRFC012Step3(unittest.TestCase):
             )
         self.assertIn("ERR_NO_COMPUTATION", str(ctx.exception))
 
+    def test_a3_9_bounded_bracket_enforces_ceiling_and_base_tax(self):
+        """REL_BRACKET_NEXT must cap the slice at the ceiling, add baseTax, and gate inside (floor, ceiling]."""
+        text = "$5,535, plus 28% of the excess over $36,900 if the taxable income is over $36,900 but not over $89,150."
+        spans = [
+            {"spanIdx": 0, "clauseIdx": 0, "role": "ROLE_STANDARD_STATUTORY_RATE", "span": "28%", "charRange": [13, 16], "confidence": 0.99},
+            {"spanIdx": 1, "clauseIdx": 0, "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "span": "over $36,900", "charRange": [31, 43], "confidence": 0.99},
+            {"spanIdx": 2, "clauseIdx": 0, "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "span": "not over $89,150", "charRange": [86, 102], "confidence": 0.99},
+        ]
+        edges = [
+            {"sourceIdx": 0, "targetIdx": 1, "relationType": "REL_RATE_TO_THRESHOLD"},
+            {"sourceIdx": 1, "targetIdx": 2, "relationType": "REL_BRACKET_NEXT"},
+        ]
+        ast = synthesize_usvm_ast(
+            text=text,
+            spans=spans,
+            edges=edges,
+            clause_modalities=[{"clauseIdx": 0, "charRange": [0, len(text)]}],
+            clause_scopes=True,
+        )
+        steps = ast["computation"]["pipeline"]["steps"]
+        handlers = ast["computation"]["clauseScopes"][0]["handlers"]
+        self.assertIn("bracket-base-tax", handlers)
+        self.assertIn("bracket-next", handlers)
+        blob = json.dumps(steps)
+        self.assertIn("553500", blob, "baseTax $5,535 (553500 minor units) must be emitted")
+        self.assertIn("8915000", blob, "ceiling $89,150 (8915000 minor units) must be emitted")
+
+        # Verify Catala == USVM across below-floor ($20k -> $0), in-bracket ($50k -> $9,203), and above-ceiling ($100k -> $0)
+        bracket_scenarios = [
+            ("G20000", {"taxableIncome": 2000000}, 0),
+            ("G50000", {"taxableIncome": 5000000}, 920300),
+            ("G100000", {"taxableIncome": 10000000}, 0),
+        ]
+        response = self._catala(
+            ast,
+            [{"name": name, "facts": facts} for name, facts, _ in bracket_scenarios],
+        )
+        catala_key = _identifier("taxableIncomeTaxPaisa")
+        for name, facts, expected_minor in bracket_scenarios:
+            run = response["results"][name]
+            self.assertTrue(run["success"], f"{name}: Catala interpret failed:\n{run['errors']}")
+            catala_minor = round(float(run["values"][catala_key]) * 100)
+            usvm = self.evaluator.evaluate(ast, facts)
+            self.assertEqual(usvm["taxableIncomeTaxPaisa"], expected_minor)
+            self.assertEqual(catala_minor, expected_minor)
+
 
 if __name__ == "__main__":
     unittest.main()
