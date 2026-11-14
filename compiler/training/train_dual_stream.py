@@ -51,6 +51,11 @@ from compiler.neural.inference import synthesize_usvm_ast
 from compiler.neural.literals import segment_clauses
 from compiler.neural.inference_v2 import apply_type_compatibility_mask, synthesize_usvm_ast_v2
 from compiler.neural.ssa_walker import V2LoweringError
+from compiler.training.discrepancy_monitor import (
+    verify_v2_dataset_contract,
+    audit_v2_epoch_predictions,
+    append_discrepancy_record,
+)
 from compiler.neural.domain_sensor import (
     DOMAIN_TOKEN_CLASSES,
     DOMAIN_CLASS2ID,
@@ -305,6 +310,26 @@ def train_supervised_dual_stream(
         val_batches.append(vb_dev)
 
     os.makedirs(os.path.dirname(os.path.abspath(checkpoint_out)), exist_ok=True)
+    disc_log_path = os.path.splitext(os.path.abspath(str(checkpoint_out)))[0] + "_discrepancies.jsonl"
+    if os.path.exists(disc_log_path):
+        os.remove(disc_log_path)
+    if is_v2:
+        contract_summary = verify_v2_dataset_contract(
+            payload,
+            max_samples=(24 if smoke_test else 120),
+            strict=True,
+            log_path=disc_log_path,
+        )
+        print(
+            f"[DISCREPANCY-CHECK] v2 dataset contract verified: "
+            f"{contract_summary['passed']}/{contract_summary['checked']} clean "
+            f"(errors={contract_summary['errorCount']})",
+            flush=True,
+        )
+    id2bio_map = {i: b for i, b in enumerate(bio_list)}
+    id2unit_map = {i: u for i, u in enumerate(span_units_list)}
+    id2role_map = {i: r for i, r in enumerate(roles_list)}
+    id2rel_map = {i: r for i, r in enumerate(rels_list)}
     best_score = -1e9
     patience = 6
     patience_cnt = 0
@@ -512,6 +537,24 @@ def train_supervised_dual_stream(
         rel_r = rel_tp / max(1, rel_tp + rel_fn) * 100.0
         rel_f1 = (2 * rel_p * rel_r) / max(1e-6, rel_p + rel_r)
 
+        audit_summary = (
+            audit_v2_epoch_predictions(
+                model=model,
+                val_items=payload["val"],
+                raw_vocab=raw_vocab,
+                id2role=id2role_map,
+                id2rel=id2rel_map,
+                id2bio=id2bio_map,
+                id2unit=id2unit_map,
+                log_path=disc_log_path,
+                epoch=epoch,
+                device=device,
+                max_samples=(6 if smoke_test else 20),
+            )
+            if is_v2
+            else None
+        )
+
         if is_v2:
             comp_score = 0.35 * clause_em + 0.15 * macro_f1 + 0.15 * rel_f1 + 0.10 * unit_acc + 0.15 * mod_acc + 0.10 * bio_acc - 5.0 * avg_nll
         else:
@@ -531,6 +574,9 @@ def train_supervised_dual_stream(
             }
             if is_v2:
                 ckpt_metrics["unit_acc"] = round(unit_acc, 2)
+                if audit_summary is not None:
+                    ckpt_metrics["sem_pass_pct"] = audit_summary["sem_pass_pct"]
+                    ckpt_metrics["disc_count"] = audit_summary["discrepancy_count"]
             ckpt_cfg = {
                 "raw_vocab_size": raw_vocab_size,
                 "logic_vocab_size": logic_vocab_size,
@@ -562,10 +608,15 @@ def train_supervised_dual_stream(
 
         ep_dt = time.time() - ep_t0
         unit_str = f" | Unit: {unit_acc:.2f}%" if is_v2 else ""
+        sem_str = (
+            f" | SemPass: {audit_summary['sem_pass_pct']:.1f}% | Disc: {audit_summary['discrepancy_count']}"
+            if is_v2 and audit_summary is not None
+            else ""
+        )
         print(
             f"Epoch {epoch:02d}/{epochs:02d} ({ep_dt:.1f}s) | NLL: {avg_nll:.4f} | DomTok: {dom_acc:.2f}% | "
             f"BIO: {bio_acc:.2f}% | Mod: {mod_acc:.2f}% | F1: {macro_f1:.2f}% | "
-            f"RelF1: {rel_f1:.2f}%{unit_str} | EM: {clause_em:.2f}%{saved}",
+            f"RelF1: {rel_f1:.2f}%{unit_str} | EM: {clause_em:.2f}%{sem_str}{saved}",
             flush=True,
         )
         if patience_cnt >= patience:
@@ -659,6 +710,9 @@ def train_grpo_logic_only(
     env = StatutoryRlEnvironment()
     vector_cache = {}
     meta_cache = {}
+    rl_disc_log_path = os.path.splitext(os.path.abspath(str(checkpoint_out)))[0] + "_discrepancies.jsonl"
+    if os.path.exists(rl_disc_log_path):
+        os.remove(rl_disc_log_path)
     best_score = -1e9
     t0 = time.time()
 
@@ -668,6 +722,7 @@ def train_grpo_logic_only(
             epoch_passes = 0
             epoch_total = 0
             bio_agrees = []
+            rl_disc_counts = {"lower_fail": 0, "vector_mismatch": 0, "rollout_total": 0}
 
             per_stype_quota = max(3, min(6, 275 // max(1, len(by_stype))))
             sampled = []
@@ -878,11 +933,16 @@ def train_grpo_logic_only(
 
                 g_evals = env.compute_reward_group(cand_asts, vectors=sample_vectors, stype=sample_stype)
                 g_rewards = []
-                for rew, bd in g_evals:
+                for cand_ast, (rew, bd) in zip(cand_asts, g_evals):
                     g_rewards.append(rew)
                     epoch_rewards.append(rew)
                     epoch_passes += bd["vector_passes"]
                     epoch_total += bd["vector_total"]
+                    rl_disc_counts["rollout_total"] += 1
+                    if not cand_ast:
+                        rl_disc_counts["lower_fail"] += 1
+                    elif bd["vector_passes"] < bd["vector_total"]:
+                        rl_disc_counts["vector_mismatch"] += 1
 
                 r_t = torch.tensor(g_rewards, dtype=torch.float32, device=device)
                 advs = (r_t - r_t.mean()) / (r_t.std(unbiased=False) + 1e-6)
@@ -933,6 +993,17 @@ def train_grpo_logic_only(
                 f"Vector Pass: {pass_rate:.1f}% | BIO Agree: {bio_agree:.2f}%{tag}",
                 flush=True,
             )
+            if is_v2:
+                append_discrepancy_record(
+                    rl_disc_log_path,
+                    {
+                        "recordType": "GRPO_EPOCH_AUDIT",
+                        "epoch": epoch,
+                        "passRatePct": round(pass_rate, 2),
+                        "meanReward": round(avg_rew, 3),
+                        **rl_disc_counts,
+                    },
+                )
     finally:
         env.evaluator.close()
 

@@ -455,6 +455,112 @@ class TestModelV2Commit3(unittest.TestCase):
             self.assertIn("rel_f1", metrics)
             self.assertIn("unit_acc", metrics)
             self.assertIn("macro_f1", metrics)
+            self.assertIn("sem_pass_pct", metrics)
+            self.assertIn("disc_count", metrics)
+
+            disc_log = tmp_path / "v2_smoke_ckpt_discrepancies.jsonl"
+            self.assertTrue(disc_log.exists())
+            log_lines = [ln for ln in disc_log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            self.assertTrue(any('"EPOCH_SEMANTIC_AUDIT"' in ln for ln in log_lines))
+
+    def test_discrepancy_monitor_catches_intended_vs_actual_drift(self):
+        import copy
+        from compiler.neural.inference_v2 import synthesize_usvm_ast_v2
+        from compiler.neural.statutory_neural_parser import ID2UNIT, V2_ID2REL, V2_ID2ROLE
+        from compiler.training.dataset_generator import generate_synthetic_dataset, tokenize_with_offsets
+        from compiler.training.discrepancy_monitor import (
+            check_ast_semantic_invariants,
+            compare_ast_counterfactual_outputs,
+            verify_v2_dataset_contract,
+        )
+        from compiler.training.usvm_rl_environment import StatutoryRlEnvironment
+        from compiler.vm.usvm_evaluator import CanonicalUsvmEvaluator
+
+        ds = generate_synthetic_dataset(num_samples=50, seed=11, v2=True)
+        summary = verify_v2_dataset_contract(ds, max_samples=40, strict=True)
+        self.assertGreater(summary["checked"], 10)
+        self.assertEqual(summary["errorCount"], 0)
+        self.assertEqual(summary["passed"], summary["checked"])
+
+        # 1. Fault injection: mask-blocked gold relation edge
+        bad_ds = copy.deepcopy(ds)
+        corrupted = False
+        for it in bad_ds["train"]:
+            if it.get("modality_name") != "MODALITY_ABSTAIN_UNRESOLVED" and any(
+                cell != 0 for row in it.get("rel_matrix", []) for cell in row
+            ):
+                it["unit_labels"] = [0] * len(it.get("unit_labels", []))
+                corrupted = True
+                break
+        self.assertTrue(corrupted)
+        with self.assertRaises(RuntimeError) as ctx:
+            verify_v2_dataset_contract(bad_ds, max_samples=50, strict=True)
+        self.assertIn("MASK_BLOCKED_GOLD_EDGE", str(ctx.exception))
+
+        # 2. Fault injection: semantic invariant checker flags Boolean Paisa suffix & wrong branch op
+        invs = check_ast_semantic_invariants(
+            {
+                "astVersion": "v2",
+                "executionDiagnostics": {"regexHeuristicsUsed": False},
+                "outputs": {"thresholdMetPaisa": {"type": "BOOLEAN"}},
+                "computation": {"pipeline": {"steps": [{"op": "MUL"}]}},
+            },
+            dag_meta={"kind": "BRANCHED_RATES", "mode": "conditional"},
+        )
+        self.assertIn("BOOLEAN_PAISA_SUFFIX:thresholdMetPaisa", invs)
+        self.assertIn("BRANCHED_RATES_CONDITIONAL_MISSING_CONDITIONAL_OP", invs)
+
+        # 3. Fault injection: counterfactual evaluator catches semantic op drift (MUL/SUB/CONDITIONAL -> constant wrong value)
+        arith_sample = next(
+            it for it in ds["val"]
+            if it.get("stype") == "V2_AST_BRANCHED_RATES" and it.get("modality_name") != "MODALITY_ABSTAIN_UNRESOLVED"
+        )
+        _, offs = tokenize_with_offsets(arith_sample["text"])
+        c_spans = arith_sample.get("clause_spans") or [(0, len(offs) - 1)]
+        cmods = [
+            {"clauseIdx": ci, "modality": arith_sample["modality_name"], "charRange": [offs[c0][0], offs[c1][1]]}
+            for ci, (c0, c1) in enumerate(c_spans)
+        ]
+        spans = [
+            {
+                "spanIdx": i,
+                "span": arith_sample["text"][offs[ts][0]:offs[te][1]],
+                "role": V2_ID2ROLE[arith_sample["role_labels"][i]],
+                "unit": ID2UNIT[arith_sample["unit_labels"][i]],
+                "charRange": [offs[ts][0], offs[te][1]],
+                "clauseIdx": next((ci for ci, (ccs, cce) in enumerate(c_spans) if ts >= ccs and te <= cce), 0),
+            }
+            for i, (ts, te) in enumerate(arith_sample["span_boundaries"])
+        ]
+        edges = [
+            {"sourceIdx": r_i, "targetIdx": c_i, "relation": V2_ID2REL[rid]}
+            for r_i, row in enumerate(arith_sample["rel_matrix"])
+            for c_i, rid in enumerate(row)
+            if r_i != c_i and rid != 0
+        ]
+        gold_ast = synthesize_usvm_ast_v2(
+            text=arith_sample["text"],
+            spans=spans,
+            edges=edges,
+            clause_modalities=cmods,
+            dominant_modality=arith_sample["modality_name"],
+        )
+        drifted_ast = copy.deepcopy(gold_ast)
+        for st in drifted_ast["computation"]["pipeline"]["steps"]:
+            expr = st.get("expr")
+            if isinstance(expr, dict) and expr.get("op") == "RATIONAL_MULTIPLY":
+                expr["rateBps"] = int(expr.get("rateBps", 100)) + 5000
+            elif isinstance(expr, dict) and expr.get("op") in ("ADD", "SUB"):
+                expr["op"] = "SUB" if expr["op"] == "ADD" else "ADD"
+        env = StatutoryRlEnvironment()
+        try:
+            matched, diffs = compare_ast_counterfactual_outputs(
+                gold_ast, drifted_ast, env, env.evaluator, stype=arith_sample["stype"]
+            )
+            self.assertFalse(matched)
+            self.assertGreater(len(diffs), 0)
+        finally:
+            env.evaluator.close()
 
 
 if __name__ == "__main__":
