@@ -3295,7 +3295,12 @@ def synthesize_usvm_ast(
     # ── Pipeline Archetype 0: Composed Multi-Node Arithmetic / Collection Aggregate DAG ──
     clause_count = len({int(s.get("clauseIdx", 0)) for s in indexed_spans})
     has_composition = any(
-        e["relationType"] in ("REL_CAP_CEILING", "REL_SUBTRACTION_BASE")
+        e["relationType"] in (
+            "REL_CAP_CEILING",
+            "REL_SUBTRACTION_BASE",
+            "REL_COMBINATOR_MIN",
+            "REL_COMBINATOR_MAX",
+        )
         for e in resolved_edges
     )
     use_clause_scoped = (

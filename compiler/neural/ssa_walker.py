@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from compiler.neural.clause_linker import input_id_from_phrase
+from compiler.neural.clause_linker import base_phrase_after_rate, input_id_from_phrase
 from compiler.neural.inference import parse_minor_units, parse_rate_bps, parse_unit_and_type
 
 
@@ -257,6 +257,69 @@ def _handle_subtraction_base(
     return name
 
 
+def _regime_value(
+    node: SsaNode, ctx: WalkContext, builder: SsaBuilder
+) -> tuple[str | None, int | None]:
+    """The liability of one regime: a rate on a base, or a stated amount."""
+    if parse_unit_and_type(node.text)[0] == "PERCENTAGE_RATE":
+        bps = parse_rate_bps(node.text)
+        if not bps:
+            return None, None
+        phrase = base_phrase_after_rate(ctx.clause_text, node.char_range[1])
+        base_id = input_id_from_phrase(phrase, builder.currency_code)
+        if not base_id:
+            return None, None
+        base_ref = builder.declare_input(base_id)
+        ctx.base_name = base_id
+        expr = {
+            "op": "RATIONAL_MULTIPLY",
+            "base": base_ref,
+            "rateBps": bps,
+            "denominator": 10000,
+        }
+        return builder.emit(f"{base_id}RegimeTax", expr, "rate-on-base"), None
+    amount = _static_money(node)
+    if amount is None:
+        return None, None
+    expr = {"op": "TO_PAISE", "value": amount["value"]}
+    return builder.emit("statedRegimeAmount", expr, "stated-amount"), int(amount["value"])
+
+
+def _handle_combinator(
+    builder: SsaBuilder,
+    node: SsaNode,
+    neighbors: list[SsaEdge],
+    ctx: WalkContext,
+    combinator: str,
+) -> str | None:
+    """A multi-regime provision: one regime is chosen out of several."""
+    from compiler.neural.regime_combinators import Regime, combine
+
+    edges = [edge for edge in ctx.edges if edge.relation in (
+        "REL_COMBINATOR_MIN", "REL_COMBINATOR_MAX"
+    )]
+    if not edges:
+        return None
+    edge = edges[0]
+    regimes = []
+    for endpoint in (edge.source, edge.target):
+        regime_node = ctx.nodes.get(endpoint)
+        if regime_node is None:
+            return None
+        ref, value = _regime_value(regime_node, ctx, builder)
+        if ref is None:
+            return None
+        regimes.append(Regime(id=f"regime_{endpoint}", value=value, value_ref=ref))
+    result = combine(combinator, regimes)
+    if not result.ok or result.expression is None:
+        return None
+    return builder.emit(
+        f"{ctx.base_name}Combined",
+        result.expression,
+        f"combinator-{combinator.lower()}",
+    )
+
+
 # ── Dependency direction and cycle detection ────────────────────────────────
 
 #: For each relation, which endpoint depends on which.
@@ -345,11 +408,44 @@ def topological_order(
 # ── The walk ────────────────────────────────────────────────────────────────
 
 
+def _handle_combinator_min(
+    builder: SsaBuilder, node: SsaNode, neighbors: list[SsaEdge], ctx: WalkContext
+) -> str | None:
+    """The beneficial regime of a multi-regime provision."""
+    return _handle_combinator(builder, node, neighbors, ctx, "BENEFICIAL_MIN")
+
+
+def _handle_combinator_max(
+    builder: SsaBuilder, node: SsaNode, neighbors: list[SsaEdge], ctx: WalkContext
+) -> str | None:
+    """The penal regime of a multi-regime provision."""
+    return _handle_combinator(builder, node, neighbors, ctx, "PENAL_MAX")
+
+
+def _combinator_base_name(
+    by_index: dict[int, SsaNode], edge: SsaEdge, clause_text: str
+) -> str:
+    """The name of the amount a multi-regime provision applies to."""
+    for endpoint in (edge.source, edge.target):
+        node = by_index.get(endpoint)
+        if node is None:
+            continue
+        if parse_unit_and_type(node.text)[0] != "PERCENTAGE_RATE":
+            continue
+        phrase = base_phrase_after_rate(clause_text, node.char_range[1])
+        base_id = input_id_from_phrase(phrase)
+        if base_id:
+            return base_id
+    return ""
+
+
 def default_registry() -> HandlerRegistry:
     registry = HandlerRegistry()
     registry.register("REL_RATE_TO_THRESHOLD", _handle_rate_to_threshold)
     registry.register("REL_CAP_CEILING", _handle_cap_ceiling)
     registry.register("REL_SUBTRACTION_BASE", _handle_subtraction_base)
+    registry.register("REL_COMBINATOR_MIN", _handle_combinator_min)
+    registry.register("REL_COMBINATOR_MAX", _handle_combinator_max)
     return registry
 
 
@@ -408,7 +504,39 @@ def compose_clause(
     # 3. a deterministic visit order (data dependency, ties by name)
     topological_order(nodes, graph)
 
-    # 4. the head of the clause is the rate node
+    # 4. the head of the clause
+    combinator_edges = [
+        edge for edge in edges
+        if edge.relation in ("REL_COMBINATOR_MIN", "REL_COMBINATOR_MAX")
+    ]
+    if combinator_edges:
+        # A multi-regime provision: the regimes are composed, then combined.
+        ctx = WalkContext(
+            nodes=by_index,
+            edges=edges,
+            clause_text=clause_text,
+            builder=builder,
+        )
+        base_name = _combinator_base_name(by_index, combinator_edges[0], clause_text)
+        if base_name:
+            ctx.base_name = base_name
+        handler = registry.get(combinator_edges[0].relation)
+        combined = handler(builder, by_index[combinator_edges[0].source], [], ctx)
+        if combined is None:
+            diagnostics.append(
+                SsaDiagnostic(
+                    code=ERR_NO_RATE_HEAD,
+                    detail="the multi-regime provision could not be composed",
+                )
+            )
+            return [], [], diagnostics
+        builder.emit(
+            f"{ctx.base_name}CombinedPaisa",
+            {"op": "MAX", "left": combined, "right": {"op": "TO_PAISE", "value": "0"}},
+            "floor-at-zero",
+        )
+        return builder.steps, builder.handlers_used, diagnostics
+
     rate_node = None
     threshold_node = None
     for edge in edges:

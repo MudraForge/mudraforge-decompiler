@@ -366,6 +366,8 @@ _WALKED_RELATIONS = {
     "REL_RATE_TO_THRESHOLD",
     "REL_CAP_CEILING",
     "REL_SUBTRACTION_BASE",
+    "REL_COMBINATOR_MIN",
+    "REL_COMBINATOR_MAX",
 }
 _COMPARATIVE_RE = re.compile(
     r"\b(?:exceeding|exceeds|above|over|more\s+than|in\s+excess\s+of|greater\s+than)\b",
@@ -528,7 +530,7 @@ _PHRASE_STOP_WORDS = {
 }
 
 
-def _base_phrase_after_rate(clause_text: str, rate_end: int) -> str:
+def base_phrase_after_rate(clause_text: str, rate_end: int) -> str:
     """Extracts the object a rate applies to: ``... 6 percent of the wages``."""
     tail = clause_text[rate_end:]
     window = tail[:60]
@@ -997,7 +999,7 @@ def build_clause_scoped_computation(
             bps = parse_rate_bps(rate_span.text)
             if bps:
                 plan.rate_bps = bps
-                phrase = _base_phrase_after_rate(
+                phrase = base_phrase_after_rate(
                     plan.text, rate_span.char_range[1] - scope.char_range[0]
                 )
                 referenced, error = resolve_by_name(phrase, scope.index)
@@ -1096,5 +1098,6 @@ def _threshold_text(scope: ClauseScope) -> str:
         if span.role in ("ROLE_TRANSACTION_CLIFF_THRESHOLD", "ROLE_TRANSACTION_EXCESS_THRESHOLD"):
             return span.text
     return ""
+
 
 
