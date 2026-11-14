@@ -409,6 +409,10 @@ class CatalaEmitter:
             if not isinstance(value, bool):
                 raise CatalaLoweringError(f"Boolean fact with non-boolean value: {value!r}")
             return "true" if value else "false"
+        if typ == "date":
+            if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()):
+                raise CatalaLoweringError(f"Date fact requires ISO YYYY-MM-DD string, got {value!r}")
+            return f"|{value.strip()}|"
         if typ.startswith("enum:"):
             if not isinstance(value, str):
                 raise CatalaLoweringError(
@@ -598,12 +602,14 @@ class CatalaEmitter:
         upper = raw.strip().upper()
         if upper in ("MONEY_MINOR", "MONEY_MAJOR", "MONEY"):
             return "money"
-        if upper in ("INTEGER", "INT"):
+        if upper in ("INTEGER", "INT", "COUNT", "RATE_BPS"):
             return "integer"
         if upper in ("DECIMAL", "NUMBER"):
             return "decimal"
         if upper in ("BOOLEAN", "BOOL"):
             return "boolean"
+        if upper == "DATE":
+            return "date"
         if upper.startswith("ENUM:"):
             return "enum:" + raw.split(":", 1)[1]
         raise CatalaLoweringError(

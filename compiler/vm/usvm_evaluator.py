@@ -368,7 +368,7 @@ class CanonicalUsvmEvaluator:
         string. ``INTEGER`` follows the same convention for the same reason.
         """
         tag = (type_tag or "").upper()
-        if tag in ("MONEY_MINOR", "INTEGER", "INT"):
+        if tag in ("MONEY_MINOR", "INTEGER", "INT", "COUNT", "RATE_BPS"):
             if isinstance(value, bool):
                 raise RuntimeError(
                     f"ERR_INPUT_TYPE: typed input {input_id!r} is {tag} but received a boolean"
@@ -386,6 +386,13 @@ class CanonicalUsvmEvaluator:
             raise RuntimeError(
                 f"ERR_INPUT_TYPE: typed input {input_id!r} is {tag} but received {value!r}"
             )
+        if tag == "DATE":
+            iso = _parse_iso_date(value) if isinstance(value, str) else None
+            if not iso:
+                raise RuntimeError(
+                    f"ERR_INPUT_TYPE: typed input {input_id!r} is DATE but received {value!r}"
+                )
+            return iso
         if tag in ("MONEY_MAJOR", "MONEY", "DECIMAL", "NUMBER", "BOOLEAN", "BOOL"):
             return value
         if tag.startswith("ENUM:"):
@@ -446,10 +453,13 @@ class CanonicalUsvmEvaluator:
         rewritten = self._rewrite_input_namespace(ast, declared)
         normalized = dict(facts or {})
         for input_id, spec in inputs.items():
-            if input_id not in normalized:
-                raise RuntimeError(
-                    f"ERR_MISSING_INPUT: typed input {input_id!r} was not supplied"
-                )
+            if input_id not in normalized or normalized[input_id] is None:
+                if (spec or {}).get("required", True) is False and "default" in (spec or {}):
+                    normalized[input_id] = spec["default"]
+                else:
+                    raise RuntimeError(
+                        f"ERR_MISSING_INPUT: typed input {input_id!r} was not supplied"
+                    )
             normalized[input_id] = self._encode_typed_input_value(
                 input_id, (spec or {}).get("type", ""), normalized[input_id]
             )

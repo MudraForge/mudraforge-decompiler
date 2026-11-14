@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from compiler.converters.catala_emitter import emit_catala_code
 from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
 from compiler.neural.inference_v2 import synthesize_usvm_ast_v2
 from compiler.neural.statutory_neural_parser import (
@@ -27,6 +28,7 @@ from compiler.training.train_dual_stream import (
     train_supervised_dual_stream,
 )
 from compiler.training.usvm_rl_environment import StatutoryRlEnvironment
+from compiler.vm.usvm_evaluator import CanonicalUsvmEvaluator
 
 
 class TestModelV2Commit3(unittest.TestCase):
@@ -130,6 +132,90 @@ class TestModelV2Commit3(unittest.TestCase):
             rl_ckpt = torch.load(rl_path, map_location="cpu", weights_only=True)
             self.assertEqual(rl_ckpt["config"]["architecture_version"], "v2")
             self.assertEqual(rl_ckpt["span_units"], SPAN_UNITS)
+
+    def test_section_c_rate_bps_count_date_and_missing_required_fail_closed(self):
+        ast = {
+            "ruleId": "section_c_alignment",
+            "version": "2.0",
+            "astVersion": "v2",
+            "inputs": {
+                "baseAmount": {"type": "MONEY_MINOR"},
+                "dynamicRate": {"type": "RATE_BPS"},
+                "dependentCount": {"type": "COUNT"},
+                "filingDate": {"type": "DATE"},
+            },
+            "computation": {
+                "archetype": "DECLARATIVE_PIPELINE",
+                "pipeline": {
+                    "steps": [
+                        {
+                            "assign": "rawTax",
+                            "expr": {
+                                "op": "RATIONAL_MULTIPLY",
+                                "base": "inputs.baseAmount",
+                                "rateBps": "inputs.dynamicRate",
+                                "denominator": 10000,
+                            },
+                        },
+                        {
+                            "assign": "scaledTax",
+                            "expr": {
+                                "op": "CONDITIONAL",
+                                "test": {"op": "GT", "left": "inputs.dependentCount", "right": 0},
+                                "then": "vars.rawTax",
+                                "else": {"op": "TO_PAISE", "value": "0"},
+                            },
+                        },
+                    ],
+                    "output": {"scaledTax": "vars.scaledTax", "recordedDate": "inputs.filingDate"},
+                },
+            },
+        }
+        catala_src = emit_catala_code(
+            ast,
+            scenarios=[
+                {
+                    "name": "OneDependent",
+                    "facts": {
+                        "baseAmount": 100000,
+                        "dynamicRate": 1500,
+                        "dependentCount": 1,
+                        "filingDate": "2026-04-01",
+                    },
+                }
+            ],
+        )
+        self.assertIn("data dynamic_rate content integer", catala_src)
+        self.assertIn("data dependent_count content integer", catala_src)
+        self.assertIn("data filing_date content date", catala_src)
+        self.assertIn("-- filing_date: |2026-04-01|", catala_src)
+
+        ev = CanonicalUsvmEvaluator()
+        try:
+            res = ev.evaluate(
+                ast,
+                {
+                    "baseAmount": 100000,
+                    "dynamicRate": 1500,
+                    "dependentCount": 1,
+                    "filingDate": "2026-04-01",
+                },
+            )
+            self.assertEqual(res["scaledTax"], 15000)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                ev.evaluate(
+                    ast,
+                    {
+                        "baseAmount": None,
+                        "dynamicRate": 1500,
+                        "dependentCount": 1,
+                        "filingDate": "2026-04-01",
+                    },
+                )
+            self.assertIn("ERR_MISSING_INPUT", str(ctx.exception))
+        finally:
+            ev.close()
 
 
 if __name__ == "__main__":
