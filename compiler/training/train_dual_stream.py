@@ -840,14 +840,29 @@ def train_grpo_logic_only(
                 mod_dist = Categorical(logits=mod_logits.squeeze(0))
                 ref_mod_dist = Categorical(logits=ref_mod_logits.squeeze(0))
 
+                role_preds_greedy = role_logits.argmax(dim=-1).tolist()
                 unit_preds = unit_logits.argmax(dim=-1).tolist() if (is_v2 and unit_logits is not None) else []
                 eff_rel_logits = (
-                    apply_type_compatibility_mask(rel_logits, unit_preds, id2unit=id2unit, id2rel=id2rel)
+                    apply_type_compatibility_mask(
+                        rel_logits,
+                        unit_preds,
+                        id2unit=id2unit,
+                        id2rel=id2rel,
+                        role_preds=role_preds_greedy,
+                        id2role=id2role,
+                    )
                     if (is_v2 and rel_logits is not None and unit_preds)
                     else rel_logits
                 )
                 eff_ref_rel_logits = (
-                    apply_type_compatibility_mask(ref_rel_logits, unit_preds, id2unit=id2unit, id2rel=id2rel)
+                    apply_type_compatibility_mask(
+                        ref_rel_logits,
+                        unit_preds,
+                        id2unit=id2unit,
+                        id2rel=id2rel,
+                        role_preds=role_preds_greedy,
+                        id2role=id2role,
+                    )
                     if (is_v2 and ref_rel_logits is not None and unit_preds)
                     else ref_rel_logits
                 )

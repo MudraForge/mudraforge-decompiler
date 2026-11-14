@@ -245,7 +245,13 @@ def verify_v2_dataset_contract(
                 checked += 1
                 u_ids = item.get("unit_labels") or []
                 rm = item.get("rel_matrix") or []
-                mask = build_type_compatibility_mask_tensor(u_ids, id2unit=id2unit, id2rel=id2rel)
+                mask = build_type_compatibility_mask_tensor(
+                    u_ids,
+                    id2unit=id2unit,
+                    id2rel=id2rel,
+                    role_preds=item.get("role_labels"),
+                    id2role=id2role,
+                )
 
                 mask_blocks = []
                 for s_i in range(len(rm)):
@@ -458,7 +464,14 @@ def audit_v2_epoch_predictions(
             pred_r_ids = full_out["role_logits"].argmax(dim=-1).tolist()
             pred_u_ids = full_out["unit_logits"].argmax(dim=-1).tolist() if full_out.get("unit_logits") is not None else [0] * len(pred_span_bounds)
             raw_rel = full_out["rel_logits"]
-            masked_rel = apply_type_compatibility_mask(raw_rel, pred_u_ids, id2unit=id2unit, id2rel=id2rel)
+            masked_rel = apply_type_compatibility_mask(
+                raw_rel,
+                pred_u_ids,
+                id2unit=id2unit,
+                id2rel=id2rel,
+                role_preds=pred_r_ids,
+                id2role=id2role,
+            )
 
             # Detect whether raw unmasked rel argmax disagreed with type compatibility mask
             if raw_rel is not None and masked_rel is not None:

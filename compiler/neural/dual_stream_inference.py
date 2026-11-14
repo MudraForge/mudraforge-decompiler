@@ -34,8 +34,6 @@ from .inference import (
 )
 from .literals import (
     segment_clauses,
-    parse_iso_date_str,
-    parse_numeric_quantity,
     parse_unit_and_type,
     stitch_classified_spans,
 )
@@ -423,105 +421,9 @@ class DualStreamDecompilerInference:
             classified_spans.append(entry)
 
         if self.architecture_version == "v2":
-            # v2 BIO boundaries are trained end-to-end without legacy stitch heuristics;
-            # enforce the universal quantitative invariant across all 5 quantitative units
-            # (must carry a numeric quantity or date), plus isolated statutory/citation tokens
-            # and bare citation/bullet artifacts.
-            _QUANT_UNITS = {
-                "UNIT_MONEY", "UNIT_RATE", "UNIT_DURATION", "UNIT_COUNT", "UNIT_YEAR_DATE",
-            }
-            _QUANT_ROLES = {
-                "ROLE_TRANSACTION_EXCESS_THRESHOLD", "ROLE_TRANSACTION_CLIFF_THRESHOLD",
-                "ROLE_STANDARD_STATUTORY_RATE", "ROLE_PENALTY_OR_DEFAULT_OVERRIDE",
-                "ROLE_NON_PAN_OVERRIDE_RATE", "ROLE_DEADLINE_WINDOW", "ROLE_COUNT_QUANTIFIER",
-                "ROLE_TEMPORAL_CUTOVER_DATE", "ROLE_TEMPORAL_SUNSET_DATE",
-            }
-            _NON_VALUE_SINGLE_WORDS = {
-                "such", "not", "over", "under", "above", "below",
-                "other", "other than", "than", "dollar", "dollars", "cent", "cents",
-            }
-            _ISOLATED_BOILERPLATE_WORDS = {
-                "defined", "tax", "purposes", "subtitle", "maintaining",
-                "section", "sections", "subsection", "paragraph", "subparagraph",
-            }
-            _SYMBOLIC_ROLES = {"ROLE_COMPUTATION_OPERAND", "ROLE_DEFINED_TERM"}
-            kept_spans = []
-            old_to_new_span_idx = {}
-            for i, entry in enumerate(classified_spans):
-                sp_raw = entry.get("span", "")
-                sp_low = sp_raw.strip().lower()
-                sp_bio = entry.get("bioType", "")
-                sp_unit = entry.get("unit", "")
-                sp_role = entry.get("role", "")
-                is_symbolic_money_operand = (
-                    sp_unit == "UNIT_MONEY"
-                    and (sp_role in _SYMBOLIC_ROLES or sp_bio in ("OPERAND", "DEFINED_TERM"))
-                    and sp_low not in _NON_VALUE_SINGLE_WORDS
-                )
-                requires_quant = (
-                    (sp_unit in _QUANT_UNITS and not is_symbolic_money_operand)
-                    or sp_bio in ("THRESHOLD", "RATE", "DEADLINE", "COUNT")
-                    or sp_role in _QUANT_ROLES
-                ) and sp_unit != "UNIT_SYMBOL_VAR"
-                has_quant_or_date = (
-                    parse_numeric_quantity(sp_raw) is not None
-                    or parse_iso_date_str(sp_raw) is not None
-                )
-                is_dur = sp_bio == "DEADLINE" or sp_unit == "UNIT_DURATION"
-                is_isolated_boilerplate = (
-                    sp_low in _ISOLATED_BOILERPLATE_WORDS
-                    and (
-                        sp_unit == "UNIT_BOOL_PREDICATE"
-                        or sp_role in (
-                            "ROLE_AGENT_STATE_PRECONDITION",
-                            "ROLE_DEFINED_TERM",
-                            "ROLE_SUBJECTIVE_CRITERION",
-                            "ROLE_REGULATED_OBJECT_OR_STATUS_SCOPE",
-                            "ROLE_IGNORE",
-                        )
-                        or sp_bio in ("PRECONDITION", "DEFINED_TERM", "IGNORE")
-                    )
-                )
-                has_ccy_or_pct = any(c in sp_raw for c in ("$", "₹", "€", "£", "¥", "%"))
-                is_bare_bullet = bool(re.fullmatch(r"\(\s*[a-z0-9]{1,4}\s*\)", sp_low))
-                is_bare_cite = bool(
-                    not has_ccy_or_pct
-                    and re.fullmatch(
-                        r"(?:sections?|sec\.?|sub-?sections?|paragraphs?|subparagraphs?|sub-?clauses?|clauses?|rules?|articles?|schedules?|annex|part|item)(?:\s+(?:no\.?\s*\d+|\d+[a-z0-9().-]*|\(\s*[a-z0-9]{1,4}\s*\)|appendix|table(?:\s+[ivx0-9]+)?|[a-z](?=\s|\(|$)))+",
-                        sp_low,
-                    )
-                )
-                is_explicit_noise = (
-                    (sp_low in _NON_VALUE_SINGLE_WORDS and (sp_unit in _QUANT_UNITS or sp_role in _QUANT_ROLES or sp_bio in ("THRESHOLD", "RATE", "DEADLINE", "COUNT")))
-                    or is_isolated_boilerplate
-                    or is_bare_bullet
-                    or is_bare_cite
-                )
-                if (
-                    (is_dur and parse_numeric_quantity(sp_raw) is None)
-                    or (requires_quant and not has_quant_or_date)
-                    or is_explicit_noise
-                ):
-                    old_to_new_span_idx[i] = -1
-                else:
-                    old_to_new_span_idx[i] = len(kept_spans)
-                    kept_spans.append(entry)
-            if kept_spans:
-                classified_spans = kept_spans
-            elif classified_spans:
-                # Fail closed into lowering rather than silently converting a computational clause into abstain.
-                old_to_new_span_idx = {i: i for i in range(len(classified_spans))}
-            if not classified_spans:
-                return {
-                    "abstained": True,
-                    "pred_modality": pred_modality,
-                    "modality_conf": modality_conf,
-                    "dom_abstain_prob": dom_abstain_prob,
-                    "domain_signals": domain_signals,
-                    "clause_modalities": clause_modalities,
-                    "classified_spans": [],
-                    "rel_edges": [],
-                }
+            # v2 BIO boundaries are trained end-to-end without word-list filters or silent span dropping;
+            # invalid/empty-quantum spans fail closed inside `ssa_walker.py`.
+            old_to_new_span_idx = {i: i for i in range(len(classified_spans))}
         else:
             stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
             for curr_copy in stitched_spans:
@@ -548,6 +450,8 @@ class DualStreamDecompilerInference:
                     pred_units,
                     id2unit=self.id2unit,
                     id2rel=self.id2rel,
+                    role_preds=pred_roles,
+                    id2role=self.id2role,
                 )
                 rel_preds = remap_and_decode_dag_relations_v2(
                     rel_logits,

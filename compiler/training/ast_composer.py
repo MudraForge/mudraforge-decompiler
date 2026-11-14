@@ -208,11 +208,20 @@ _NON_COREF_SUCH_PHRASES = [
 
 _BOILERPLATE_SCOPE_PHRASES = [
     "for purposes of this subtitle",
+    "for purposes of this paragraph",
+    "as defined in this chapter",
+    "as defined in the schedule",
     "beginning in the calendar year",
     "having no other dependents",
     "claiming such individual",
     "the dollar amount in effect",
     "as an ineligible individual",
+    "other than the standard allowance",
+    "more than the nominal value",
+    "less than the prior balance",
+    "greater than the statutory baseline",
+    "subject to the tax imposed herein",
+    "maintaining the qualifying record",
 ]
 
 
@@ -547,10 +556,8 @@ class CombinatorialAstComposer:
             elif formulation == 2:
                 c1 = f"{pfx}Initial amount {base_tax} added to {rate} on slice {lo_span} up to {hi_span} applies {target_phrase}({lo_span}, {hi_span})."
             else:
-                c1 = f"{pfx}Across band {lo_span} through {hi_span} {target_phrase}, base duty {base_tax} plus {rate} of excess is due."
-            # Normalize hi_span presence cleanly in formulation 2/3
-            if hi_span not in c1:
-                c1 = f"{pfx}Within {lo_span} and {hi_span} {target_phrase}, {base_tax} plus {rate} on excess applies."
+                subj_ref = op_name if not use_decl_header else "the taxable balance"
+                c1 = f"{pfx}{base_tax}, plus {rate} of the excess {lo_span} if {subj_ref} is {lo_span} but {hi_span}."
         else:
             if formulation in (0, 1):
                 c1 = f"{pfx}If {op_name if not use_decl_header else 'base'} is {lo_span} and {hi_span}, liability is {rate} of excess {lo_span}."
@@ -950,7 +957,43 @@ class CombinatorialAstComposer:
                 "dag": {"kind": "DEONTIC_PERMISSION_RATE", "prohibition": False, "depth": len(spans)},
             }
 
-        is_prohib = mode_pick < 0.72
+        is_cliff_qual = 0.45 <= mode_pick < 0.63
+        is_prohib = 0.63 <= mode_pick < 0.82
+
+        if is_cliff_qual:
+            # Verb-object monetary cliff qualification (IRC § 3306 pattern: paid <operand> of <threshold> or more)
+            op_var = self.rng.choice(["wages", "qualified remuneration", "gross payroll", "aggregate disbursements"])
+            th_val = _fmt_money(self.rng, self.rng.choice([1000, 1500, 5000, 20000]), currency="USD")
+            th_phrase = f"{th_val} or more"
+            rel_logic = self.rng.choice(["REL_LOGICAL_OR", "REL_LOGICAL_AND"])
+            conn = "or" if rel_logic == "REL_LOGICAL_OR" else "and"
+            spans = [
+                (op_var, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+                (th_phrase, "ROLE_TRANSACTION_CLIFF_THRESHOLD", "UNIT_MONEY"),
+                (pre_txt, "ROLE_AGENT_STATE_PRECONDITION", "UNIT_BOOL_PREDICATE"),
+            ]
+            rels = [
+                (1, 0, "REL_THRESHOLD_TO_TRANSACTION"),
+                (1, 2, rel_logic),
+            ]
+            if formulation == 0:
+                text = f"Any person who during the calendar year paid {op_var} of {th_phrase} {conn} {pre_txt} qualifies."
+            elif formulation == 1:
+                text = f"Status attaches where any entity during the calendar year paid {op_var} of {th_phrase} {conn} {pre_txt}."
+            elif formulation == 2:
+                text = f"Whenever a party paid {op_var} of {th_phrase} {conn} {pre_txt}, coverage is satisfied."
+            else:
+                text = f"Eligibility holds if the person during the preceding calendar year paid {op_var} of {th_phrase} {conn} {pre_txt}."
+            return {
+                "stype": "V2_AST_DEONTIC_GATE",
+                "modality_name": "MODALITY_DEONTIC_STATUS_OR_EVIDENCE",
+                "formulation": formulation,
+                "text": text,
+                "spans_with_units": spans,
+                "relations": rels,
+                "clauses": [text],
+                "dag": {"kind": "DEONTIC_CLIFF_QUALIFICATION", "prohibition": False, "depth": 3},
+            }
 
         if is_prohib:
             spans = [
@@ -1221,11 +1264,58 @@ class CombinatorialAstComposer:
 
     def _gen_branched_rates(self, formulation: int, currency: str = "USD") -> dict[str, Any]:
         op_name = _pick_operand_phrase(self.rng, split=self._active_split)
-        mode = "conditional" if self.rng.random() < 0.65 else "additive"
+        roll = self.rng.random()
+        if roll < 0.28:
+            mode = "combinator_min"
+        elif roll < 0.72:
+            mode = "conditional"
+        else:
+            mode = "additive"
         r1 = self.rng.choice(["4%", "7.5%", "12%"])
         r2 = self.rng.choice(["18%", "22%", "28%"])
         use_excess = self.rng.random() < 0.55
         floor_amt = _fmt_money(self.rng, self.rng.choice([10000, 25000, 50000]), currency=currency)
+
+        if mode == "combinator_min":
+            # Two-prong lesser-of combinator (IRC § 68 pattern): MIN(r1 * excess(op_1, th_1), r2 * op_2)
+            op2_choices = [
+                p for p in ["itemized deductions", "qualifying outlays", "allowable expenses", "gross receipts"]
+                if p != op_name and p not in op_name and op_name not in p
+            ]
+            op2_name = self.rng.choice(op2_choices or ["allowable expenses"])
+            cr1 = self.rng.choice(["3%", "4%", "7.5%"])
+            cr2 = self.rng.choice(["60%", "75%", "80%"])
+            th1 = _fmt_money(self.rng, self.rng.choice([50000, 150000, 250000]), currency=currency)
+            spans = [
+                (cr1, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+                (op_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+                (th1, "ROLE_TRANSACTION_EXCESS_THRESHOLD", "UNIT_MONEY"),
+                (cr2, "ROLE_STANDARD_STATUTORY_RATE", "UNIT_RATE"),
+                (op2_name, "ROLE_COMPUTATION_OPERAND", "UNIT_SYMBOL_VAR"),
+            ]
+            rels = [
+                (0, 2, "REL_RATE_TO_THRESHOLD"),
+                (0, 3, "REL_COMBINATOR_MIN"),
+                (3, 4, "REL_RATE_TO_THRESHOLD"),
+            ]
+            if formulation == 0:
+                text = f"The amount shall be reduced by the lesser of (1) {cr1} of the excess of {op_name} over {th1}, or (2) {cr2} of the amount of {op2_name}."
+            elif formulation == 1:
+                text = f"Reduction equals the lesser of {cr1} of the excess of {op_name} over {th1} or {cr2} of {op2_name}."
+            elif formulation == 2:
+                text = f"Limitation applies at the lower of (a) {cr1} on {op_name} exceeding {th1}, or (b) {cr2} of total {op2_name}."
+            else:
+                text = f"Offset is capped at the lesser of {cr1} of the excess of {op_name} over {th1}, or {cr2} of the amount of {op2_name}."
+            return {
+                "stype": "V2_AST_BRANCHED_RATES",
+                "modality_name": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+                "formulation": formulation,
+                "text": text,
+                "spans_with_units": spans,
+                "relations": rels,
+                "clauses": [text],
+                "dag": {"kind": "COMBINATOR_MIN_RATES", "mode": "combinator_min", "depth": 3},
+            }
 
         if mode == "conditional":
             pred, _ = self.rng.choice(_BOOLEAN_PREDICATES)
@@ -1352,7 +1442,7 @@ class CombinatorialAstComposer:
             such_p = self.rng.choice(_NON_COREF_SUCH_PHRASES)
             self._append_clause_prose(sample, such_p)
 
-        if "dollar" not in sample["text"].lower() and self.rng.random() < 0.25:
+        if "dollar" not in sample["text"].lower() and self.rng.random() < 0.45:
             bp = self.rng.choice(_BOILERPLATE_SCOPE_PHRASES)
             if "such " not in bp or "such " not in sample["text"].lower():
                 if not has_fronted_cite and not sample["text"].lstrip().startswith("(") and self.rng.random() < 0.45:

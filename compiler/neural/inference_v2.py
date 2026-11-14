@@ -13,7 +13,7 @@ import torch
 from .clause_linker import build_clause_scoped_computation_v2
 from .literals import infer_rule_currency_info
 from .ssa_walker import V2LoweringError
-from .statutory_neural_parser import SPAN_UNITS, V2_RELATION_TYPES
+from .statutory_neural_parser import SPAN_UNITS, V2_ID2ROLE, V2_RELATION_TYPES
 
 
 _NON_MONEY_TEMPORAL_BOOL = {
@@ -24,23 +24,46 @@ _NON_MONEY_TEMPORAL_BOOL = {
 }
 _MONEY_COMPAT = {"UNIT_MONEY", "UNIT_SYMBOL_VAR"}
 _ARITH_COMPAT = {"UNIT_MONEY", "UNIT_RATE", "UNIT_SYMBOL_VAR"}
+_RATE_TARGET_ROLES = {
+    "ROLE_STANDARD_STATUTORY_RATE",
+    "ROLE_PENALTY_OR_DEFAULT_OVERRIDE",
+    "ROLE_NON_PAN_OVERRIDE_RATE",
+}
 
 
-def _is_compatible_triple(src_u: str, rel: str, tgt_u: str) -> bool:
-    """Enforces type safety between span units and typed opcode relations."""
+def _is_compatible_triple(
+    src_u: str,
+    rel: str,
+    tgt_u: str,
+    src_role: str | None = None,
+    tgt_role: str | None = None,
+) -> bool:
+    """Enforces type and semantic-role safety between spans and typed opcode relations."""
     if rel == "REL_NO_EDGE":
         return True
     if rel == "REL_RATE_TO_THRESHOLD":
         return src_u == "UNIT_RATE" and tgt_u in _MONEY_COMPAT
     if rel == "REL_BASE_TAX_ADD":
-        return src_u in _MONEY_COMPAT and tgt_u in _ARITH_COMPAT
+        if not (src_u == "UNIT_MONEY" and tgt_u == "UNIT_RATE"):
+            return False
+        if src_role is not None and src_role != "ROLE_TRANSACTION_CLIFF_THRESHOLD":
+            return False
+        if tgt_role is not None and tgt_role not in _RATE_TARGET_ROLES:
+            return False
+        return True
     if rel in ("REL_MIN_CAP", "REL_SUB_CREDIT", "REL_CAP_CEILING"):
         return (
             (src_u in _MONEY_COMPAT and tgt_u in _ARITH_COMPAT)
             or (tgt_u in _MONEY_COMPAT and src_u in _ARITH_COMPAT)
         )
     if rel == "REL_BRACKET_NEXT":
-        return src_u in _ARITH_COMPAT and tgt_u in _ARITH_COMPAT
+        if not (src_u == "UNIT_MONEY" and tgt_u == "UNIT_MONEY"):
+            return False
+        if src_role is not None and src_role != "ROLE_TRANSACTION_EXCESS_THRESHOLD":
+            return False
+        if tgt_role is not None and tgt_role != "ROLE_TRANSACTION_CLIFF_THRESHOLD":
+            return False
+        return True
     if rel == "REL_SUBTRACTION_BASE":
         return src_u in _ARITH_COMPAT and tgt_u in _MONEY_COMPAT
     if rel == "REL_DEADLINE_TO_TRIGGER":
@@ -64,20 +87,26 @@ def build_type_compatibility_mask_tensor(
     id2unit: dict[int, str] | None = None,
     id2rel: dict[int, str] | None = None,
     device: torch.device | None = None,
+    role_preds: list[int] | None = None,
+    id2role: dict[int, str] | None = None,
 ) -> torch.Tensor:
-    """Builds an additive mask `[S, S, R]` with `-1e9` on type-invalid triples."""
+    """Builds an additive mask `[S, S, R]` with `-1e9` on unit/role-invalid triples."""
     u_map = id2unit or {i: u for i, u in enumerate(SPAN_UNITS)}
     r_map = id2rel or {i: r for i, r in enumerate(V2_RELATION_TYPES)}
+    role_map = id2role or V2_ID2ROLE
     n_spans = len(unit_preds)
     n_rels = len(r_map)
+    has_roles = role_preds is not None and len(role_preds) == n_spans
     mask = torch.zeros((n_spans, n_spans, n_rels), dtype=torch.float32, device=device)
 
     for s_idx, su_id in enumerate(unit_preds):
         su = u_map.get(int(su_id), "UNIT_NONE")
+        sr = role_map.get(int(role_preds[s_idx]), "ROLE_IGNORE") if has_roles else None
         for t_idx, tu_id in enumerate(unit_preds):
             tu = u_map.get(int(tu_id), "UNIT_NONE")
+            tr = role_map.get(int(role_preds[t_idx]), "ROLE_IGNORE") if has_roles else None
             for r_idx, rel in r_map.items():
-                if not _is_compatible_triple(su, rel, tu):
+                if not _is_compatible_triple(su, rel, tu, src_role=sr, tgt_role=tr):
                     mask[s_idx, t_idx, r_idx] = -1e9
     return mask
 
@@ -87,8 +116,10 @@ def apply_type_compatibility_mask(
     unit_preds: list[int],
     id2unit: dict[int, str] | None = None,
     id2rel: dict[int, str] | None = None,
+    role_preds: list[int] | None = None,
+    id2role: dict[int, str] | None = None,
 ) -> torch.Tensor:
-    """Masks impossible `(src_unit, rel, tgt_unit)` entries before Biaffine decoding."""
+    """Masks impossible `(src_unit/role, rel, tgt_unit/role)` entries before Biaffine decoding."""
     if rel_logits is None or rel_logits.numel() == 0:
         return rel_logits
     u_map = id2unit or {i: u for i, u in enumerate(SPAN_UNITS)}
@@ -100,6 +131,8 @@ def apply_type_compatibility_mask(
         id2unit=u_map,
         id2rel=r_map,
         device=rel_logits.device,
+        role_preds=role_preds,
+        id2role=id2role,
     )
     return rel_logits + mask
 

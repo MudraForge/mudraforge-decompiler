@@ -1180,9 +1180,8 @@ class TestModelV2Commit3(unittest.TestCase):
         decompiler.transition_mask = torch.zeros((len(BIO_TAGS), len(BIO_TAGS)), dtype=torch.float32)
 
         res = decompiler.decompile_text("For any taxable year, exceeding $1,000 bears 5%.")
-        self.assertEqual(res["status"], "SUCCESS", f"Expected compile after dropping numberless duration: {res}")
-        self.assertEqual([sp["span"] for sp in res["classifiedSpans"]], ["$1,000", "5%"])
-        self.assertEqual([(e["sourceIdx"], e["targetIdx"]) for e in res["relationalEdges"]], [(1, 0)])
+        self.assertEqual(res["status"], "LOWERING_FAILED", f"Expected fail-closed lowering without silent drop: {res}")
+        self.assertIn("ERR_UNPARSEABLE_DURATION", str(res.get("loweringError")))
 
         # 2. Verify composer generates numberless period phrases tagged O and withholding-rate phrases
         comp = CombinatorialAstComposer(seed=77)
@@ -1385,8 +1384,9 @@ class TestModelV2Commit3(unittest.TestCase):
             w_tok_start=0,
             w_tok_end=len(tokens) - 1,
         )
+        # No silent word-list dropping: all predicted spans survive into SSA where invalid ones fail closed.
         kept = [sp["span"] for sp in out["classified_spans"]]
-        self.assertEqual(kept, ["declared freight", "such statutory cap"])
+        self.assertEqual(kept, ["such", "declared freight", "such statutory cap", "dollar"])
 
     def test_ast_composer_and_domain_sensor_citations_non_coref_such_and_boilerplate(self):
         from compiler.neural.domain_sensor import DOMAIN_TOKEN_CLASSES, derive_domain_token_targets
@@ -1558,8 +1558,12 @@ class TestModelV2Commit3(unittest.TestCase):
             w_tok_start=0,
             w_tok_end=len(tokens) - 1,
         )
+        # No silent boilerplate/word-list filtering; bad 'than' UNIT_RATE fails closed in ssa_walker.py
         kept = [sp["span"] for sp in out["classified_spans"]]
-        self.assertEqual(kept, ["6 percent", "January 1, 2020"])
+        self.assertEqual(kept, ["tax", "defined", "maintaining", "than", "6 percent", "January 1, 2020"])
+        res = decompiler.decompile_text(text)
+        self.assertEqual(res["status"], "LOWERING_FAILED")
+        self.assertIn("ERR_UNPARSEABLE_RATE", str(res.get("loweringError")))
 
     def test_balanced_boolean_tree_avoids_usvm_depth_limit_and_matches_catala(self):
         """Chaining 20+ boolean predicates must fold into a balanced binary tree (depth <= 6) with USVM/Catala parity."""
@@ -1705,6 +1709,116 @@ class TestModelV2Commit3(unittest.TestCase):
                 dominant_modality="MODALITY_COMPUTATIONAL_EXCESS",
             )
         self.assertIn("ERR_UNCONSUMED_SPAN", str(ctx.exception))
+
+    def test_role_aware_mask_and_combinator_min_and_v26_composer_templates(self):
+        """Role-aware mask blocks invalid REL_BASE_TAX_ADD/REL_BRACKET_NEXT; combinator_min lowers cleanly."""
+        import json
+        import os
+        import shutil
+        import subprocess
+        from compiler.neural.inference_v2 import apply_type_compatibility_mask
+        from compiler.neural.statutory_neural_parser import V2_REL2ID, V2_ROLE2ID
+        from compiler.training.ast_composer import CombinatorialAstComposer
+
+        # 1. Role-aware masking: [floor(EXCESS, MONEY), ceiling(CLIFF, MONEY), baseTax(CLIFF, MONEY), rate(RATE)]
+        unit_preds = [
+            UNIT2ID["UNIT_MONEY"],
+            UNIT2ID["UNIT_MONEY"],
+            UNIT2ID["UNIT_MONEY"],
+            UNIT2ID["UNIT_RATE"],
+        ]
+        role_preds = [
+            V2_ROLE2ID["ROLE_TRANSACTION_EXCESS_THRESHOLD"],
+            V2_ROLE2ID["ROLE_TRANSACTION_CLIFF_THRESHOLD"],
+            V2_ROLE2ID["ROLE_TRANSACTION_CLIFF_THRESHOLD"],
+            V2_ROLE2ID["ROLE_STANDARD_STATUTORY_RATE"],
+        ]
+        rel_logits = torch.full((4, 4, len(V2_RELATION_TYPES)), -5.0)
+        rel_logits[:, :, 0] = 0.0
+        # Invalid: EXCESS_THRESHOLD firing REL_BASE_TAX_ADD onto rate
+        rel_logits[0, 3, V2_REL2ID["REL_BASE_TAX_ADD"]] = 8.0
+        # Invalid: CLIFF_THRESHOLD firing REL_BRACKET_NEXT onto CLIFF or EXCESS
+        rel_logits[1, 2, V2_REL2ID["REL_BRACKET_NEXT"]] = 8.0
+        rel_logits[1, 0, V2_REL2ID["REL_BRACKET_NEXT"]] = 8.0
+        # Valid: baseTax(CLIFF) -> rate(RATE) [REL_BASE_TAX_ADD] and floor(EXCESS) -> ceiling(CLIFF) [REL_BRACKET_NEXT]
+        rel_logits[2, 3, V2_REL2ID["REL_BASE_TAX_ADD"]] = 6.0
+        rel_logits[0, 1, V2_REL2ID["REL_BRACKET_NEXT"]] = 6.0
+
+        masked = apply_type_compatibility_mask(rel_logits, unit_preds, role_preds=role_preds)
+        preds = masked.argmax(dim=-1).tolist()
+        self.assertEqual(preds[0][3], 0)
+        self.assertEqual(preds[1][2], 0)
+        self.assertEqual(preds[1][0], 0)
+        self.assertEqual(preds[2][3], V2_REL2ID["REL_BASE_TAX_ADD"])
+        self.assertEqual(preds[0][1], V2_REL2ID["REL_BRACKET_NEXT"])
+
+        # 2. Two-prong MIN combinator (section 68 pattern) lowers and matches Catala
+        comb_text = (
+            "The amount shall be reduced by the lesser of (1) 3% of the excess of adjusted gross income "
+            "over $150,000, or (2) 80% of the amount of itemized deductions."
+        )
+        comb_spans = [
+            {"spanIdx": 0, "clauseIdx": 0, "span": "3%", "charRange": [49, 51], "role": "ROLE_STANDARD_STATUTORY_RATE", "unit": "UNIT_RATE"},
+            {"spanIdx": 1, "clauseIdx": 0, "span": "adjusted gross income", "charRange": [69, 90], "role": "ROLE_COMPUTATION_OPERAND", "unit": "UNIT_SYMBOL_VAR"},
+            {"spanIdx": 2, "clauseIdx": 0, "span": "$150,000", "charRange": [96, 104], "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "unit": "UNIT_MONEY"},
+            {"spanIdx": 3, "clauseIdx": 0, "span": "80%", "charRange": [113, 116], "role": "ROLE_STANDARD_STATUTORY_RATE", "unit": "UNIT_RATE"},
+            {"spanIdx": 4, "clauseIdx": 0, "span": "itemized deductions", "charRange": [134, 153], "role": "ROLE_COMPUTATION_OPERAND", "unit": "UNIT_SYMBOL_VAR"},
+        ]
+        comb_edges = [
+            {"sourceIdx": 0, "targetIdx": 2, "relationType": "REL_RATE_TO_THRESHOLD"},
+            {"sourceIdx": 0, "targetIdx": 3, "relationType": "REL_COMBINATOR_MIN"},
+            {"sourceIdx": 3, "targetIdx": 4, "relationType": "REL_RATE_TO_THRESHOLD"},
+        ]
+        comb_ast = synthesize_usvm_ast_v2(
+            text=comb_text,
+            spans=comb_spans,
+            edges=comb_edges,
+            clause_modalities=[{"clauseIdx": 0, "modality": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB"}],
+            dominant_modality="MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+        )
+        comp = comb_ast.get("computation") or {}
+        out_key = next(iter((comp.get("pipeline") or {}).get("output") or {}))
+        evaluator = CanonicalUsvmEvaluator()
+        # AGI = $250,000 -> 3% * ($250k - $150k) = $3,000 (300,000 cents)
+        # Itemized = $10,000 -> 80% * $10k = $8,000 (800,000 cents) -> MIN = 300,000
+        facts = {"adjustedGrossIncome": "25000000", "itemizedDeductions": "1000000"}
+        self.assertEqual(evaluator.evaluate(comb_ast, facts)[out_key], 300000)
+
+        catala_bin = shutil.which("catala")
+        if os.environ.get("REQUIRE_CATALA") == "1" or catala_bin:
+            src = emit_catala_code(comb_ast, title="Combinator Min", scenarios=[{"name": "S1", "facts": facts}])
+            proc = subprocess.run(
+                ["node", str(REPO_ROOT / "scripts" / "catala_verify.mjs")],
+                input=json.dumps({"id": "comb_min", "source": src, "scopes": ["S1"]}) + "\n",
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(REPO_ROOT),
+            )
+            self.assertEqual(proc.returncode, 0, f"Catala harness failed: {proc.stderr}")
+            resp = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertTrue(resp.get("typecheck", {}).get("success"), f"Typecheck failed: {resp}")
+            from compiler.converters.catala_emitter import _identifier
+            self.assertEqual(round(float(resp["results"]["S1"]["values"][_identifier(out_key)]) * 100), 300000)
+
+        # 3. Composer generates new O comparative phrases + inverted bracket + combinator_min + cliff qual
+        sampler = CombinatorialAstComposer(seed=123)
+        saw_comp = saw_inv = saw_comb = saw_cliff = False
+        for _ in range(500):
+            s = sampler.sample_rule(split="train")
+            tl = s["text"].lower()
+            if any(p in tl for p in ("more than the nominal value", "less than the prior balance", "greater than the statutory baseline", "other than the standard allowance")):
+                saw_comp = True
+            if ", plus " in tl and " of the excess " in tl and " if " in tl:
+                saw_inv = True
+            if s.get("dag", {}).get("mode") == "combinator_min":
+                saw_comb = True
+            if s.get("dag", {}).get("kind") == "DEONTIC_CLIFF_QUALIFICATION":
+                saw_cliff = True
+        self.assertTrue(saw_comp)
+        self.assertTrue(saw_inv)
+        self.assertTrue(saw_comb)
+        self.assertTrue(saw_cliff)
 
 
 if __name__ == "__main__":

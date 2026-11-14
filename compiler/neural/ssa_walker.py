@@ -1837,6 +1837,10 @@ def compose_clause_v2(
             return "conditional"
         if any(rel == "REL_AGGREGATE_SUM" and {s, t} <= set(rate_nodes) for s, t, rel in in_clause_edges):
             return "additive"
+        if any(rel == "REL_COMBINATOR_MIN" and {s, t} <= set(rate_nodes) for s, t, rel in in_clause_edges):
+            return "combinator_min"
+        if any(rel == "REL_COMBINATOR_MAX" and {s, t} <= set(rate_nodes) for s, t, rel in in_clause_edges):
+            return "combinator_max"
         return None
 
     dual_rate_mode = _detect_dual_rate_mode()
@@ -1901,6 +1905,46 @@ def compose_clause_v2(
                     "additiveRatesTaxPaisa",
                     {"op": "ADD", "left": f"vars.{acc}", "right": f"vars.{te}"},
                     "additive-rate-sum",
+                )
+            return acc
+        if dual_rate_mode in ("combinator_min", "combinator_max"):
+            comb_op = "MIN" if dual_rate_mode == "combinator_min" else "MAX"
+            acc = t0
+            for r_extra in rate_nodes[1:]:
+                bps_e = int(parsed_by_idx[r_extra]["rateBps"])
+                extra_sym_id = next(
+                    (
+                        t
+                        for s, t, rel in in_clause_edges
+                        if s == r_extra
+                        and rel in ("REL_RATE_TO_THRESHOLD", "REL_SUBTRACTION_BASE", "REL_APPLIED_TO_BASE")
+                        and parsed_by_idx[t]["kind"] == "SYMBOL"
+                    ),
+                    None,
+                )
+                if extra_sym_id is not None:
+                    ex_key = parsed_by_idx[extra_sym_id]["key"]
+                    inputs.setdefault(ex_key, {"type": "MONEY_MINOR", "currency": ccy})
+                    extra_base_ref = f"inputs.{ex_key}"
+                    consumed_ids.add(extra_sym_id)
+                else:
+                    extra_base_ref = base_expr_ref
+                te = _emit(
+                    "combRateTaxPaisa",
+                    {
+                        "op": "RATIONAL_MULTIPLY",
+                        "base": extra_base_ref,
+                        "rateBps": bps_e,
+                        "denominator": 10000,
+                    },
+                    "rate-on-base",
+                )
+                node_ssa[r_extra] = f"vars.{te}"
+                consumed_ids.add(r_extra)
+                acc = _emit(
+                    "combinatorRatesTaxPaisa",
+                    {"op": comb_op, "left": f"vars.{acc}", "right": f"vars.{te}"},
+                    "combinator-rate",
                 )
             return acc
         return t0
