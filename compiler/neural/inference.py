@@ -3313,7 +3313,6 @@ def synthesize_usvm_ast(
     clause_count = len({int(s.get("clauseIdx", 0)) for s in indexed_spans})
     has_composition = any(
         e["relationType"] in (
-            "REL_BRACKET_NEXT",
             "REL_CAP_CEILING",
             "REL_SUBTRACTION_BASE",
             "REL_COMBINATOR_MIN",

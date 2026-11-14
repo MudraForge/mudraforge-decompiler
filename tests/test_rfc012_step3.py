@@ -307,25 +307,32 @@ class TestRFC012Step3(unittest.TestCase):
 
     def test_a3_9_bounded_bracket_enforces_ceiling_and_base_tax(self):
         """REL_BRACKET_NEXT must cap the slice at the ceiling, add baseTax, and gate inside (floor, ceiling]."""
-        text = "$5,535, plus 28% of the excess over $36,900 if the taxable income is over $36,900 but not over $89,150."
+        header = "§1. Tax imposed on taxable income. "
+        bracket = "$5,535, plus 28% of the excess over $36,900 if the taxable income is over $36,900 but not over $89,150."
+        text = header + bracket
+        offset = len(header)
         spans = [
-            {"spanIdx": 0, "clauseIdx": 0, "role": "ROLE_STANDARD_STATUTORY_RATE", "span": "28%", "charRange": [13, 16], "confidence": 0.99},
-            {"spanIdx": 1, "clauseIdx": 0, "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "span": "over $36,900", "charRange": [31, 43], "confidence": 0.99},
-            {"spanIdx": 2, "clauseIdx": 0, "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "span": "not over $89,150", "charRange": [86, 102], "confidence": 0.99},
+            {"spanIdx": 0, "clauseIdx": 0, "role": "ROLE_COMPUTATION_OPERAND", "span": "taxable income", "charRange": [19, 33], "confidence": 0.99},
+            {"spanIdx": 1, "clauseIdx": 1, "role": "ROLE_STANDARD_STATUTORY_RATE", "span": "28%", "charRange": [offset + 13, offset + 16], "confidence": 0.99},
+            {"spanIdx": 2, "clauseIdx": 1, "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "span": "over $36,900", "charRange": [offset + 31, offset + 43], "confidence": 0.99},
+            {"spanIdx": 3, "clauseIdx": 1, "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "span": "not over $89,150", "charRange": [offset + 86, offset + 102], "confidence": 0.99},
         ]
         edges = [
-            {"sourceIdx": 0, "targetIdx": 1, "relationType": "REL_RATE_TO_THRESHOLD"},
-            {"sourceIdx": 1, "targetIdx": 2, "relationType": "REL_BRACKET_NEXT"},
+            {"sourceIdx": 1, "targetIdx": 2, "relationType": "REL_RATE_TO_THRESHOLD"},
+            {"sourceIdx": 2, "targetIdx": 3, "relationType": "REL_BRACKET_NEXT"},
         ]
         ast = synthesize_usvm_ast(
             text=text,
             spans=spans,
             edges=edges,
-            clause_modalities=[{"clauseIdx": 0, "charRange": [0, len(text)]}],
+            clause_modalities=[
+                {"clauseIdx": 0, "charRange": [0, offset - 1]},
+                {"clauseIdx": 1, "charRange": [offset, len(text)]},
+            ],
             clause_scopes=True,
         )
         steps = ast["computation"]["pipeline"]["steps"]
-        handlers = ast["computation"]["clauseScopes"][0]["handlers"]
+        handlers = ast["computation"]["clauseScopes"][1]["handlers"]
         self.assertIn("bracket-base-tax", handlers)
         self.assertIn("bracket-next", handlers)
         blob = json.dumps(steps)
