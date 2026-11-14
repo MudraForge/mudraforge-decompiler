@@ -36,6 +36,7 @@ try:
         V2_BIO_TAGS, V2_BIO2ID, V2_ID2BIO,
         V2_RELATION_TYPES, V2_REL2ID, V2_ID2REL,
     )
+    from compiler.training.ast_composer import CombinatorialAstComposer
 except ImportError:
     from literals import parse_unit_and_type
     from statutory_neural_parser import (
@@ -48,6 +49,7 @@ except ImportError:
         V2_BIO_TAGS, V2_BIO2ID, V2_ID2BIO,
         V2_RELATION_TYPES, V2_REL2ID, V2_ID2REL,
     )
+    from ast_composer import CombinatorialAstComposer
 
 ARCHETYPE_MODALITY_MAP = {
     # 0: MODALITY_COMPUTATIONAL_EXCESS
@@ -118,6 +120,13 @@ ARCHETYPE_MODALITY_MAP = {
     "UNIT_CONTRAST_TEMPORAL_COUNT_STYLE": "MODALITY_COMPUTATIONAL_EXCESS",
     "CREDIT_VS_CAP_COMPOSED_STYLE": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
     "BOOLEAN_KINSHIP_DEFINED_TERM_STYLE": "MODALITY_DEONTIC_STATUS_OR_EVIDENCE",
+    # Model v2 Universal AST-First Combinatorial Families (Zero Section Hacks)
+    "V2_AST_COMPOSED_ARITHMETIC": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+    "V2_AST_BOUNDED_BRACKET": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+    "V2_AST_BOOLEAN_DAG": "MODALITY_DEONTIC_STATUS_OR_EVIDENCE",
+    "V2_AST_COLLECTION_FOLD": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+    "V2_AST_SCOPED_SUBSTITUTION": "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB",
+    "V2_AST_DEONTIC_GATE": "MODALITY_DEONTIC_OBLIGATION_WINDOW",
 }
 
 ROLE_TO_BIO_BASE = {
@@ -312,6 +321,7 @@ class ComprehensiveDatasetGenerator:
     """
 
     def __init__(self, seed: int = 42):
+        self.seed = seed
         random.seed(seed)
         self.vocab = dict(SPECIAL_TOKENS)
 
@@ -471,6 +481,63 @@ class ComprehensiveDatasetGenerator:
             "How many kilometers is the airport from the city center?",
             "This changelog summarizes UI bug fixes and minor dependency bumps.",
         ]
+
+        if v2:
+            # Universal AST-First Combinatorial Rule Composition (zero section-specific templates, 80/20 disjoint split)
+            composer = CombinatorialAstComposer(seed=self.seed)
+            for idx in range(num_samples):
+                is_train_split = (idx % 5 != 4)  # exact 80% Train / 20% Val split
+                formulation = random.choice([0, 1]) if is_train_split else random.choice([2, 3])
+                if random.random() < 0.15:
+                    text = random.choice(abstain_train_texts if is_train_split else abstain_val_texts)
+                    sample_item = {
+                        "stype": "ABSTAIN_UNRESOLVED_STYLE",
+                        "modality_name": "MODALITY_ABSTAIN_UNRESOLVED",
+                        "modality_id": MODALITY2ID["MODALITY_ABSTAIN_UNRESOLVED"],
+                        "formulation": formulation,
+                        "text": text,
+                        "labeled_spans": [],
+                        "spans_with_units": [],
+                        "relations": [],
+                        "clauses": [],
+                    }
+                else:
+                    comp = composer.sample_rule(formulation=formulation)
+                    text = comp["text"]
+                    raw_swu = comp.get("spans_with_units") or []
+                    valid_swu = []
+                    valid_labeled = []
+                    span_idx_map = {}
+                    for o_i, (s_txt, r_name, u_name) in enumerate(raw_swu):
+                        if s_txt in text:
+                            span_idx_map[o_i] = len(valid_labeled)
+                            valid_labeled.append((s_txt, r_name))
+                            valid_swu.append((s_txt, r_name, u_name))
+                    remapped_rels = [
+                        (span_idx_map[s], span_idx_map[t], r)
+                        for s, t, r in (comp.get("relations") or [])
+                        if s in span_idx_map and t in span_idx_map
+                    ]
+                    mod_name = comp.get("modality_name", "MODALITY_COMPUTATIONAL_COMPOUND_OR_SLAB")
+                    sample_item = {
+                        "stype": comp["stype"],
+                        "modality_name": mod_name,
+                        "modality_id": MODALITY2ID[mod_name],
+                        "formulation": formulation,
+                        "text": text,
+                        "labeled_spans": valid_labeled,
+                        "spans_with_units": valid_swu,
+                        "relations": remapped_rels,
+                        "clauses": comp.get("clauses") or [text],
+                        "dag": comp.get("dag"),
+                    }
+                if is_train_split:
+                    train_samples.append(sample_item)
+                else:
+                    val_samples.append(sample_item)
+            random.shuffle(train_samples)
+            random.shuffle(val_samples)
+            return train_samples, val_samples
 
         for _ in range(num_samples):
             stype = random.choice(archetypes)
@@ -3522,6 +3589,7 @@ class ComprehensiveDatasetGenerator:
                 modality_id = MODALITY2ID[modality_name]
 
             n_labeled = len(sample["labeled_spans"])
+            swu_list = sample.get("spans_with_units") or []
             resolved_spans = [None] * n_labeled
             occupied_tokens = set()
 
@@ -3532,6 +3600,7 @@ class ComprehensiveDatasetGenerator:
             )
             for orig_i in resolution_order:
                 span_text, role_name = sample["labeled_spans"][orig_i]
+                explicit_unit = swu_list[orig_i][2] if orig_i < len(swu_list) and len(swu_list[orig_i]) >= 3 else None
                 chosen_tok_range = None
                 search_pos = 0
                 while True:
@@ -3553,7 +3622,7 @@ class ComprehensiveDatasetGenerator:
 
                 if chosen_tok_range is not None:
                     r_id = role2id.get(role_name, role2id["ROLE_IGNORE"])
-                    resolved_spans[orig_i] = (chosen_tok_range, r_id, span_text, role_name)
+                    resolved_spans[orig_i] = (chosen_tok_range, r_id, span_text, role_name, explicit_unit)
                     for t in range(chosen_tok_range[0], chosen_tok_range[1] + 1):
                         occupied_tokens.add(t)
 
@@ -3569,7 +3638,8 @@ class ComprehensiveDatasetGenerator:
                     role_labels.append(entry[1])
                     kept_span_texts.append(entry[2])
                     if v2:
-                        unit_labels.append(UNIT2ID[infer_span_unit_v2(entry[2], entry[3])])
+                        u_name = entry[4] if entry[4] in UNIT2ID else infer_span_unit_v2(entry[2], entry[3])
+                        unit_labels.append(UNIT2ID[u_name])
 
             if not span_boundaries and modality_id != abstain_id:
                 continue
@@ -3731,7 +3801,11 @@ class ComprehensiveDatasetGenerator:
             raw_clauses = sample.get("clauses") or []
             if raw_clauses:
                 c_pos = 0
-                for c_txt, c_mod in raw_clauses:
+                for c_entry in raw_clauses:
+                    if isinstance(c_entry, (tuple, list)):
+                        c_txt, c_mod = c_entry[0], c_entry[1]
+                    else:
+                        c_txt, c_mod = str(c_entry), ID2MODALITY[modality_id]
                     c_idx = text.find(c_txt, c_pos)
                     if c_idx == -1:
                         c_idx = text.find(c_txt)

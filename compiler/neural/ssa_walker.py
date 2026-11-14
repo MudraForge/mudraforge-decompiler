@@ -1219,16 +1219,38 @@ def compose_clause_v2(
         handlers.append(handler)
         return var_name
 
-    # Resolve operand base variable deterministically (explicit coref > symbol_env > operand span > fallback)
+    threshold_role_or_targets = {
+        t for _, t, rel in in_clause_edges if rel in ("REL_RATE_TO_THRESHOLD", "REL_SUBTRACTION_BASE")
+    } | {
+        sid for sid in topo_ids if span_by_idx[sid].get("role") == "ROLE_TRANSACTION_EXCESS_THRESHOLD"
+    }
+
+    # Resolve operand base variable deterministically (ROLE_COMPUTATION_OPERAND > coref > symbol_env > fallback)
     def _resolve_operand_expr(pref_id: int | None = None) -> tuple[str, str]:
         candidates = ([pref_id] if pref_id is not None else []) + topo_ids
+        # Pass 1: explicitly tagged ROLE_COMPUTATION_OPERAND (never a threshold/excess reference)
         for sid in candidates:
+            if sid in threshold_role_or_targets:
+                continue
+            sp = span_by_idx[sid]
+            if sp.get("role") == "ROLE_COMPUTATION_OPERAND":
+                if sid in resolved_corefs:
+                    ref = resolved_corefs[sid]
+                    return str(ref["refVar"]), str(ref["baseKey"])
+                key = _v2_fact_key_camel(parsed_by_idx[sid]["text"], fallback_base_var or "amount")
+                if key in symbol_env:
+                    return symbol_env[key]["ref"], key
+                inputs.setdefault(key, {"type": "MONEY_MINOR", "currency": ccy})
+                return f"inputs.{key}", key
+        # Pass 2: other non-threshold SYMBOL or resolved coref spans
+        for sid in candidates:
+            if sid in threshold_role_or_targets:
+                continue
             if sid in resolved_corefs:
                 ref = resolved_corefs[sid]
                 return str(ref["refVar"]), str(ref["baseKey"])
             p = parsed_by_idx[sid]
-            sp = span_by_idx[sid]
-            if p["kind"] == "SYMBOL" or sp.get("role") == "ROLE_COMPUTATION_OPERAND":
+            if p["kind"] == "SYMBOL":
                 key = _v2_fact_key_camel(p["text"], fallback_base_var or "amount")
                 if key in symbol_env:
                     return symbol_env[key]["ref"], key
@@ -1314,7 +1336,7 @@ def compose_clause_v2(
             bk = parsed_by_idx[bid]["key"]
             inputs.setdefault(bk, {"type": "BOOLEAN"})
             expr = f"inputs.{bk}"
-            if any(rel == "REL_LOGICAL_NOT" and (sid == bid or tid == bid) for sid, tid, rel in bool_edges):
+            if any(rel == "REL_LOGICAL_NOT" and tid == bid for sid, tid, rel in bool_edges):
                 expr = {"op": "NOT", "operand": expr}
             terms.append(expr)
         if not terms:
@@ -1336,19 +1358,36 @@ def compose_clause_v2(
         }
 
     # 4. Quantitative Arithmetic Pipeline (bottom-up walk over `topo_ids`)
-    # First check explicit excess-over-threshold safety invariant without silent flat degradation
+    # Resolve any symbolic excess-over-threshold reference via `resolved_corefs` or `symbol_env`
+    sym_floor_ref: str | None = None
+    for sid in topo_ids:
+        if parsed_by_idx[sid]["kind"] == "MONEY":
+            continue
+        is_threshold_cand = (
+            sid in threshold_role_or_targets
+            or span_by_idx[sid].get("role") == "ROLE_TRANSACTION_EXCESS_THRESHOLD"
+        )
+        if not is_threshold_cand:
+            continue
+        if sid in resolved_corefs:
+            sym_floor_ref = str(resolved_corefs[sid]["refVar"])
+            break
+        key = _v2_fact_key_camel(parsed_by_idx[sid]["text"], "")
+        if key and key in symbol_env:
+            sym_floor_ref = str(symbol_env[key]["ref"])
+            break
+        if parsed_by_idx[sid]["key"] in symbol_env:
+            sym_floor_ref = str(symbol_env[parsed_by_idx[sid]["key"]]["ref"])
+            break
+
+    # Check explicit excess-over-threshold safety invariant without silent flat degradation
     excess_symbol_only = any(
         span_by_idx[sid].get("role") == "ROLE_TRANSACTION_EXCESS_THRESHOLD" and parsed_by_idx[sid]["kind"] != "MONEY"
         for sid in topo_ids
     )
     has_sub_base_edge = any(rel == "REL_SUBTRACTION_BASE" for _, _, rel in in_clause_edges)
     if rate_nodes and not money_nodes and (excess_symbol_only or has_sub_base_edge):
-        # Verify whether symbol_env resolved a symbolic floor threshold; otherwise fail closed!
-        resolved_sym_floor = any(
-            parsed_by_idx[sid]["kind"] == "SYMBOL" and parsed_by_idx[sid]["key"] in symbol_env
-            for sid in topo_ids
-        )
-        if not resolved_sym_floor:
+        if sym_floor_ref is None:
             raise V2LoweringError("ERR_NO_THRESHOLD: excess-over-threshold clause has no resolved monetary threshold")
 
     # Classify monetary spans cleanly using explicit v2 relation edges (zero text-guessing regexes)
@@ -1404,12 +1443,19 @@ def compose_clause_v2(
     # Emit bottom-up arithmetic following topological node order
     primary_rate_bps = parsed_by_idx[rate_nodes[0]]["rateBps"] if rate_nodes else None
 
-    if rate_nodes and floor_ids:
-        floor_id = floor_ids[0]
-        floor_minor = parsed_by_idx[floor_id]["minor"]
-        floor_role = span_by_idx[floor_id].get("role", "")
-        active_floor_minor = floor_minor
-        floor_expr = {"op": "TO_PAISE", "value": str(floor_minor)}
+    if rate_nodes and (floor_ids or sym_floor_ref is not None):
+        if floor_ids:
+            floor_id = floor_ids[0]
+            floor_minor: int | None = parsed_by_idx[floor_id]["minor"]
+            floor_role = span_by_idx[floor_id].get("role", "")
+            floor_span_text = span_by_idx[floor_id].get("span", "")
+            active_floor_minor = floor_minor
+            floor_expr: Any = {"op": "TO_PAISE", "value": str(floor_minor)}
+        else:
+            floor_minor = None
+            floor_role = "ROLE_TRANSACTION_EXCESS_THRESHOLD"
+            floor_span_text = ""
+            floor_expr = sym_floor_ref
 
         # Excess base = MAX(0, operand - floor)
         excess_var = _emit(
@@ -1428,20 +1474,27 @@ def compose_clause_v2(
             ceil_id = next(iter(ceiling_ids))
             ceil_minor = parsed_by_idx[ceil_id]["minor"]
             active_ceiling_minor = ceil_minor
-            width_minor = max(0, ceil_minor - floor_minor)
+            if floor_minor is not None:
+                width_expr: Any = {"op": "TO_PAISE", "value": str(max(0, ceil_minor - floor_minor))}
+            else:
+                width_expr = {
+                    "op": "MAX",
+                    "left": {"op": "TO_PAISE", "value": "0"},
+                    "right": {"op": "SUB", "left": {"op": "TO_PAISE", "value": str(ceil_minor)}, "right": floor_expr},
+                }
             slice_var = _emit(
                 "bracketSlicePaisa",
                 {
                     "op": "MIN",
                     "left": base_for_rate,
-                    "right": {"op": "TO_PAISE", "value": str(width_minor)},
+                    "right": width_expr,
                 },
                 "bracket-next",
             )
             base_for_rate = f"vars.{slice_var}"
         elif floor_role == "ROLE_TRANSACTION_CLIFF_THRESHOLD":
             # Cliff threshold: tax applies to ENTIRE operand only if operand > floor
-            cmp_op = _v2_parse_cmp_op(span_by_idx[floor_id].get("span", ""))
+            cmp_op = _v2_parse_cmp_op(floor_span_text)
             if cmp_op == "GTE":
                 cliff_var = _emit(
                     "cliffBasePaisa",

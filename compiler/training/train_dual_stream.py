@@ -47,7 +47,8 @@ from compiler.neural.statutory_neural_parser import (
     canonicalize_token,
     canonical_suffix,
 )
-from compiler.neural.inference import synthesize_usvm_ast, segment_clauses
+from compiler.neural.inference import synthesize_usvm_ast
+from compiler.neural.literals import segment_clauses
 from compiler.neural.inference_v2 import apply_type_compatibility_mask, synthesize_usvm_ast_v2
 from compiler.neural.ssa_walker import V2LoweringError
 from compiler.neural.domain_sensor import (

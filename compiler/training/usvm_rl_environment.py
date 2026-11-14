@@ -305,29 +305,62 @@ class StatutoryRlEnvironment:
         steps = pipe.get("steps") or []
         steps_str = json.dumps(steps, sort_keys=True)
 
-        # Extract numeric literal constants (in minor units when TO_PAISE appears) to set informative bracket/cliff probes
-        minor_thresholds = []
-        for st in steps:
-            expr = st.get("expr") if isinstance(st, dict) else None
-            if not isinstance(expr, dict):
-                continue
-            for node in (expr, expr.get("right"), expr.get("left"), expr.get("else"), expr.get("then")):
-                if isinstance(node, dict) and node.get("op") == "TO_PAISE":
-                    try:
-                        val = int(float(node.get("value", 0)))
-                        if val > 0:
-                            minor_thresholds.append(val)
-                    except (TypeError, ValueError):
-                        pass
-            for arg_k in ("right", "left", "value"):
-                v = expr.get(arg_k)
-                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
-                    minor_thresholds.append(int(v))
+        # Recursively traverse arbitrarily nested AST expressions to extract numeric/date/collection probes
+        minor_thresholds: list[int] = []
+        count_thresholds: list[int] = []
+        collection_fields: set[str] = {"value"}
+        collection_bool_fields: set[str] = {"isQualifying"}
+
+        def _collect_v2_constants(node) -> None:
+            if isinstance(node, list):
+                for item in node:
+                    _collect_v2_constants(item)
+                return
+            if isinstance(node, str) and node.startswith("it."):
+                fld = node[3:].split(".")[0]
+                if fld:
+                    collection_fields.add(fld)
+                return
+            if not isinstance(node, dict):
+                return
+            op = str(node.get("op", "")).upper()
+            if op in ("FORALL", "EXISTS", "COUNT", "SUM_OVER"):
+                pred_node = node.get("predicate")
+                if isinstance(pred_node, dict) and isinstance(pred_node.get("left"), str) and pred_node["left"].startswith("it."):
+                    collection_bool_fields.add(pred_node["left"][3:].split(".")[0])
+                if isinstance(node.get("body"), str) and node["body"].startswith("it."):
+                    collection_fields.add(node["body"][3:].split(".")[0])
+            if op == "TO_PAISE":
+                try:
+                    val = int(float(node.get("value", 0)))
+                    if val > 0:
+                        minor_thresholds.append(val)
+                except (TypeError, ValueError):
+                    pass
+            elif op in ("GT", "GTE", "LT", "LTE", "EQ", "NEQ", "SUB", "ADD", "MIN", "MAX"):
+                for arg_k in ("left", "right", "value"):
+                    v = node.get(arg_k)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+                        iv = int(v)
+                        if iv <= 1000:
+                            count_thresholds.append(iv)
+                        else:
+                            minor_thresholds.append(iv)
+            for val in node.values():
+                if isinstance(val, (dict, list, str)):
+                    _collect_v2_constants(val)
+
+        _collect_v2_constants(steps)
 
         pos_ths = sorted(set(x for x in minor_thresholds if x > 0))
         low_money = max(1000, pos_ths[0] // 2) if pos_ths else 25000
         mid_money = int(pos_ths[0] + max(50000, pos_ths[0] // 4)) if pos_ths else 5000000
         high_money = int((pos_ths[-1] * 2) + 100000) if pos_ths else 15000000
+
+        pos_counts = sorted(set(x for x in count_thresholds if x > 0))
+        low_count = max(0, pos_counts[0] - 1) if pos_counts else 0
+        mid_count = pos_counts[0] if pos_counts else 2
+        high_count = (pos_counts[-1] + 2) if pos_counts else 5
 
         # Extract date cutovers if present
         iso_dates = sorted(set(re.findall(r"\b\d{4}-\d{2}-\d{2}\b", steps_str)))
@@ -344,35 +377,58 @@ class StatutoryRlEnvironment:
         vec_high = {}
         vec_mid = {}
         vec_low = {}
-        for k, spec in inputs.items():
+        bool_keys = []
+        for idx, (k, spec) in enumerate(inputs.items()):
             t = str((spec or {}).get("type", "") if isinstance(spec, dict) else spec).upper()
             if "BOOL" in t:
+                bool_keys.append(k)
                 vec_high[k] = True
-                vec_mid[k] = False
+                vec_mid[k] = (idx % 2 == 0)
                 vec_low[k] = False
             elif "DATE" in t:
                 vec_high[k] = in_date
                 vec_mid[k] = in_date
                 vec_low[k] = out_date
             elif "COLLECTION" in t or "ARRAY" in t or "LIST" in t:
-                vec_high[k] = [{"value": max(1, high_money // 100), "isQualifying": True} for _ in range(4)]
-                vec_mid[k] = [{"value": max(1, mid_money // 100), "isQualifying": True} for _ in range(2)]
-                vec_low[k] = [{"value": max(1, low_money // 100), "isQualifying": True}]
-            elif "INT" in t or "COUNT" in t or "DURATION" in t:
-                vec_high[k] = 5
-                vec_mid[k] = 2
+                item_hi = max(100, high_money // 100)
+                item_mid = max(100, mid_money // 100)
+                item_lo = max(10, low_money // 100)
+                def _make_item(amt_val: int, flag_val: bool) -> dict:
+                    obj = {f: amt_val for f in collection_fields}
+                    for bf in collection_bool_fields:
+                        obj[bf] = flag_val
+                    return obj
+                vec_high[k] = [_make_item(item_hi, True) for _ in range(max(4, high_count))]
+                vec_mid[k] = [
+                    _make_item(item_mid, True),
+                    _make_item(item_lo, False),
+                    _make_item(item_mid, True),
+                ]
+                vec_low[k] = [_make_item(item_lo, False)]
+            elif "RATE" in t or "BPS" in t:
+                vec_high[k] = 2500
+                vec_mid[k] = 1000
                 vec_low[k] = 0
+            elif "INT" in t or "COUNT" in t or "DURATION" in t:
+                vec_high[k] = high_count
+                vec_mid[k] = mid_count
+                vec_low[k] = low_count
             else:
                 # Default MONEY_MINOR / NUMBER
                 vec_high[k] = high_money
                 vec_mid[k] = mid_money
                 vec_low[k] = low_money
 
-        return [
+        candidates = [
             ("VEC_V2_HIGH", vec_high),
             ("VEC_V2_MID", vec_mid),
             ("VEC_V2_LOW", vec_low),
         ]
+        if bool_keys:
+            vec_toggle = dict(vec_high)
+            vec_toggle[bool_keys[0]] = False
+            candidates.append(("VEC_V2_TOGGLE_0", vec_toggle))
+        return candidates
 
     def _build_pure_logic_fact_candidates(self, ast: dict) -> list[tuple[str, dict]]:
         comp = (ast or {}).get("computation") or {}

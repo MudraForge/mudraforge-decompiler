@@ -30,11 +30,13 @@ from .statutory_neural_parser import (
 from .inference import (
     ALLOWED_RULE_DOMAINS,
     resolve_open_class_token,
+    synthesize_usvm_ast,
+)
+from .literals import (
     segment_clauses,
     parse_numeric_quantity,
     parse_unit_and_type,
     stitch_classified_spans,
-    synthesize_usvm_ast,
 )
 from .inference_v2 import (
     apply_type_compatibility_mask,
@@ -322,8 +324,8 @@ class DualStreamDecompilerInference:
             classified_spans.append(entry)
 
         if self.architecture_version == "v2":
-            stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
-            classified_spans = stitched_spans
+            # v2 BIO boundaries are trained end-to-end without legacy stitch heuristics
+            old_to_new_span_idx = {i: i for i in range(len(classified_spans))}
         else:
             stitched_spans, old_to_new_span_idx = stitch_classified_spans(classified_spans, text)
             for curr_copy in stitched_spans:

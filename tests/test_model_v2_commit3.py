@@ -217,6 +217,109 @@ class TestModelV2Commit3(unittest.TestCase):
         finally:
             ev.close()
 
+    def test_v2_combinatorial_ast_dataset_split_and_zero_section_hacks(self):
+        from compiler.training.dataset_generator import generate_synthetic_dataset
+
+        ds = generate_synthetic_dataset(num_samples=200, seed=42, v2=True)
+        train_items = ds["train"]
+        val_items = ds["val"]
+        self.assertEqual(len(train_items), 160)
+        self.assertEqual(len(val_items), 40)
+        self.assertGreater(len(train_items), len(val_items) * 2)
+
+        all_items = train_items + val_items
+        stypes = {s["stype"] for s in all_items}
+        for bad_kw in ("194Q", "194C", "206C", "IRC", "MSMED", "GST", "IBC"):
+            self.assertTrue(all(bad_kw not in st for st in stypes), f"Found leaked section hack stype: {stypes}")
+
+        expected_families = {
+            "V2_AST_COMPOSED_ARITHMETIC",
+            "V2_AST_BOUNDED_BRACKET",
+            "V2_AST_BOOLEAN_DAG",
+            "V2_AST_COLLECTION_FOLD",
+            "V2_AST_SCOPED_SUBSTITUTION",
+            "V2_AST_DEONTIC_GATE",
+        }
+        self.assertTrue(expected_families.issubset(stypes), f"Missing families: {expected_families - stypes}")
+
+        for item in all_items:
+            if item["modality_name"] != "MODALITY_ABSTAIN_UNRESOLVED":
+                self.assertEqual(len(item["unit_labels"]), len(item["span_boundaries"]))
+
+    def test_combinatorial_ast_composer_lowers_and_executes_in_usvm(self):
+        from compiler.neural.inference_v2 import synthesize_usvm_ast_v2
+        from compiler.training.ast_composer import CombinatorialAstComposer
+        from compiler.training.usvm_rl_environment import StatutoryRlEnvironment
+        from compiler.vm.usvm_evaluator import CanonicalUsvmEvaluator
+
+        composer = CombinatorialAstComposer(seed=123)
+        env = StatutoryRlEnvironment()
+        ev = CanonicalUsvmEvaluator()
+        try:
+            seen_families = set()
+            for i in range(36):
+                sample = composer.sample_rule(formulation=i % 4)
+                seen_families.add(sample["stype"])
+                clauses = sample["clauses"]
+                cmods = []
+                pos = 0
+                for c_idx, c_txt in enumerate(clauses):
+                    ci = sample["text"].find(c_txt, pos)
+                    cmods.append({"clauseIdx": c_idx, "modality": sample["modality_name"], "charRange": [ci, ci + len(c_txt)]})
+                    pos = ci + len(c_txt)
+
+                occupied = []
+                order = sorted(range(len(sample["spans_with_units"])), key=lambda k: (-len(sample["spans_with_units"][k][0]), k))
+                placed = [None] * len(sample["spans_with_units"])
+                for oi in order:
+                    txt, role, unit = sample["spans_with_units"][oi]
+                    sp = 0
+                    chosen = None
+                    while True:
+                        k = sample["text"].find(txt, sp)
+                        if k == -1:
+                            break
+                        if all(k + len(txt) <= a or b <= k for a, b in occupied):
+                            chosen = (k, k + len(txt))
+                            occupied.append(chosen)
+                            break
+                        sp = k + 1
+                    self.assertIsNotNone(chosen, f"Could not place span {txt!r} in {sample['text']!r}")
+                    c_idx = 0
+                    for cm in cmods:
+                        cs, ce = cm["charRange"]
+                        if chosen[0] >= cs and chosen[1] <= ce:
+                            c_idx = cm["clauseIdx"]
+                            break
+                    placed[oi] = {
+                        "spanIdx": oi,
+                        "span": txt,
+                        "role": role,
+                        "unit": unit,
+                        "charRange": list(chosen),
+                        "clauseIdx": c_idx,
+                    }
+
+                edges = [{"sourceIdx": a, "targetIdx": b, "relation": r} for a, b, r in sample["relations"]]
+                ast = synthesize_usvm_ast_v2(
+                    text=sample["text"],
+                    spans=placed,
+                    edges=edges,
+                    clause_modalities=cmods,
+                    dominant_modality=sample["modality_name"],
+                )
+                self.assertEqual(ast.get("astVersion"), "v2")
+                self.assertFalse(ast["executionDiagnostics"]["regexHeuristicsUsed"])
+
+                cands = env._build_v2_fact_candidates(ast)
+                self.assertGreaterEqual(len(cands), 3)
+                for _, cvec in cands:
+                    out = ev.evaluate(ast, cvec)
+                    self.assertIsNotNone(out)
+            self.assertEqual(len(seen_families), 6)
+        finally:
+            ev.close()
+
 
 if __name__ == "__main__":
     unittest.main()

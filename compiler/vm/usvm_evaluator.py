@@ -395,6 +395,12 @@ class CanonicalUsvmEvaluator:
             return iso
         if tag in ("MONEY_MAJOR", "MONEY", "DECIMAL", "NUMBER", "BOOLEAN", "BOOL"):
             return value
+        if tag in ("COLLECTION", "LIST", "ARRAY"):
+            if not isinstance(value, list):
+                raise RuntimeError(
+                    f"ERR_INPUT_TYPE: typed input {input_id!r} is {tag} but received {type(value).__name__}"
+                )
+            return value
         if tag.startswith("ENUM:"):
             return value
         raise RuntimeError(

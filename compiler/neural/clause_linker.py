@@ -1436,7 +1436,7 @@ def build_clause_scoped_computation_v2(
         )
         if cspans and not has_calc_unit and not has_operative_edge and "ROLE_COMPUTATION_OPERAND" in roles:
             op_sp = next(sp for sp in cspans if sp.get("role") == "ROLE_COMPUTATION_OPERAND")
-            declaration_base_var = _cl2_fact_key_camel(op_sp.get("span", ""), "taxableIncome")
+            declaration_base_var = _cl2_fact_key_camel(op_sp.get("span", ""), "primaryBaseAmount")
             declaration_clauses.add(cidx)
 
     # ── PASS 1: Harvest REL_DEFINED_TERM_OF & REL_SUBSTITUTE_WHEN + Scope Conflict Detection ──
@@ -1526,7 +1526,7 @@ def build_clause_scoped_computation_v2(
             if 0 <= (sc - tc) <= 1:
                 if tc in defined_clause_targets:
                     rec = defined_clause_targets[tc]
-                    resolved_corefs[s_id] = {"refVar": rec["ref"], "baseKey": rec["symbolKey"]}
+                    resolved_corefs[s_id] = {"targetRec": rec, "baseKey": rec["symbolKey"]}
                     if sc != tc:
                         clause_adj[sc].add(tc)
         elif sc != tc and rel in ("REL_DEFINED_TERM_OF", "REL_SUBSTITUTE_WHEN", "REL_RATE_TO_THRESHOLD", "REL_SUBTRACTION_BASE"):
@@ -1630,6 +1630,14 @@ def build_clause_scoped_computation_v2(
             and int(e.get("targetIdx", e.get("target"))) in span_by_idx
         ]
 
+        live_corefs = {
+            sid: {
+                "refVar": entry["targetRec"]["ref"] if "targetRec" in entry else entry["refVar"],
+                "baseKey": entry["baseKey"],
+            }
+            for sid, entry in resolved_corefs.items()
+        }
+
         try:
             comp = compose_clause_v2(
                 clause_idx=cidx,
@@ -1638,7 +1646,7 @@ def build_clause_scoped_computation_v2(
                 full_text=text,
                 currency_code=ccy,
                 symbol_env=visible_env,
-                resolved_corefs=resolved_corefs,
+                resolved_corefs=live_corefs,
                 fallback_base_var=declaration_base_var,
             )
         except V2LoweringError:
