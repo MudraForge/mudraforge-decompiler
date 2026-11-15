@@ -36,7 +36,17 @@ from .literals import (
     segment_clauses,
     parse_unit_and_type,
     stitch_classified_spans,
+    parse_numeric_quantity,
+    parse_iso_date_str,
 )
+
+_LITERAL_QUANTITATIVE_UNITS = frozenset({
+    "UNIT_MONEY",
+    "UNIT_RATE",
+    "UNIT_DURATION",
+    "UNIT_COUNT",
+    "UNIT_YEAR_DATE",
+})
 from .inference_v2 import (
     apply_type_compatibility_mask,
     decode_dag_relations_v2,
@@ -224,6 +234,44 @@ class DualStreamDecompilerInference:
                             if next_tag != "I-RATE":
                                 step_mask[tid, next_tid] = -1e9
 
+            has_threshold_lookahead = any(
+                (tok.lower() in _VITERBI_CURRENCY_TOKENS or any(c.isdigit() for c in tok))
+                for tok in tokens[t + 1 : min(seq_len, t + 5)]
+            )
+            bind_comparator_threshold = (
+                (
+                    prev_low in ("not", "no")
+                    and cur_low in ("over", "above", "exceeding", "under", "below", "more", "less")
+                    and has_threshold_lookahead
+                )
+                or (
+                    prev_low in ("more", "less")
+                    and cur_low == "than"
+                    and any(
+                        (tok.lower() in _VITERBI_CURRENCY_TOKENS or any(c.isdigit() for c in tok))
+                        for tok in tokens[t + 1 : min(seq_len, t + 4)]
+                    )
+                )
+                or (
+                    prev_low in ("over", "above", "exceeding", "under", "below", "than", "least", "most")
+                    and (
+                        cur_low in _VITERBI_CURRENCY_TOKENS
+                        or any(c.isdigit() for c in cur_tok)
+                    )
+                )
+                or (
+                    prev_low in ("at", "no")
+                    and cur_low in ("least", "most")
+                    and has_threshold_lookahead
+                )
+            )
+            if bind_comparator_threshold:
+                for tid, tag in self.id2bio.items():
+                    if tag in ("B-THRESHOLD", "I-THRESHOLD"):
+                        for next_tid, next_tag in self.id2bio.items():
+                            if next_tag != "I-THRESHOLD":
+                                step_mask[tid, next_tid] = -1e9
+
             scores = dp[t - 1].unsqueeze(1) + step_mask + log_probs[t].unsqueeze(0)
             dp[t], backpointers[t] = scores.max(dim=0)
 
@@ -387,6 +435,21 @@ class DualStreamDecompilerInference:
             pred_roles = role_logits.argmax(dim=-1).cpu().tolist()
             pred_confs = role_probs.max(dim=-1).values.cpu().tolist()
             if unit_logits is not None and unit_logits.numel() > 0:
+                if self.architecture_version == "v2":
+                    masked_unit_logits = unit_logits.clone()
+                    literal_unit_ids = [
+                        uid for uid, uname in self.id2unit.items()
+                        if uname in _LITERAL_QUANTITATIVE_UNITS
+                    ]
+                    if literal_unit_ids:
+                        for idx, s_info in enumerate(discovered_spans):
+                            span_text = text[s_info["char_start"]:s_info["char_end"]].strip()
+                            if (
+                                parse_numeric_quantity(span_text) is None
+                                and parse_iso_date_str(span_text) is None
+                            ):
+                                masked_unit_logits[idx, literal_unit_ids] = -1e9
+                    unit_logits = masked_unit_logits
                 unit_probs = torch.softmax(unit_logits, dim=-1)
                 pred_units = unit_logits.argmax(dim=-1).cpu().tolist()
                 pred_unit_confs = unit_probs.max(dim=-1).values.cpu().tolist()

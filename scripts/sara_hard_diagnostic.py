@@ -116,6 +116,62 @@ def load_statute_text(section_name: str) -> str:
     return ""
 
 
+def _infer_collection_item_sample(ast: dict[str, Any], coll_key: str) -> dict[str, Any]:
+    """Derives a schema-valid synthetic item dict for a COLLECTION input."""
+    target_ref = f"inputs.{coll_key}"
+    fields: dict[str, Any] = {}
+
+    def _walk(node: Any, active_iter: str | None = None) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _walk(item, active_iter)
+            return
+        if isinstance(node, dict):
+            op = node.get("op")
+            if op in ("EXISTS", "FORALL"):
+                coll = node.get("collection")
+                iter_var = str(node.get("iteratorVar") or node.get("var") or "it").strip()
+                if coll == target_ref:
+                    _walk(node.get("predicate", node.get("condition")), iter_var)
+                else:
+                    _walk(node.get("predicate", node.get("condition")), active_iter)
+                return
+            if op in ("EQ", "NEQ", "GT", "GTE", "LT", "LTE"):
+                left = node.get("left")
+                right = node.get("right")
+                if active_iter:
+                    prefix = f"{active_iter}."
+                    if isinstance(left, str) and left.startswith(prefix):
+                        attr = left[len(prefix):]
+                        if isinstance(right, bool):
+                            fields.setdefault(attr, True)
+                        elif isinstance(right, (int, float)) or (
+                            isinstance(right, str) and right.lstrip("-").isdigit()
+                        ):
+                            fields.setdefault(attr, "100")
+                    elif isinstance(right, str) and right.startswith(prefix):
+                        attr = right[len(prefix):]
+                        if isinstance(left, bool):
+                            fields.setdefault(attr, True)
+                        elif isinstance(left, (int, float)) or (
+                            isinstance(left, str) and left.lstrip("-").isdigit()
+                        ):
+                            fields.setdefault(attr, "100")
+            for v in node.values():
+                _walk(v, active_iter)
+            return
+        if isinstance(node, str) and active_iter and node.startswith(f"{active_iter}."):
+            attr = node[len(active_iter) + 1:]
+            fields.setdefault(attr, True)
+
+    pipeline = (ast.get("computation") or {}).get("pipeline") or {}
+    _walk(pipeline.get("steps") or [])
+    _walk(pipeline.get("output") or {})
+    if not fields:
+        fields["present"] = True
+    return fields
+
+
 def generate_synthetic_inputs(ast: dict[str, Any]) -> dict[str, Any]:
     """Generates synthetic facts based on declared inputs signature."""
     inputs = ast.get("inputs") or {}
@@ -130,6 +186,8 @@ def generate_synthetic_inputs(ast: dict[str, Any]) -> dict[str, Any]:
             facts[key] = "1000"
         elif itype == "BOOLEAN":
             facts[key] = True
+        elif itype == "COLLECTION":
+            facts[key] = [_infer_collection_item_sample(ast, key)]
         else:
             facts[key] = "5000000"
     if not facts:

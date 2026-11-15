@@ -434,5 +434,119 @@ class TestArchetypeStrategies(unittest.TestCase):
         self.assertTrue(all(s["expr"].get("op") != "PROGRESSIVE_SLAB" for s in steps))
 
 
+class TestCollectionQuantifierLowering(unittest.TestCase):
+    """Verify COLLECTION inputs and EXISTS / FORALL / NOT EXISTS lower to valid Catala."""
+
+    def test_exists_forall_and_negated_exists_lower_and_execute_in_catala(self):
+        import os
+        import subprocess
+
+        ast = {
+            "sectionId": "SEC-152-QUANT",
+            "inputs": {
+                "individual": {"type": "BOOLEAN"},
+                "relatives": {"type": "COLLECTION", "elementType": "OBJECT"},
+            },
+            "computation": {
+                "archetype": "DECLARATIVE_PIPELINE",
+                "pipeline": {
+                    "steps": [
+                        {
+                            "assign": "has_relative",
+                            "expr": {
+                                "op": "AND",
+                                "left": "inputs.individual",
+                                "right": {
+                                    "op": "EXISTS",
+                                    "iteratorVar": "it",
+                                    "collection": "inputs.relatives",
+                                    "predicate": {"op": "EQ", "left": "it.general", "right": True},
+                                },
+                            },
+                        },
+                        {
+                            "assign": "all_relatives",
+                            "expr": {
+                                "op": "FORALL",
+                                "iteratorVar": "it",
+                                "collection": "inputs.relatives",
+                                "predicate": {"op": "EQ", "left": "it.general", "right": True},
+                            },
+                        },
+                        {
+                            "assign": "no_relative",
+                            "expr": {
+                                "op": "NOT",
+                                "operand": {
+                                    "op": "EXISTS",
+                                    "iteratorVar": "it",
+                                    "collection": "inputs.relatives",
+                                    "predicate": {"op": "EQ", "left": "it.general", "right": True},
+                                },
+                            },
+                        },
+                    ],
+                    "output": {
+                        "hasRelative": "vars.has_relative",
+                        "allRelatives": "vars.all_relatives",
+                        "noRelative": "vars.no_relative",
+                    },
+                },
+            },
+        }
+        scenarios = [
+            {
+                "name": "MixedScenario",
+                "facts": {
+                    "individual": True,
+                    "relatives": [{"general": True}, {"general": False}],
+                },
+            },
+            {
+                "name": "EmptyScenario",
+                "facts": {
+                    "individual": True,
+                    "relatives": [],
+                },
+            },
+        ]
+        code = emit_catala_code(ast, title="QUANT-152", scenarios=scenarios)
+        self.assertIn("declaration structure RelativesItem:", code)
+        self.assertIn("data general content boolean", code)
+        self.assertIn("data relatives content list of RelativesItem", code)
+        self.assertIn("(exists it_1 among input_data.relatives such that", code)
+        self.assertIn("(for all it_2 among input_data.relatives we have", code)
+        self.assertIn("(not (exists it_3 among input_data.relatives such that", code)
+        self.assertIn("RelativesItem { -- general: true }; RelativesItem { -- general: false }", code)
+        self.assertIn("-- relatives: []", code)
+
+        verify_script = Path(__file__).resolve().parent.parent / "scripts" / "catala_verify.mjs"
+        if verify_script.exists():
+            request = {
+                "id": "quant_152",
+                "source": code,
+                "scopes": ["Mixedscenario", "Emptyscenario"],
+            }
+            proc = subprocess.run(
+                ["node", str(verify_script)],
+                input=json.dumps(request) + "\n",
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                payload = json.loads(proc.stdout.strip().splitlines()[-1])
+                self.assertTrue(payload["typecheck"]["success"], payload)
+                self.assertEqual(payload["results"]["Mixedscenario"]["values"]["has_relative"], True)
+                self.assertEqual(payload["results"]["Mixedscenario"]["values"]["all_relatives"], False)
+                self.assertEqual(payload["results"]["Mixedscenario"]["values"]["no_relative"], False)
+                self.assertEqual(payload["results"]["Emptyscenario"]["values"]["has_relative"], False)
+                self.assertEqual(payload["results"]["Emptyscenario"]["values"]["all_relatives"], True)
+                self.assertEqual(payload["results"]["Emptyscenario"]["values"]["no_relative"], True)
+            elif os.environ.get("REQUIRE_CATALA") == "1":
+                self.fail(f"Catala verification failed: {proc.stdout} {proc.stderr}")
+
+
 if __name__ == "__main__":
     unittest.main()

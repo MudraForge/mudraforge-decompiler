@@ -101,6 +101,8 @@ def _catala_type(typ: str) -> str:
     """Maps an internal type tag to a Catala type name."""
     if typ.startswith("enum:"):
         return typ[len("enum:"):]
+    if typ.startswith("collection:"):
+        return f"list of {typ[len('collection:'):]}"
     return typ
 
 
@@ -237,6 +239,11 @@ class CatalaEmitter:
         self._input_specs: dict[str, dict[str, Any]] = ast.get("inputs") or {}
         self._input_ids: dict[str, str] = {}
         self._input_minor: set[str] = set()
+        self._collections: dict[str, tuple[str, dict[str, str]]] = {}
+        self._collections_by_struct: dict[str, tuple[str, dict[str, str]]] = {}
+        self._iter_scopes: list[dict[str, tuple[str, str]]] = []
+        self._iter_counter = 0
+        self._render_iter_vars: list[dict[str, tuple[str, str]]] = []
         self._saw_inputs = False
         self._saw_facts = False
         self._enum_domains: dict[str, dict[str, str]] = {
@@ -318,8 +325,16 @@ class CatalaEmitter:
 
         # Enumerations for text-valued facts. Catala has no string type, so
         # statutory categories are declared as enumerations before use.
-        used_types = set(self._inputs.values()) | set(self._vars.values()) | set(
-            self._output_types.values()
+        collection_field_types = {
+            ft
+            for _, fields in self._collections.values()
+            for ft in fields.values()
+        }
+        used_types = (
+            set(self._inputs.values())
+            | set(self._vars.values())
+            | set(self._output_types.values())
+            | collection_field_types
         )
         enum_names = sorted(
             typ[len("enum:"):] for typ in used_types if typ.startswith("enum:")
@@ -333,6 +348,18 @@ class CatalaEmitter:
             lines.append(f"declaration enumeration {enum_name}:")
             for constructor in domain.values():
                 lines.append(f"{self.indent}-- {constructor}")
+            lines.append("")
+
+        # Element structures for COLLECTION inputs (emitted before SInput).
+        for coll_field, (item_struct, item_fields) in self._collections.items():
+            if coll_field not in self._inputs:
+                continue
+            lines.append(f"declaration structure {item_struct}:")
+            if not item_fields:
+                lines.append(f"{self.indent}data present content boolean")
+            else:
+                for ifield, ityp in item_fields.items():
+                    lines.append(f"{self.indent}data {ifield} content {_catala_type(ityp)}")
             lines.append("")
 
         # Input structure: only facts the executable pipeline actually reads.
@@ -450,6 +477,45 @@ class CatalaEmitter:
                     f"Enumeration fact of type {typ} requires a string value, got {value!r}"
                 )
             return _enum_constructor(typ[len("enum:"):], value, domains=self._enum_domains)
+        if typ.startswith("collection:"):
+            item_struct = typ[len("collection:"):]
+            if item_struct not in self._collections_by_struct:
+                raise CatalaLoweringError(f"Unknown collection structure {item_struct!r}")
+            if not isinstance(value, list):
+                raise CatalaLoweringError(
+                    f"Collection fact of type {item_struct} requires a list, got {value!r}"
+                )
+            _, item_fields = self._collections_by_struct[item_struct]
+            if not value:
+                return "[]"
+            rendered_elems: list[str] = []
+            for idx, elem in enumerate(value):
+                if not isinstance(elem, dict):
+                    raise CatalaLoweringError(
+                        f"Collection item {idx} for {item_struct} must be a dict, got {elem!r}"
+                    )
+                if not item_fields:
+                    rendered_elems.append(f"{item_struct} {{ -- present: true }}")
+                    continue
+                norm_elem = {_identifier(k): v for k, v in elem.items()}
+                parts: list[str] = []
+                for ifield, ityp in item_fields.items():
+                    if ifield in elem:
+                        fval = elem[ifield]
+                    elif ifield in norm_elem:
+                        fval = norm_elem[ifield]
+                    else:
+                        raise CatalaLoweringError(
+                            f"Collection item {idx} for {item_struct} is missing field {ifield!r}"
+                        )
+                    rendered_val = self._render_fact_value(
+                        fval,
+                        ityp,
+                        minor=(minor or self._saw_inputs),
+                    )
+                    parts.append(f"-- {ifield}: {rendered_val}")
+                rendered_elems.append(f"{item_struct} {{ {' '.join(parts)} }}")
+            return "[ " + "; ".join(rendered_elems) + " ]"
         raise CatalaLoweringError(f"Unsupported fact type {typ!r}")
 
     def _register_enum_case(self, enum_name: str, literal: str) -> None:
@@ -644,7 +710,74 @@ class CatalaEmitter:
             return self._infer(node["value"])
         if op == "PROGRESSIVE_SLABS":
             return self._infer_progressive_slabs(node)
+        if op in ("EXISTS", "FORALL"):
+            coll_node = node.get("collection")
+            if coll_node is None:
+                raise CatalaLoweringError(f"{op} requires a 'collection' expression")
+            coll_type = self._infer(coll_node)
+            if not coll_type.startswith("collection:"):
+                raise CatalaLoweringError(
+                    f"{op} collection must have COLLECTION type, got {coll_type}"
+                )
+            item_struct = coll_type[len("collection:"):]
+            coll_field, _ = self._collections_by_struct[item_struct]
+            iter_var = str(node.get("iteratorVar") or node.get("var") or "it").strip()
+            predicate = node.get("predicate") if "predicate" in node else node.get("condition")
+            if predicate is None:
+                raise CatalaLoweringError(f"{op} requires a 'predicate' expression")
+            self._iter_scopes.append({iter_var: (coll_field, iter_var)})
+            try:
+                pred_type = self._infer(predicate)
+            finally:
+                self._iter_scopes.pop()
+            if pred_type != "boolean":
+                raise CatalaLoweringError(
+                    f"{op} predicate must be boolean, got {pred_type}"
+                )
+            return "boolean"
         raise CatalaLoweringError(f"Unsupported pipeline operator {op!r}")
+
+    def _register_collection(self, key: str, spec: dict[str, Any]) -> str:
+        coll_field = _identifier(key)
+        if coll_field in self._collections:
+            return self._collections[coll_field][0]
+        base = "".join(part.capitalize() for part in coll_field.split("_") if part) or "Collection"
+        item_struct = f"{base}Item"
+        used_structs = {s for s, _ in self._collections.values()} | set(self._enum_domains)
+        if item_struct in used_structs or item_struct == "SInput":
+            suffix = 2
+            while f"{item_struct}{suffix}" in used_structs:
+                suffix += 1
+            item_struct = f"{item_struct}{suffix}"
+        fields: dict[str, str] = {}
+        raw_fields = spec.get("fields") or spec.get("properties")
+        if isinstance(raw_fields, dict):
+            for fname, fspec in raw_fields.items():
+                if isinstance(fspec, dict):
+                    fields[_identifier(fname)] = self._input_catala_type(fname, fspec)
+        self._collections[coll_field] = (item_struct, fields)
+        self._collections_by_struct[item_struct] = (coll_field, fields)
+        return item_struct
+
+    def _active_iter_binding(self, iter_name: str, scopes: list[dict[str, tuple[str, str]]]) -> tuple[str, str] | None:
+        for frame in reversed(scopes):
+            if iter_name in frame:
+                return frame[iter_name]
+        return None
+
+    def _unresolved_iter_attr(self, node: Any) -> tuple[str, str] | None:
+        if not isinstance(node, str) or "." not in node:
+            return None
+        head, attr = node.strip().split(".", 1)
+        binding = self._active_iter_binding(head, self._iter_scopes)
+        if binding is None:
+            return None
+        coll_field, _ = binding
+        item_field = _identifier(attr)
+        _, fields = self._collections[coll_field]
+        if item_field in fields:
+            return None
+        return coll_field, item_field
 
     def _infer_reference(self, path: str) -> str:
         if re.fullmatch(r"-?\d+(?:\.\d+)?", path.strip()):
@@ -697,6 +830,16 @@ class CatalaEmitter:
             return self._vars[key]
         if path in self._vars:
             return self._vars[path]
+        if "." in path:
+            head, attr = path.strip().split(".", 1)
+            binding = self._active_iter_binding(head, self._iter_scopes)
+            if binding is not None:
+                coll_field, _ = binding
+                item_field = _identifier(attr)
+                _, fields = self._collections[coll_field]
+                if item_field not in fields:
+                    fields[item_field] = "boolean"
+                return fields[item_field]
         # Bare text literal (e.g. "B2B", "standard") — not a reference path.
         # Checked last so variable names in self._vars take priority.
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", path.strip()):
@@ -721,6 +864,8 @@ class CatalaEmitter:
             return "boolean"
         if upper == "DATE":
             return "date"
+        if upper == "COLLECTION":
+            return "collection:" + self._register_collection(key, spec)
         if upper.startswith("ENUM:"):
             return "enum:" + raw.split(":", 1)[1]
         raise CatalaLoweringError(
@@ -894,6 +1039,26 @@ class CatalaEmitter:
             # COMMERCIAL_PAISA / NONE: Catala money arithmetic already quantizes
             # to the paisa with the same half-up rule as the USVM.
             return self._render(node["value"], typ)
+        if op in ("EXISTS", "FORALL"):
+            coll_node = node.get("collection")
+            coll_type = self._infer(coll_node)
+            item_struct = coll_type[len("collection:"):]
+            coll_field, _ = self._collections_by_struct[item_struct]
+            coll_expr = self._render(coll_node, coll_type)
+            iter_var = str(node.get("iteratorVar") or node.get("var") or "it").strip()
+            self._iter_counter += 1
+            cat_iter = f"{_identifier(iter_var)}_{self._iter_counter}"
+            predicate = node.get("predicate") if "predicate" in node else node.get("condition")
+            self._iter_scopes.append({iter_var: (coll_field, cat_iter)})
+            self._render_iter_vars.append({iter_var: (coll_field, cat_iter)})
+            try:
+                pred_expr = self._render(predicate, "boolean")
+            finally:
+                self._render_iter_vars.pop()
+                self._iter_scopes.pop()
+            if op == "EXISTS":
+                return f"(exists {cat_iter} among {coll_expr} such that {pred_expr})"
+            return f"(for all {cat_iter} among {coll_expr} we have {pred_expr})"
         raise CatalaLoweringError(f"Unsupported pipeline operator {op!r}")
 
     @classmethod
@@ -1013,6 +1178,12 @@ class CatalaEmitter:
             return _identifier(path[len("vars."):])
         if path in self._vars:
             return _identifier(path)
+        if "." in stripped:
+            head, attr = stripped.split(".", 1)
+            binding = self._active_iter_binding(head, self._render_iter_vars)
+            if binding is not None:
+                _, cat_iter = binding
+                return f"{cat_iter}.{_identifier(attr)}"
         # Bare text literal. Catala has no string type: it is only valid as an
         # enumeration case, resolved against the compared operand's enum type.
         if typ.startswith("enum:") and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", stripped):
@@ -1041,6 +1212,22 @@ class CatalaEmitter:
         raise CatalaLoweringError(f"Non-numeric operand of type {typ} in decimal arithmetic")
 
     def _comparison_operand_type(self, left: Any, right: Any) -> str:
+        l_iter = self._unresolved_iter_attr(left)
+        r_iter = self._unresolved_iter_attr(right)
+        if l_iter is not None and r_iter is None:
+            rt = self._infer(right)
+            inferred = "boolean" if rt == "text" else rt
+            self._collections[l_iter[0]][1][l_iter[1]] = inferred
+            return rt
+        if r_iter is not None and l_iter is None:
+            lt = self._infer(left)
+            inferred = "boolean" if lt == "text" else lt
+            self._collections[r_iter[0]][1][r_iter[1]] = inferred
+            return lt
+        if l_iter is not None and r_iter is not None:
+            self._collections[l_iter[0]][1][l_iter[1]] = "boolean"
+            self._collections[r_iter[0]][1][r_iter[1]] = "boolean"
+            return "boolean"
         lt, rt = self._infer(left), self._infer(right)
         if lt == rt:
             return lt
@@ -1061,7 +1248,7 @@ class CatalaEmitter:
         stripped = node.strip()
         if re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
             return False
-        return not stripped.startswith(("facts.", "vars.", "rules."))
+        return not stripped.startswith(("facts.", "vars.", "rules.", "inputs."))
 
     def _static_number(self, node: Any) -> Fraction | None:
         """Extracts a compile-time numeric constant, mirroring USVM toPaise()."""

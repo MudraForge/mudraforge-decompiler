@@ -1179,9 +1179,22 @@ class TestModelV2Commit3(unittest.TestCase):
         decompiler.id2dom = {i: t for i, t in enumerate(DOMAIN_TOKEN_CLASSES)}
         decompiler.transition_mask = torch.zeros((len(BIO_TAGS), len(BIO_TAGS)), dtype=torch.float32)
 
+        from compiler.neural.ssa_walker import V2LoweringError, compose_clause_v2
+
         res = decompiler.decompile_text("For any taxable year, exceeding $1,000 bears 5%.")
-        self.assertEqual(res["status"], "LOWERING_FAILED", f"Expected fail-closed lowering without silent drop: {res}")
-        self.assertIn("ERR_UNPARSEABLE_DURATION", str(res.get("loweringError")))
+        self.assertEqual(res["status"], "SUCCESS", f"Lexical unit masking should prevent impossible UNIT_DURATION on 'taxable year': {res}")
+        self.assertEqual(res["classifiedSpans"][0]["span"], "taxable year")
+        self.assertEqual(res["classifiedSpans"][0]["unit"], "UNIT_NONE")
+        # Direct SSA walker remains strictly fail-closed if passed an explicit invalid UNIT_DURATION.
+        with self.assertRaises(V2LoweringError) as ctx:
+            compose_clause_v2(
+                clause_idx=0,
+                clause_spans=[{"span": "taxable year", "role": "ROLE_DEADLINE_WINDOW", "unit": "UNIT_DURATION", "charRange": [8, 20]}],
+                all_edges=[],
+                full_text="For any taxable year.",
+                clause_modality="MODALITY_COMPUTATIONAL_EXCESS",
+            )
+        self.assertIn("ERR_UNPARSEABLE_DURATION", str(ctx.exception))
 
         # 2. Verify composer generates numberless period phrases tagged O and withholding-rate phrases
         comp = CombinatorialAstComposer(seed=77)
@@ -1558,12 +1571,27 @@ class TestModelV2Commit3(unittest.TestCase):
             w_tok_start=0,
             w_tok_end=len(tokens) - 1,
         )
-        # No silent boilerplate/word-list filtering; bad 'than' UNIT_RATE fails closed in ssa_walker.py
+        from compiler.neural.dual_stream_inference import _LITERAL_QUANTITATIVE_UNITS
+        from compiler.neural.ssa_walker import V2LoweringError, compose_clause_v2
+
+        # Zero span deletion: all spans remain in classified_spans, literal numeric units
+        # are masked on digitless/dateless spans, and fail-closed lowering still holds.
         kept = [sp["span"] for sp in out["classified_spans"]]
         self.assertEqual(kept, ["tax", "defined", "maintaining", "than", "6 percent", "January 1, 2020"])
+        than_span = next(sp for sp in out["classified_spans"] if sp["span"] == "than")
+        self.assertNotIn(than_span["unit"], _LITERAL_QUANTITATIVE_UNITS)
         res = decompiler.decompile_text(text)
         self.assertEqual(res["status"], "LOWERING_FAILED")
-        self.assertIn("ERR_UNPARSEABLE_RATE", str(res.get("loweringError")))
+        # Direct SSA walker still fails closed with ERR_UNPARSEABLE_RATE if passed UNIT_RATE on 'than'.
+        with self.assertRaises(V2LoweringError) as ctx:
+            compose_clause_v2(
+                clause_idx=0,
+                clause_spans=[{"span": "than", "role": "ROLE_STANDARD_STATUTORY_RATE", "unit": "UNIT_RATE", "charRange": [0, 4]}],
+                all_edges=[],
+                full_text="than",
+                clause_modality="MODALITY_COMPUTATIONAL_EXCESS",
+            )
+        self.assertIn("ERR_UNPARSEABLE_RATE", str(ctx.exception))
 
     def test_balanced_boolean_tree_avoids_usvm_depth_limit_and_matches_catala(self):
         """Chaining 20+ boolean predicates must fold into a balanced binary tree (depth <= 6) with USVM/Catala parity."""
@@ -1819,6 +1847,115 @@ class TestModelV2Commit3(unittest.TestCase):
         self.assertTrue(saw_inv)
         self.assertTrue(saw_comb)
         self.assertTrue(saw_cliff)
+
+    def test_v2_viterbi_binds_not_over_comparator_and_masks_digitless_unit_logits(self):
+        """Viterbi binds 'not over' into THRESHOLD; lexical masking maps digitless 'applicable percentage' to UNIT_SYMBOL_VAR."""
+        import torch
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.domain_sensor import DOMAIN_TOKEN_CLASSES
+        from compiler.neural.statutory_neural_parser import (
+            RULE_MODALITIES,
+            SPAN_UNITS,
+            V2_BIO_TAGS,
+            V2_RELATION_TYPES,
+            V2_SEMANTIC_ROLES,
+        )
+        from compiler.neural.tokenizer import tokenize_with_offsets
+
+        bio2id = {t: i for i, t in enumerate(V2_BIO_TAGS)}
+        role2id = {t: i for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        rel2id = {t: i for i, t in enumerate(V2_RELATION_TYPES)}
+        unit2id = {t: i for i, t in enumerate(SPAN_UNITS)}
+        mod2id = {t: i for i, t in enumerate(RULE_MODALITIES)}
+
+        text = "If income is not over EUR 300,000, tax is applicable percentage."
+        tokens, offsets = tokenize_with_offsets(text)
+        not_idx = tokens.index("not")
+        over_idx = tokens.index("over")
+        eur_idx = tokens.index("EUR")
+        amt_indices = [i for i in range(eur_idx + 1, tokens.index("tax")) if tokens[i] != ","]
+        app_idx = tokens.index("applicable")
+        pct_word_idx = tokens.index("percentage")
+
+        class _MockComparatorAndMaskModel(torch.nn.Module):
+            def forward(self, raw_token_ids, logic_token_ids, suffix_ids=None, span_indices=None, **kwargs):
+                seq_len = raw_token_ids.shape[1]
+                if span_indices is None:
+                    mod_logits = torch.full((1, len(RULE_MODALITIES)), -5.0)
+                    mod_logits[0, mod2id["MODALITY_COMPUTATIONAL_EXCESS"]] = 5.0
+                    bio_logits = torch.full((seq_len, len(V2_BIO_TAGS)), -5.0)
+                    bio_logits[:, bio2id["O"]] = 5.0
+                    # Simulate BIO trying to start B-THRESHOLD on 'not' and reset B-THRESHOLD on 'over'/'EUR'
+                    bio_logits[not_idx, bio2id["O"]] = 1.0
+                    bio_logits[not_idx, bio2id["B-THRESHOLD"]] = 6.0
+                    bio_logits[over_idx, bio2id["O"]] = 0.0
+                    bio_logits[over_idx, bio2id["B-THRESHOLD"]] = 5.0
+                    bio_logits[over_idx, bio2id["I-THRESHOLD"]] = 4.5
+                    bio_logits[eur_idx, bio2id["O"]] = 0.0
+                    bio_logits[eur_idx, bio2id["B-THRESHOLD"]] = 5.0
+                    bio_logits[eur_idx, bio2id["I-THRESHOLD"]] = 4.5
+                    for k in amt_indices:
+                        bio_logits[k, bio2id["O"]] = -5.0
+                        bio_logits[k, bio2id["I-THRESHOLD"]] = 6.0
+                    bio_logits[app_idx, bio2id["O"]] = -5.0
+                    bio_logits[app_idx, bio2id["B-RATE"]] = 6.0
+                    bio_logits[pct_word_idx, bio2id["O"]] = -5.0
+                    bio_logits[pct_word_idx, bio2id["I-RATE"]] = 6.0
+                    dom_probs = torch.zeros((1, seq_len, len(DOMAIN_TOKEN_CLASSES)))
+                    dom_probs[0, :, 0] = 1.0
+                    return {
+                        "modality_logits": mod_logits,
+                        "clause_mod_logits": None,
+                        "bio_logits": bio_logits,
+                        "domain_probs": dom_probs,
+                        "domain_abstain_probs": torch.tensor([[0.95, 0.05]]),
+                    }
+
+                n = len(span_indices)
+                role_logits = torch.full((n, len(V2_SEMANTIC_ROLES)), -5.0)
+                unit_logits = torch.full((n, len(SPAN_UNITS)), -5.0)
+                rel_logits = torch.full((n, n, len(V2_RELATION_TYPES)), -5.0)
+                rel_logits[:, :, rel2id["REL_NO_EDGE"]] = 2.0
+                for idx in range(n):
+                    if idx == 0:
+                        role_logits[idx, role2id["ROLE_TRANSACTION_CLIFF_THRESHOLD"]] = 6.0
+                        unit_logits[idx, unit2id["UNIT_MONEY"]] = 6.0
+                    else:
+                        role_logits[idx, role2id["ROLE_STANDARD_STATUTORY_RATE"]] = 6.0
+                        # Raw model prefers UNIT_RATE (+5), second choice UNIT_SYMBOL_VAR (+3)
+                        unit_logits[idx, unit2id["UNIT_RATE"]] = 5.0
+                        unit_logits[idx, unit2id["UNIT_SYMBOL_VAR"]] = 3.0
+                return {"role_logits": role_logits, "unit_logits": unit_logits, "rel_logits": rel_logits}
+
+        decompiler = DualStreamDecompilerInference.__new__(DualStreamDecompilerInference)
+        decompiler.device = torch.device("cpu")
+        decompiler.architecture_version = "v2"
+        decompiler.model = _MockComparatorAndMaskModel()
+        decompiler.vocab = {"<PAD>": 0, "<UNK>": 1}
+        decompiler.bio2id = bio2id
+        decompiler.id2bio = {i: t for i, t in enumerate(V2_BIO_TAGS)}
+        decompiler.id2role = {i: t for i, t in enumerate(V2_SEMANTIC_ROLES)}
+        decompiler.id2rel = {i: t for i, t in enumerate(V2_RELATION_TYPES)}
+        decompiler.id2unit = {i: t for i, t in enumerate(SPAN_UNITS)}
+        decompiler.id2mod = {i: t for i, t in enumerate(RULE_MODALITIES)}
+        decompiler.id2dom = {i: t for i, t in enumerate(DOMAIN_TOKEN_CLASSES)}
+        decompiler.transition_mask = torch.zeros((len(V2_BIO_TAGS), len(V2_BIO_TAGS)), dtype=torch.float32)
+
+        out = decompiler._annotate_window(
+            text=text,
+            tokens=tokens,
+            offsets=offsets,
+            raw_ids=[1] * len(tokens),
+            logic_ids=[1] * len(tokens),
+            suffix_ids=[0] * len(tokens),
+            window_clauses=[(0, 0, len(tokens) - 1)],
+            w_tok_start=0,
+            w_tok_end=len(tokens) - 1,
+        )
+        spans = out["classified_spans"]
+        self.assertEqual([sp["span"] for sp in spans], ["not over EUR 300,000", "applicable percentage"])
+        self.assertEqual(spans[0]["unit"], "UNIT_MONEY")
+        self.assertEqual(spans[1]["unit"], "UNIT_SYMBOL_VAR")
 
 
 if __name__ == "__main__":
