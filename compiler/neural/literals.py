@@ -264,12 +264,12 @@ def parse_unit_and_type(text: str):
     return "BOOLEAN_FLAG", "BOOLEAN", "FLAG"
 
 
-def parse_comparison_operator(text: str):
+def parse_comparison_operator(text: str, default: str | None = "GTE") -> str | None:
     low = text.lower()
     if re.search(
         r"\b(?:not\s+less\s+than|at\s+least|at\s+or\s+above|minimum\s+of|no\s+less\s+than|no\s+fewer\s+than|"
         r"equal\s+to\s+or\s+(?:greater|more)\s+than|not\s+below|or\s+more|or\s+greater|or\s+above|"
-        r"on\s+or\s+after|commencing(?:\s+on)?|effective(?:\s+from)?)\b",
+        r"on\s+or\s+after|no\s+earlier\s+than|not\s+earlier\s+than|commencing(?:\s+on)?|effective(?:\s+from)?)\b",
         low,
     ):
         return "GTE"
@@ -294,7 +294,7 @@ def parse_comparison_operator(text: str):
         return "LT"
     if re.search(r"\b(?:equal\s+to|equals|exactly)\b", low):
         return "EQ"
-    return "GTE"
+    return default
 
 
 def _derive_fact_key_camel(raw_text: str, fallback: str = "metricValue") -> str:

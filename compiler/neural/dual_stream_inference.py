@@ -287,10 +287,10 @@ class DualStreamDecompilerInference:
     def _partition_clause_windows(
         clause_ranges: list[tuple[int, int]],
         total_tokens: int,
-        max_clauses: int = 6,
-        max_tokens: int = 220,
+        max_clauses: int = 4,
+        max_tokens: int = 150,
     ) -> list[list[tuple[int, int, int]]]:
-        """Group ordered clauses into multi-clause inference windows under the token budget."""
+        """Group ordered clauses into compact multi-clause inference windows under the token budget."""
         if not clause_ranges:
             return [[(0, 0, total_tokens - 1)]] if total_tokens > 0 else []
         if len(clause_ranges) <= max_clauses and total_tokens <= max_tokens:

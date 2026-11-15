@@ -840,6 +840,9 @@ class CatalaEmitter:
                 if item_field not in fields:
                     fields[item_field] = "boolean"
                 return fields[item_field]
+        # ISO YYYY-MM-DD date literals (e.g. "2017-12-31").
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.strip()):
+            return "date"
         # Bare text literal (e.g. "B2B", "standard") — not a reference path.
         # Checked last so variable names in self._vars take priority.
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", path.strip()):
@@ -1186,6 +1189,8 @@ class CatalaEmitter:
                 return f"{cat_iter}.{_identifier(attr)}"
         # Bare text literal. Catala has no string type: it is only valid as an
         # enumeration case, resolved against the compared operand's enum type.
+        if typ == "date" and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stripped):
+            return f"|{stripped}|"
         if typ.startswith("enum:") and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", stripped):
             return _enum_constructor(typ[len("enum:"):], stripped, domains=self._enum_domains)
         raise CatalaLoweringError(f"Unresolvable expression reference {path!r}")

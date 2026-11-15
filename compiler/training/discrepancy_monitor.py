@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -179,6 +180,87 @@ def _values_match(exp_val: Any, act_val: Any) -> bool:
     return exp_val == act_val
 
 
+def _canonical_input_tokens(name: str) -> list[str]:
+    """Splits camelCase / snake_case input names into lowercase normalized tokens."""
+    parts = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name or ""))
+    return [tok.lower() for tok in re.split(r"[^A-Za-z0-9]+", parts) if tok]
+
+
+def _bind_compatible_vector_facts(
+    gold_ast: dict[str, Any],
+    pred_ast: dict[str, Any],
+    facts: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind unmatched pred inputs to unique type-compatible gold vector keys on multi-token noun-stem matches."""
+    bound = dict(facts or {})
+    gold_inputs = gold_ast.get("inputs") or {}
+    pred_inputs = pred_ast.get("inputs") or {}
+    used_gold = {gk for gk in pred_inputs if gk in bound}
+
+    for pk, p_spec in pred_inputs.items():
+        if pk in bound:
+            continue
+        p_toks = _canonical_input_tokens(pk)
+        if len(p_toks) < 2:
+            continue
+        p_type = (p_spec or {}).get("type")
+        p_ccy = (p_spec or {}).get("currency")
+        candidates: list[str] = []
+        for gk, g_spec in gold_inputs.items():
+            if gk in used_gold or gk not in bound:
+                continue
+            if (g_spec or {}).get("type") != p_type:
+                continue
+            g_ccy = (g_spec or {}).get("currency")
+            if p_ccy and g_ccy and p_ccy != g_ccy:
+                continue
+            g_toks = _canonical_input_tokens(gk)
+            if p_toks == g_toks:
+                candidates = [gk]
+                break
+            if len(g_toks) > len(p_toks) and (g_toks[: len(p_toks)] == p_toks or g_toks[-len(p_toks) :] == p_toks):
+                candidates.append(gk)
+        if len(candidates) == 1:
+            gk = candidates[0]
+            bound[pk] = bound[gk]
+            used_gold.add(gk)
+    return bound
+
+
+def _canonical_output_stem(name: str) -> list[str]:
+    """Strips canonical `TaxPaisa`/`Paisa` suffixes before comparing multi-token output keys."""
+    toks = _canonical_input_tokens(name)
+    if toks and toks[-1] == "paisa":
+        toks = toks[:-1]
+    if toks and toks[-1] == "tax":
+        toks = toks[:-1]
+    return toks
+
+
+def _find_canonical_output_match(exp_key: str, pred_out: dict[str, Any]) -> tuple[bool, Any]:
+    """Resolves scalar outputs across minor noun-boundary shifts (`assessedSettlementTaxPaisa` <-> `assessedSettlementBaseTaxPaisa`)."""
+    if exp_key in pred_out:
+        return True, pred_out[exp_key]
+    exp_stem = _canonical_output_stem(exp_key)
+    if len(exp_stem) >= 2:
+        matched_keys = []
+        for pk in pred_out:
+            p_stem = _canonical_output_stem(pk)
+            if len(p_stem) < 2:
+                continue
+            if p_stem == exp_stem or (
+                len(exp_stem) > len(p_stem)
+                and (exp_stem[: len(p_stem)] == p_stem or exp_stem[-len(p_stem) :] == p_stem)
+            ) or (
+                len(p_stem) > len(exp_stem)
+                and (p_stem[: len(exp_stem)] == exp_stem or p_stem[-len(exp_stem) :] == exp_stem)
+            ):
+                matched_keys.append(pk)
+        if len(matched_keys) == 1:
+            return True, pred_out[matched_keys[0]]
+    return False, None
+
+
 def compare_ast_counterfactual_outputs(
     gold_ast: dict[str, Any],
     pred_ast: dict[str, Any],
@@ -190,7 +272,7 @@ def compare_ast_counterfactual_outputs(
     vectors = rl_env.build_sample_vectors(gold_ast, stype=stype)
     diffs: list[dict[str, Any]] = []
     for vec in vectors:
-        facts = vec["facts"]
+        facts = _bind_compatible_vector_facts(gold_ast, pred_ast, vec["facts"])
         expected = vec.get("expected") or {}
         try:
             pred_res = evaluator.evaluate(pred_ast, facts)
@@ -199,14 +281,15 @@ def compare_ast_counterfactual_outputs(
             diffs.append({"vectorId": vec.get("id"), "error": str(exc)})
             continue
         for k, exp_v in expected.items():
-            if k not in pred_out:
+            found, act_v = _find_canonical_output_match(k, pred_out)
+            if not found:
                 # Match scalar output if only key naming shifted while single output value matches
                 scalar_vals = [v for v in pred_out.values() if isinstance(v, (int, float, bool))]
                 if len(scalar_vals) == 1 and _values_match(exp_v, scalar_vals[0]):
                     continue
                 diffs.append({"vectorId": vec.get("id"), "key": k, "expected": exp_v, "actual": None})
-            elif not _values_match(exp_v, pred_out[k]):
-                diffs.append({"vectorId": vec.get("id"), "key": k, "expected": exp_v, "actual": pred_out[k]})
+            elif not _values_match(exp_v, act_v):
+                diffs.append({"vectorId": vec.get("id"), "key": k, "expected": exp_v, "actual": act_v})
     return (len(diffs) == 0), diffs
 
 

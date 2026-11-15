@@ -1060,6 +1060,34 @@ V2_EDGE_DIRECTION: dict[str, str] = {
 }
 
 
+_TYPE_CONFLICT_SUFFIXES = {
+    "BOOLEAN": "Flag",
+    "MONEY_MINOR": "Amount",
+    "INTEGER": "Count",
+    "DATE": "Date",
+    "COLLECTION": "Items",
+}
+
+
+def resolve_typed_input_key(inputs_map: dict[str, dict], key: str, spec: dict[str, Any]) -> str:
+    """Bind `key` with `spec`, suffixing only when the same identifier hits an incompatible type."""
+    existing = inputs_map.get(key)
+    req_type = str((spec or {}).get("type") or "")
+    if existing is None or existing.get("type") == req_type:
+        if existing is None:
+            inputs_map[key] = dict(spec)
+        return key
+    suffix = _TYPE_CONFLICT_SUFFIXES.get(req_type, "Val")
+    cand = f"{key}{suffix}"
+    n = 2
+    while cand in inputs_map and inputs_map[cand].get("type") != req_type:
+        cand = f"{key}{suffix}{n}"
+        n += 1
+    if cand not in inputs_map:
+        inputs_map[cand] = dict(spec)
+    return cand
+
+
 def _v2_norm_edge(edge: dict, valid_indices: set[int]) -> tuple[int, int, str] | None:
     s = edge.get("sourceIdx")
     if s is None:
@@ -1091,7 +1119,25 @@ def _v2_derive_duration_key(raw_text: str) -> str:
     return camel if camel.endswith("Days") else f"{camel}Days"
 
 
-def _v2_parse_span_value(span_dict: dict) -> dict:
+def _v2_parse_date_cmp_op(span_text: str, char_range: Any, full_text: str) -> str:
+    """Resolve temporal comparator from date span text, falling back to its immediate intra-clause prefix."""
+    explicit = _v2_parse_cmp_op(span_text, default=None)
+    if explicit is not None:
+        return explicit
+    if full_text and isinstance(char_range, (list, tuple)) and len(char_range) == 2:
+        start = max(0, int(char_range[0]))
+        if 0 < start <= len(full_text):
+            raw_prefix = full_text[max(0, start - 40):start]
+            local_seg = re.split(r"[,.;:()\[\]]", raw_prefix)[-1].strip()
+            local_words = " ".join(local_seg.split()[-4:])
+            if local_words:
+                inferred = _v2_parse_cmp_op(local_words, default=None)
+                if inferred is not None:
+                    return inferred
+    return "GTE"
+
+
+def _v2_parse_span_value(span_dict: dict, full_text: str = "") -> dict:
     """Extracts typed literal value purely from neural `unit` + deterministic literal parser."""
     text = str(span_dict.get("span") or "").strip()
     unit = str(span_dict.get("unit") or "UNIT_NONE")
@@ -1127,7 +1173,7 @@ def _v2_parse_span_value(span_dict: dict) -> dict:
             "kind": "YEAR_DATE",
             "isoDate": iso_date,
             "years": years,
-            "cmpOp": _v2_parse_cmp_op(text),
+            "cmpOp": _v2_parse_date_cmp_op(text, span_dict.get("charRange"), full_text),
             "text": text,
             "unit": unit,
             "role": role,
@@ -1243,7 +1289,7 @@ def compose_clause_v2(
     for pos, sp in enumerate(active_spans):
         sid = int(sp.get("spanIdx", pos))
         span_by_idx[sid] = sp
-        pv = _v2_parse_span_value(sp)
+        pv = _v2_parse_span_value(sp, full_text=full_text)
         if pv["kind"] == "RATE" and pv["rateBps"] is None:
             raise V2LoweringError(f"ERR_UNPARSEABLE_RATE: span '{pv['text']}' has UNIT_RATE without numeric value")
         if pv["kind"] == "MONEY" and pv["minor"] is None:
@@ -1296,6 +1342,9 @@ def compose_clause_v2(
     inputs: dict[str, dict] = {}
     ssa_ver: dict[str, int] = {}
 
+    def _bind_input(key: str, spec: dict[str, Any]) -> str:
+        return resolve_typed_input_key(inputs, key, spec)
+
     def _emit(base_name: str, expr: dict, handler: str) -> str:
         ver = ssa_ver.get(base_name, 0) + 1
         ssa_ver[base_name] = ver
@@ -1325,7 +1374,7 @@ def compose_clause_v2(
                 key = _v2_fact_key_camel(parsed_by_idx[sid]["text"], fallback_base_var or "amount")
                 if key in symbol_env:
                     return symbol_env[key]["ref"], key
-                inputs.setdefault(key, {"type": "MONEY_MINOR", "currency": ccy})
+                key = _bind_input(key, {"type": "MONEY_MINOR", "currency": ccy})
                 return f"inputs.{key}", key
         # Pass 2: other non-threshold SYMBOL or resolved coref spans
         for sid in candidates:
@@ -1339,10 +1388,10 @@ def compose_clause_v2(
                 key = _v2_fact_key_camel(p["text"], fallback_base_var or "amount")
                 if key in symbol_env:
                     return symbol_env[key]["ref"], key
-                inputs.setdefault(key, {"type": "MONEY_MINOR", "currency": ccy})
+                key = _bind_input(key, {"type": "MONEY_MINOR", "currency": ccy})
                 return f"inputs.{key}", key
         base_key = fallback_base_var or "amount"
-        inputs.setdefault(base_key, {"type": "MONEY_MINOR", "currency": ccy})
+        base_key = _bind_input(base_key, {"type": "MONEY_MINOR", "currency": ccy})
         return f"inputs.{base_key}", base_key
 
     # Partition clause semantics strictly by predicted units & v2 edge opcodes (NO regex heuristics)
@@ -1393,7 +1442,7 @@ def compose_clause_v2(
         consumed_edges.add(fold_edges[0])
         coll_key = _v2_pluralize_noun(parsed_by_idx[t_id]["text"])
         elem_key = _v2_fact_key_camel(parsed_by_idx[s_id]["text"], "amount")
-        inputs.setdefault(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
+        coll_key = _bind_input(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
         op_name = "COUNT" if fold_rel == "REL_AGGREGATE_COUNT" else "SUM_OVER"
         fold_expr = {
             "op": op_name,
@@ -1435,7 +1484,7 @@ def compose_clause_v2(
             consumed_ids.add(ns)
         has_q_not = bool(not_sources)
         base_q = "FORALL" if q_rel == "REL_QUANTIFIER_FORALL" else "EXISTS"
-        inputs.setdefault(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
+        coll_key = _bind_input(coll_key, {"type": "COLLECTION", "elementType": "OBJECT"})
         quant_expr = {
             "op": base_q,
             "iteratorVar": "it",
@@ -1512,25 +1561,23 @@ def compose_clause_v2(
             cond_order.append(nid)
 
     for bid in bool_nodes:
-        bk = parsed_by_idx[bid]["key"]
-        inputs.setdefault(bk, {"type": "BOOLEAN"})
+        bk = _bind_input(parsed_by_idx[bid]["key"], {"type": "BOOLEAN"})
         _register_atom(bid, f"inputs.{bk}")
 
     for did in dur_cond_nodes:
         pv = parsed_by_idx[did]
-        dk = pv.get("key") or "durationDays"
-        inputs.setdefault(dk, {"type": "INTEGER"})
+        dk = _bind_input(pv.get("key") or "durationDays", {"type": "INTEGER"})
         dval = int(pv["days"] if pv["days"] is not None else round(float(pv["num"])))
         _register_atom(did, {"op": pv["cmpOp"], "left": f"inputs.{dk}", "right": dval})
 
     for dt_id in date_cond_nodes:
         pv = parsed_by_idx[dt_id]
         if pv.get("isoDate"):
-            inputs.setdefault("transactionDate", {"type": "DATE"})
-            _register_atom(dt_id, {"op": pv["cmpOp"], "left": "inputs.transactionDate", "right": pv["isoDate"]})
+            dt_key = _bind_input("transactionDate", {"type": "DATE"})
+            _register_atom(dt_id, {"op": pv["cmpOp"], "left": f"inputs.{dt_key}", "right": pv["isoDate"]})
         elif pv.get("years"):
-            inputs.setdefault("taxYear", {"type": "INTEGER"})
-            _register_atom(dt_id, {"op": pv["cmpOp"], "left": "inputs.taxYear", "right": int(pv["years"][0])})
+            yr_key = _bind_input("taxYear", {"type": "INTEGER"})
+            _register_atom(dt_id, {"op": pv["cmpOp"], "left": f"inputs.{yr_key}", "right": int(pv["years"][0])})
 
     if deontic_quant_mode:
         if rate_nodes:
@@ -1547,8 +1594,7 @@ def compose_clause_v2(
                     None,
                 )
             if base_sid is not None:
-                op_key = parsed_by_idx[base_sid]["key"]
-                inputs.setdefault(op_key, {"type": "MONEY_MINOR", "currency": ccy})
+                op_key = _bind_input(parsed_by_idx[base_sid]["key"], {"type": "MONEY_MINOR", "currency": ccy})
                 op_ref = f"inputs.{op_key}"
                 consumed_ids.add(base_sid)
             else:
@@ -1557,13 +1603,12 @@ def compose_clause_v2(
                 )
             subj_sid = next((sid for sid in sym_ids if parsed_by_idx[sid]["key"] != op_key), None)
             if subj_sid is not None:
-                subj_key = parsed_by_idx[subj_sid]["key"]
-                inputs.setdefault(subj_key, {"type": "MONEY_MINOR", "currency": ccy})
+                subj_key = _bind_input(parsed_by_idx[subj_sid]["key"], {"type": "MONEY_MINOR", "currency": ccy})
                 lhs_ref = f"inputs.{subj_key}"
                 consumed_ids.add(subj_sid)
             else:
-                inputs.setdefault("measuredAmount", {"type": "MONEY_MINOR", "currency": ccy})
-                lhs_ref = "inputs.measuredAmount"
+                meas_key = _bind_input("measuredAmount", {"type": "MONEY_MINOR", "currency": ccy})
+                lhs_ref = f"inputs.{meas_key}"
             tgt_var = _emit(
                 "ratioThresholdPaisa",
                 {"op": "RATIONAL_MULTIPLY", "base": op_ref, "rateBps": int(pv_r["rateBps"]), "denominator": 10000},
@@ -1938,8 +1983,7 @@ def compose_clause_v2(
                     None,
                 )
                 if extra_sym_id is not None:
-                    ex_key = parsed_by_idx[extra_sym_id]["key"]
-                    inputs.setdefault(ex_key, {"type": "MONEY_MINOR", "currency": ccy})
+                    ex_key = _bind_input(parsed_by_idx[extra_sym_id]["key"], {"type": "MONEY_MINOR", "currency": ccy})
                     extra_base_ref = f"inputs.{ex_key}"
                     consumed_ids.add(extra_sym_id)
                 else:

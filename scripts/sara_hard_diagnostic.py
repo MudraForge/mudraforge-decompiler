@@ -186,6 +186,8 @@ def generate_synthetic_inputs(ast: dict[str, Any]) -> dict[str, Any]:
             facts[key] = "1000"
         elif itype == "BOOLEAN":
             facts[key] = True
+        elif itype == "DATE":
+            facts[key] = "2020-01-01"
         elif itype == "COLLECTION":
             facts[key] = [_infer_collection_item_sample(ast, key)]
         else:

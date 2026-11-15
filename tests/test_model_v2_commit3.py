@@ -1468,9 +1468,9 @@ class TestModelV2Commit3(unittest.TestCase):
         )
         from compiler.neural.tokenizer import tokenize_with_offsets
 
-        # 1. Window partitioning keeps 4-clause / 160-token brackets intact in 1 window
-        clause_ranges = [(0, 34), (35, 74), (75, 114), (115, 159)]
-        windows = DualStreamDecompilerInference._partition_clause_windows(clause_ranges, total_tokens=160)
+        # 1. Window partitioning keeps 4-clause / 150-token brackets intact in 1 window
+        clause_ranges = [(0, 34), (35, 74), (75, 114), (115, 149)]
+        windows = DualStreamDecompilerInference._partition_clause_windows(clause_ranges, total_tokens=150)
         self.assertEqual(len(windows), 1)
         self.assertEqual(len(windows[0]), 4)
 
@@ -2007,6 +2007,128 @@ class TestModelV2Commit3(unittest.TestCase):
                 dominant_modality="MODALITY_COMPUTATIONAL_EXCESS",
             )
         self.assertIn("ERR_UNCONSUMED_SPAN", str(ctx.exception))
+
+    def test_compact_windowing_catala_dates_typed_input_disambiguation_and_canonical_binding(self):
+        from compiler.converters.catala_emitter import emit_catala_code
+        from compiler.neural.dual_stream_inference import DualStreamDecompilerInference
+        from compiler.neural.inference_v2 import synthesize_usvm_ast_v2
+        from compiler.neural.literals import parse_comparison_operator
+        from compiler.training.discrepancy_monitor import compare_ast_counterfactual_outputs
+        from compiler.training.usvm_rl_environment import StatutoryRlEnvironment
+
+        # 1. Compact windowing defaults keep 4-clause / 150-token brackets intact while splitting 5+ clause sections
+        five_clauses = [(0, 29), (30, 59), (60, 89), (90, 119), (120, 149)]
+        split_wins = DualStreamDecompilerInference._partition_clause_windows(five_clauses, total_tokens=150)
+        self.assertEqual(len(split_wins), 2)
+        self.assertEqual(len(split_wins[0]), 4)
+        self.assertEqual(len(split_wins[1]), 1)
+
+        # 2. Typed input conflict disambiguation + ISO date literal lowering in Catala
+        text = (
+            "(a) Charge 10% of respect above $1,000. "
+            "(b) Applies if respect holds after December 31, 2017."
+        )
+        c0_end = text.index("(b)") - 1
+        spans = [
+            {"spanIdx": 0, "span": "10%", "unit": "UNIT_RATE", "role": "ROLE_STANDARD_STATUTORY_RATE", "clauseIdx": 0, "charRange": [text.index("10%"), text.index("10%") + 3]},
+            {"spanIdx": 1, "span": "respect", "unit": "UNIT_SYMBOL_VAR", "role": "ROLE_COMPUTATION_OPERAND", "clauseIdx": 0, "charRange": [text.index("respect"), text.index("respect") + 7]},
+            {"spanIdx": 2, "span": "$1,000", "unit": "UNIT_MONEY", "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "clauseIdx": 0, "charRange": [text.index("$1,000"), text.index("$1,000") + 6]},
+            {"spanIdx": 3, "span": "respect", "unit": "UNIT_BOOL_PREDICATE", "role": "ROLE_AGENT_STATE_PRECONDITION", "clauseIdx": 1, "charRange": [text.rindex("respect"), text.rindex("respect") + 7]},
+            {"spanIdx": 4, "span": "December 31, 2017", "unit": "UNIT_YEAR_DATE", "role": "ROLE_TEMPORAL_SUNSET_DATE", "clauseIdx": 1, "charRange": [text.index("December"), text.index("2017") + 4]},
+        ]
+        edges = [
+            {"sourceIdx": 0, "targetIdx": 2, "relationType": "REL_RATE_TO_THRESHOLD"},
+            {"sourceIdx": 3, "targetIdx": 4, "relationType": "REL_LOGICAL_AND"},
+        ]
+        cmods = [
+            {"clauseIdx": 0, "modality": "MODALITY_COMPUTATIONAL_EXCESS", "charRange": [0, c0_end]},
+            {"clauseIdx": 1, "modality": "MODALITY_DEONTIC_STATUS_OR_EVIDENCE", "charRange": [c0_end + 1, len(text)]},
+        ]
+        ast = synthesize_usvm_ast_v2(
+            text=text,
+            spans=spans,
+            edges=edges,
+            clause_modalities=cmods,
+            dominant_modality="MODALITY_COMPUTATIONAL_EXCESS",
+        )
+        self.assertEqual(ast["inputs"]["respect"]["type"], "MONEY_MINOR")
+        self.assertEqual(ast["inputs"]["respectFlag"]["type"], "BOOLEAN")
+        self.assertEqual(ast["inputs"]["transactionDate"]["type"], "DATE")
+        catala_src = emit_catala_code(ast, title="Typed Conflict & Date Test")
+        self.assertIn("> |2017-12-31|", catala_src)
+
+        # 3. Canonical input/output noun-stem binding matches compatible shifts and rejects incompatible types
+        gold_ast = {
+            "ruleDomain": "TAX",
+            "astVersion": "v2",
+            "inputs": {"assessedSettlementBase": {"type": "MONEY_MINOR", "currency": "USD"}},
+            "computation": {
+                "archetype": "DECLARATIVE_PIPELINE",
+                "mode": "DECLARATIVE_PIPELINE",
+                "pipeline": {
+                    "steps": [{"assign": "clause_0_assessedSettlementBaseTaxPaisa_v1", "expr": {"op": "RATIONAL_MULTIPLY", "base": "inputs.assessedSettlementBase", "rateBps": 500, "denominator": 10000}}],
+                    "output": {"assessedSettlementBaseTaxPaisa": "vars.clause_0_assessedSettlementBaseTaxPaisa_v1"},
+                },
+            },
+        }
+        pred_ok_ast = {
+            "ruleDomain": "TAX",
+            "astVersion": "v2",
+            "inputs": {"assessedSettlement": {"type": "MONEY_MINOR", "currency": "USD"}},
+            "computation": {
+                "archetype": "DECLARATIVE_PIPELINE",
+                "mode": "DECLARATIVE_PIPELINE",
+                "pipeline": {
+                    "steps": [
+                        {"assign": "clause_0_aux_v1", "expr": "inputs.assessedSettlement"},
+                        {"assign": "clause_0_assessedSettlementTaxPaisa_v1", "expr": {"op": "RATIONAL_MULTIPLY", "base": "inputs.assessedSettlement", "rateBps": 500, "denominator": 10000}},
+                    ],
+                    "output": {"assessedSettlementTaxPaisa": "vars.clause_0_assessedSettlementTaxPaisa_v1", "auxPaisa": "vars.clause_0_aux_v1"},
+                },
+            },
+        }
+        pred_wrong_type = {
+            **pred_ok_ast,
+            "inputs": {"assessedSettlement": {"type": "COLLECTION", "elementType": "OBJECT"}},
+        }
+        env = StatutoryRlEnvironment()
+        ok, diffs = compare_ast_counterfactual_outputs(gold_ast, pred_ok_ast, env, env.evaluator)
+        self.assertTrue(ok, f"Expected canonical noun-stem binding pass, got {diffs}")
+        bad_ok, _ = compare_ast_counterfactual_outputs(gold_ast, pred_wrong_type, env, env.evaluator)
+        self.assertFalse(bad_ok)
+
+    def test_temporal_comparator_before_after_and_date_prefix_lowering(self):
+        from compiler.converters.catala_emitter import emit_catala_code
+        from compiler.neural.inference_v2 import synthesize_usvm_ast_v2
+        from compiler.neural.literals import parse_comparison_operator
+
+        self.assertEqual(parse_comparison_operator("after December 31, 2017"), "GT")
+        self.assertEqual(parse_comparison_operator("before January 1, 2026"), "LT")
+        self.assertEqual(parse_comparison_operator("prior to July 1, 2025"), "LT")
+        self.assertEqual(parse_comparison_operator("on or before March 31, 2026"), "LTE")
+        self.assertEqual(parse_comparison_operator("on or after April 1, 2026"), "GTE")
+        self.assertEqual(parse_comparison_operator("no earlier than April 1, 2026"), "GTE")
+        self.assertEqual(parse_comparison_operator("not later than April 1, 2026"), "LTE")
+
+        text = "This section applies to any taxable year beginning after December 31, 2017, and before January 1, 2026."
+        spans = [
+            {"spanIdx": 0, "span": "taxable year", "unit": "UNIT_BOOL_PREDICATE", "role": "ROLE_AGENT_STATE_PRECONDITION", "clauseIdx": 0, "charRange": [text.index("taxable"), text.index("year") + 4]},
+            {"spanIdx": 1, "span": "December 31, 2017", "unit": "UNIT_YEAR_DATE", "role": "ROLE_TEMPORAL_SUNSET_DATE", "clauseIdx": 0, "charRange": [text.index("December"), text.index("2017") + 4]},
+            {"spanIdx": 2, "span": "January 1, 2026", "unit": "UNIT_YEAR_DATE", "role": "ROLE_TEMPORAL_SUNSET_DATE", "clauseIdx": 0, "charRange": [text.index("January"), text.index("2026") + 4]},
+        ]
+        edges = [
+            {"sourceIdx": 0, "targetIdx": 1, "relationType": "REL_LOGICAL_AND"},
+            {"sourceIdx": 0, "targetIdx": 2, "relationType": "REL_LOGICAL_AND"},
+        ]
+        ast = synthesize_usvm_ast_v2(
+            text=text,
+            spans=spans,
+            edges=edges,
+            clause_modalities=[{"clauseIdx": 0, "modality": "MODALITY_DEONTIC_STATUS_OR_EVIDENCE", "charRange": [0, len(text)]}],
+        )
+        catala_src = emit_catala_code(ast, title="Temporal Window Comparison Test")
+        self.assertIn("> |2017-12-31|", catala_src)
+        self.assertIn("< |2026-01-01|", catala_src)
 
 
 if __name__ == "__main__":

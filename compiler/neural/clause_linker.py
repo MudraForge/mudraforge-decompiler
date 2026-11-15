@@ -1253,7 +1253,40 @@ from .ssa_walker import (
     _v2_parse_span_value,
     _v2_topo_sort_indices,
     compose_clause_v2,
+    resolve_typed_input_key,
 )
+
+
+def _rewrite_input_refs_in_expr(node: Any, rename_map: dict[str, str]) -> Any:
+    """Recursively rewrites renamed `inputs.<old>` references inside AST expression dicts."""
+    if isinstance(node, str):
+        if node.startswith("inputs."):
+            key = node[len("inputs."):]
+            if key in rename_map:
+                return f"inputs.{rename_map[key]}"
+        return node
+    if isinstance(node, list):
+        return [_rewrite_input_refs_in_expr(item, rename_map) for item in node]
+    if isinstance(node, dict):
+        return {k: _rewrite_input_refs_in_expr(v, rename_map) for k, v in node.items()}
+    return node
+
+
+def _merge_clause_inputs(
+    all_inputs: dict[str, dict],
+    clause_inputs: dict[str, dict],
+    clause_steps: list[dict],
+) -> None:
+    """Merges clause inputs into `all_inputs`, disambiguating only incompatible type collisions."""
+    rename_map: dict[str, str] = {}
+    for k, spec in (clause_inputs or {}).items():
+        resolved_k = resolve_typed_input_key(all_inputs, k, spec)
+        if resolved_k != k:
+            rename_map[k] = resolved_k
+    if rename_map:
+        for step in clause_steps:
+            if isinstance(step, dict) and "expr" in step:
+                step["expr"] = _rewrite_input_refs_in_expr(step["expr"], rename_map)
 
 
 def _v2_detect_scope_level(clause_text: str) -> tuple[int, str]:
@@ -1477,6 +1510,7 @@ def build_clause_scoped_computation_v2(
         symbol_versions[norm_key] = ver
         base_out = f"{norm_key}Paisa" if not norm_key.endswith("Paisa") else norm_key
         ssa_var = f"clause_{cidx}_{base_out}_v{ver}"
+        val_minor = _cl2_parse_minor_units(val_sp.get("span")) if val_sp.get("unit") == "UNIT_MONEY" else None
         rec = {
             "symbolKey": norm_key,
             "exportKey": base_out,
@@ -1485,6 +1519,7 @@ def build_clause_scoped_computation_v2(
             "clauseIdx": cidx,
             "version": ver,
             "valSpanId": val_sp["spanIdx"],
+            "valMinor": val_minor,
         }
         scope_tree[cidx]["symbols"][norm_key] = rec
         defined_clause_targets[cidx] = rec
@@ -1606,7 +1641,8 @@ def build_clause_scoped_computation_v2(
         if not cspans:
             continue
 
-        # Collect visible symbol environment walking up parent-pointer chain
+        # Collect visible symbol environment walking up parent-pointer chain, then
+        # expose non-shadowed Pass-1 subsection definitions so earlier clauses can link forward.
         visible_env: dict[str, dict] = {}
         cur = cidx
         visited = set()
@@ -1616,6 +1652,8 @@ def build_clause_scoped_computation_v2(
                 if k not in visible_env:
                     visible_env[k] = rec
             cur = scope_tree[cur]["parent"]
+        for rec in defined_clause_targets.values():
+            visible_env.setdefault(rec["symbolKey"], rec)
 
         # Pass both in-clause edges and cross-clause edges whose endpoints map cleanly
         in_edges = [
@@ -1660,13 +1698,20 @@ def build_clause_scoped_computation_v2(
             raise
 
         all_steps.extend(comp["steps"])
-        all_inputs.update(comp["inputs"])
+        _merge_clause_inputs(all_inputs, comp["inputs"], comp["steps"])
         out_var_ref = f"vars.{comp['outputVar']}"
         if cidx in defined_clause_targets:
             rec = defined_clause_targets[cidx]
             exp_key = rec["symbolKey"] if comp.get("resultType") == "BOOLEAN" else rec["exportKey"]
             all_outputs[exp_key] = out_var_ref
-            rec["ref"] = out_var_ref
+            if comp.get("resultType") == "BOOLEAN" and rec.get("valMinor") is not None:
+                all_steps.append({
+                    "assign": rec["ssaVar"],
+                    "expr": {"op": "TO_PAISE", "value": str(rec["valMinor"])},
+                })
+                all_outputs[rec["exportKey"]] = rec["ref"]
+            else:
+                rec["ref"] = out_var_ref
         else:
             all_outputs[comp["outputKey"]] = out_var_ref
 
