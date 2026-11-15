@@ -1957,6 +1957,57 @@ class TestModelV2Commit3(unittest.TestCase):
         self.assertEqual(spans[0]["unit"], "UNIT_MONEY")
         self.assertEqual(spans[1]["unit"], "UNIT_SYMBOL_VAR")
 
+    def test_unconnected_restated_threshold_co_consumed_while_distinct_fails_closed(self):
+        """An unconnected duplicate threshold restatement co-consumes when matching a connected floor; distinct amounts fail closed."""
+        from compiler.neural.ssa_walker import V2LoweringError
+
+        text = (
+            "For any calendar year, any corporation with gross receipts exceeding EUR 100,000 "
+            "shall pay EUR 5,000 plus 15 percent of the excess over EUR 100,000."
+        )
+        spans = [
+            {"spanIdx": 0, "clauseIdx": 0, "span": "gross receipts", "charRange": [43, 57], "role": "ROLE_COMPUTATION_OPERAND", "unit": "UNIT_SYMBOL_VAR"},
+            {"spanIdx": 1, "clauseIdx": 0, "span": "exceeding EUR 100,000", "charRange": [58, 79], "role": "ROLE_TRANSACTION_EXCESS_THRESHOLD", "unit": "UNIT_MONEY"},
+            {"spanIdx": 2, "clauseIdx": 0, "span": "EUR 5,000", "charRange": [90, 99], "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "unit": "UNIT_MONEY"},
+            {"spanIdx": 3, "clauseIdx": 0, "span": "15 percent", "charRange": [105, 115], "role": "ROLE_STANDARD_STATUTORY_RATE", "unit": "UNIT_RATE"},
+            {"spanIdx": 4, "clauseIdx": 0, "span": "EUR 100,000", "charRange": [135, 146], "role": "ROLE_TRANSACTION_CLIFF_THRESHOLD", "unit": "UNIT_MONEY"},
+        ]
+        # Span 4 has 0 edges, while span 1 (minor == 10000000) is connected to rate span 3.
+        edges = [
+            {"sourceIdx": 2, "targetIdx": 3, "relationType": "REL_BASE_TAX_ADD"},
+            {"sourceIdx": 3, "targetIdx": 1, "relationType": "REL_RATE_TO_THRESHOLD"},
+        ]
+        ast = synthesize_usvm_ast_v2(
+            text=text,
+            spans=spans,
+            edges=edges,
+            clause_modalities=[{"clauseIdx": 0, "modality": "MODALITY_COMPUTATIONAL_EXCESS"}],
+            dominant_modality="MODALITY_COMPUTATIONAL_EXCESS",
+        )
+        comp = ast.get("computation") or {}
+        out_key = next(iter((comp.get("pipeline") or {}).get("output") or {}))
+        in_key = next(iter(ast.get("inputs", {})))
+        evaluator = CanonicalUsvmEvaluator()
+        try:
+            # 120,000 EUR -> 5,000 + 15% * (120,000 - 100,000) = 8,000 EUR = 800,000 minor units
+            out = evaluator.evaluate(ast, {in_key: "12000000"})
+            self.assertEqual(out[out_key], 800000)
+        finally:
+            evaluator.close()
+
+        # Distinct unconnected amount (EUR 90,000 != EUR 100,000) must still fail closed.
+        bad_spans = [dict(sp) for sp in spans]
+        bad_spans[4]["span"] = "EUR 90,000"
+        with self.assertRaises(V2LoweringError) as ctx:
+            synthesize_usvm_ast_v2(
+                text=text.replace("over EUR 100,000.", "over EUR 90,000."),
+                spans=bad_spans,
+                edges=edges,
+                clause_modalities=[{"clauseIdx": 0, "modality": "MODALITY_COMPUTATIONAL_EXCESS"}],
+                dominant_modality="MODALITY_COMPUTATIONAL_EXCESS",
+            )
+        self.assertIn("ERR_UNCONSUMED_SPAN", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

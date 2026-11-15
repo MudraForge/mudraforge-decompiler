@@ -1804,11 +1804,26 @@ def compose_clause_v2(
             raise V2LoweringError(
                 f"ERR_UNCONSUMED_SPAN: rate span at index {r_id} lacks required connecting edge"
             )
+    connected_threshold_minors = {
+        parsed_by_idx[tid].get("minor")
+        for tid in (*floor_ids, *ceiling_ids)
+        if parsed_by_idx[tid].get("minor") is not None
+        and any(s == tid or t == tid for s, t, _ in in_clause_edges)
+    }
     if rate_nodes and len(money_nodes) >= 1 and comp_sym_ids:
         for m_id in money_nodes:
+            m_minor = parsed_by_idx[m_id].get("minor")
+            is_duplicate_restatement = (
+                m_minor is not None
+                and m_minor in connected_threshold_minors
+                and m_id not in base_tax_ids
+                and m_id not in credit_ids
+                and m_id not in cap_ids
+            )
             if (
                 span_by_idx[m_id].get("role") in ("ROLE_TRANSACTION_EXCESS_THRESHOLD", "ROLE_TRANSACTION_CLIFF_THRESHOLD")
                 and not any(s == m_id or t == m_id for s, t, _ in in_clause_edges)
+                and not is_duplicate_restatement
             ):
                 raise V2LoweringError(
                     f"ERR_UNCONSUMED_SPAN: threshold span at index {m_id} lacks required connecting edge"
